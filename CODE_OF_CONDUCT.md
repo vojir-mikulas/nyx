@@ -19,8 +19,9 @@ of background or identity.
 
 ## Enforcement
 
-Instances of unacceptable behavior may be reported to the maintainer at
-**vojir.mikulas@gmail.com**. Reports will be reviewed and handled confidentially.
+Instances of unacceptable behavior may be reported privately to the maintainers
+by opening a [GitHub security advisory](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability)
+or a confidential issue. Reports will be reviewed and handled confidentially.
 Maintainers may remove, edit, or reject contributions and may ban contributors
 for behavior they deem inappropriate.
 

@@ -9,6 +9,9 @@ back here.
 - [`overview.md`](overview.md) — what Nyx is, the guiding principles ("the Zed
   ideology"), tech stack, architecture, scope, and the reuse strategy toward the
   sibling app **dbviewer**.
+- [`git-workflow.md`](git-workflow.md) — how we structure source control:
+  trunk-based branching, conventional commits, versioning/releases, CI gates,
+  and the repo hygiene files.
 
 ## Plans
 
