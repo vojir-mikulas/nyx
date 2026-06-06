@@ -15,6 +15,9 @@ use nyx_core::{NyxError, Protocol, Result};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
+mod settings;
+pub use settings::{FileSettingsStore, Settings};
+
 /// A saved connection profile (no secrets).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Profile {

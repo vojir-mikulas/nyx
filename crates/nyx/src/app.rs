@@ -675,7 +675,10 @@ fn tweaks_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElemen
                                     _ => Theme::ayu_dark(),
                                 };
                                 cx.set_global(next);
-                                view.update(cx, |_, cx| cx.notify());
+                                view.update(cx, |this, cx| {
+                                    this.save_settings(cx);
+                                    cx.notify();
+                                });
                             }
                         }),
                     cx,
@@ -692,6 +695,7 @@ fn tweaks_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElemen
                             move |ix, _window, cx| {
                                 view.update(cx, |this, cx| {
                                     this.density = Density::ALL[ix.min(2)];
+                                    this.save_settings(cx);
                                     cx.notify();
                                 });
                             }
@@ -715,6 +719,7 @@ fn tweaks_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElemen
                                 let on = *on;
                                 view.update(cx, |this, cx| {
                                     this.show_perms = on;
+                                    this.save_settings(cx);
                                     cx.notify();
                                 });
                             }

@@ -20,9 +20,11 @@ use gpui::{
 };
 use nyx_core::{Protocol, Transfer, TransferDirection, TransferId, TransferStatus};
 use nyx_keyring::{CredentialStore, OsKeyring};
-use nyx_profile::{FileProfileStore, Profile, ProfileColor, ProfileStore};
+use nyx_profile::{
+    FileProfileStore, FileSettingsStore, Profile, ProfileColor, ProfileStore, Settings,
+};
 use nyx_service::{Command, Event, FileOp, Secret, ServiceHandle};
-use nyx_ui::{TextInput, TextInputEvent, ToastVariant};
+use nyx_ui::{ActiveTheme, TextInput, TextInputEvent, Theme, ToastVariant};
 use time::OffsetDateTime;
 
 use models::{AccentKind, ConnectionVm, Density, DockTab, EntryRow, SortKey, TransferVm};
@@ -233,6 +235,8 @@ pub struct AppState {
     // --- persistence (M3) ---
     /// On-disk profile store (the source of `connections`).
     store: FileProfileStore,
+    /// On-disk store for UI preferences (theme, density, permissions column).
+    settings_store: FileSettingsStore,
     /// OS keychain for connection passwords (addressed by profile id).
     keyring: OsKeyring,
     /// A startup error to surface once the backend is `Ready` (e.g. a malformed
@@ -265,6 +269,16 @@ pub struct AppState {
     pub file_delete: Option<FileDeleteConfirm>,
     /// Whether a directory listing is in flight (drives the loading hint).
     pub listing_loading: bool,
+}
+
+/// Map a persisted theme name to its concrete [`Theme`], defaulting to One Dark
+/// for an unknown name (e.g. a theme that was renamed or removed).
+pub fn theme_from_name(name: &str) -> Theme {
+    match name {
+        "GitHub Dark" => Theme::github_dark(),
+        "Ayu Dark" => Theme::ayu_dark(),
+        _ => Theme::one_dark(),
+    }
 }
 
 impl AppState {
@@ -309,6 +323,16 @@ impl AppState {
             Err(err) => (Vec::new(), Some(SharedString::from(err.to_string()))),
         };
 
+        // Load persisted UI preferences and apply the theme global immediately
+        // (a missing/malformed file is silently the default — see
+        // `FileSettingsStore::load`).
+        let settings_store = FileSettingsStore::open_default()
+            .unwrap_or_else(|_| FileSettingsStore::with_path("settings.toml"));
+        let settings = settings_store.load();
+        cx.set_global(theme_from_name(&settings.theme));
+        let density = Density::ALL[(settings.density as usize).min(Density::ALL.len() - 1)];
+        let show_perms = settings.show_perms;
+
         Self {
             view: View::Welcome,
             connections,
@@ -328,12 +352,13 @@ impl AppState {
             recent_collapsed: false,
             browser_focus,
             tweaks_open: false,
-            density: Density::Comfortable,
-            show_perms: true,
+            density,
+            show_perms,
             toast: None,
             next_toast_id: 0,
             store,
             keyring: OsKeyring::new(),
+            settings_store,
             startup_error,
             service,
             connecting_id: None,
@@ -347,6 +372,22 @@ impl AppState {
             input_prompt: None,
             file_delete: None,
             listing_loading: false,
+        }
+    }
+
+    // --- settings ---------------------------------------------------------
+
+    /// Persist the current UI preferences (theme, density, permissions column)
+    /// to disk. Best-effort: a write failure is logged, not surfaced — losing a
+    /// preference is harmless, and a toast on every tweak would be noise.
+    pub fn save_settings(&self, cx: &App) {
+        let settings = Settings {
+            theme: cx.theme().name.to_string(),
+            density: self.density.index() as u8,
+            show_perms: self.show_perms,
+        };
+        if let Err(err) = self.settings_store.save(&settings) {
+            tracing::warn!("failed to persist settings: {err}");
         }
     }
 

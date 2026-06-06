@@ -15,7 +15,6 @@ use super::{status_dot, titlebar_drag};
 pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
     let saved = state.connections.len();
-    let recents = state.recent_connections();
 
     // `cx.listener` results aren't `Clone`, so each call site gets its own.
     let header_new = cx.listener(|this, _, _, cx| {
@@ -61,16 +60,6 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                 .min_h_0()
                 .overflow_y_scroll()
                 .pb_2()
-                .when(!recents.is_empty(), |this| {
-                    this.child(group(
-                        state,
-                        "Recent",
-                        recents.len(),
-                        &recents,
-                        Some(state.recent_collapsed),
-                        cx,
-                    ))
-                })
                 .child(group(
                     state,
                     "Saved",
@@ -203,17 +192,6 @@ fn conn_row(
         .cursor_pointer()
         .when(is_active, |this| this.bg(theme.bg_active))
         .when(!is_active, |this| this.hover(|s| s.bg(theme.bg_hover)))
-        .when(is_active, |this| {
-            this.child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .top(px(4.))
-                    .bottom(px(4.))
-                    .w(px(2.))
-                    .bg(theme.accent),
-            )
-        })
         .child(status_dot(dot_color, ring))
         .child(
             div()
