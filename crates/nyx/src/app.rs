@@ -5,6 +5,7 @@
 use gpui::{
     actions, anchored, deferred, div, prelude::*, px, Context, FontWeight, MouseButton, Window,
 };
+use nyx_core::CollisionChoice;
 use nyx_ui::{
     ActiveTheme, Button, ButtonVariant, ContextMenu, ContextMenuItem, Modal, Segmented, Select,
     Theme, Toast, Toggle,
@@ -101,6 +102,9 @@ impl Render for AppState {
             })
             .when(self.host_key_prompt.is_some(), |this| {
                 this.child(host_key_modal(self, cx))
+            })
+            .when(!self.pending_collisions.is_empty(), |this| {
+                this.child(collision_modal(self, cx))
             })
             .when(self.delete_confirm.is_some(), |this| {
                 this.child(delete_confirm_modal(self, cx))
@@ -274,6 +278,133 @@ fn host_key_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElem
                         .variant(ButtonVariant::Primary)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.trust_host_key();
+                            cx.notify();
+                        })),
+                ),
+        )
+}
+
+/// The file-collision prompt: the destination already exists. Overwrite / Skip /
+/// Cancel, with an "Apply to all" toggle when more than one transfer is parked.
+/// Dismissing (Esc / backdrop) is a Skip — never a silent overwrite.
+fn collision_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    use crate::state::models::fmt_size;
+    use nyx_core::TransferDirection;
+
+    let theme = cx.theme().clone();
+    let info = state
+        .pending_collisions
+        .first()
+        .expect("collision prompt set");
+    let pending = state.pending_collisions.len();
+    let apply_all = state.collision_apply_all;
+
+    let side = match info.direction {
+        TransferDirection::Upload => "remote",
+        TransferDirection::Download => "local",
+    };
+    let size_label = info
+        .existing_size
+        .map(|n| format!("Existing {side} file · {}", fmt_size(n)))
+        .unwrap_or_else(|| format!("Existing {side} file"));
+
+    Modal::new("collision")
+        .title("File already exists")
+        .width(px(460.))
+        .on_close({
+            // Dismissing the prompt skips this transfer (never overwrites).
+            let view = cx.entity();
+            move |_window, cx| {
+                view.update(cx, |this, cx| {
+                    this.resolve_collision(CollisionChoice::Skip, cx);
+                    cx.notify();
+                });
+            }
+        })
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(div().text_sm().text_color(theme.text_muted).child(format!(
+                    "“{}” already exists at the destination.",
+                    info.name
+                )))
+                .child(
+                    div()
+                        .p_3()
+                        .rounded(theme.radius)
+                        .bg(theme.bg_input)
+                        .border_1()
+                        .border_color(theme.border)
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .font_family(FONT_MONO)
+                                .text_xs()
+                                .text_color(theme.text)
+                                .truncate()
+                                .child(info.path.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.text_faint)
+                                .child(size_label),
+                        ),
+                )
+                .when(pending > 1, |this| {
+                    this.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(theme.text_muted)
+                                    .child(format!("Apply to all {pending} conflicts")),
+                            )
+                            .child(
+                                Toggle::new("collision-all", apply_all).on_change(cx.listener(
+                                    |this, on, _window, cx| {
+                                        this.set_collision_apply_all(*on);
+                                        cx.notify();
+                                    },
+                                )),
+                            ),
+                    )
+                }),
+        )
+        .footer(
+            div()
+                .flex()
+                .w_full()
+                .justify_end()
+                .gap_2()
+                .child(
+                    Button::new("collision-cancel", "Cancel")
+                        .variant(ButtonVariant::Secondary)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.resolve_collision(CollisionChoice::Cancel, cx);
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("collision-skip", "Skip")
+                        .variant(ButtonVariant::Secondary)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.resolve_collision(CollisionChoice::Skip, cx);
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("collision-overwrite", "Overwrite")
+                        .variant(ButtonVariant::Danger)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.resolve_collision(CollisionChoice::Overwrite, cx);
                             cx.notify();
                         })),
                 ),

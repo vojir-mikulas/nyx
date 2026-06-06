@@ -30,7 +30,10 @@ use futures::channel::mpsc::{
     unbounded as futures_unbounded, UnboundedReceiver as FuturesReceiver,
     UnboundedSender as FuturesSender,
 };
-use nyx_core::{NyxError, RemoteEntry, RemotePath, TransferDirection, TransferId, TransferStatus};
+use nyx_core::{
+    CollisionChoice, NyxError, RemoteEntry, RemotePath, TransferDirection, TransferId,
+    TransferStatus,
+};
 use nyx_profile::Profile;
 use nyx_protocol::{KnownHosts, RemoteClient, SftpClient};
 use nyx_transfer::{CancelOutcome, Started, TransferQueue, TransferSpec};
@@ -170,6 +173,20 @@ pub enum Command {
         /// The transfer to cancel.
         id: TransferId,
     },
+    /// The user's answer to a pending [`Event::TransferCollision`].
+    ///
+    /// `Overwrite` resumes the transfer (truncating the destination); `Skip`
+    /// leaves the existing file and ends the transfer `Skipped`; `Cancel` aborts
+    /// it. `apply_to_all` stamps the same choice onto every other pending
+    /// collision and still-queued transfer so only one prompt is shown.
+    ResolveCollision {
+        /// The parked transfer being resolved.
+        id: TransferId,
+        /// The chosen resolution.
+        choice: CollisionChoice,
+        /// Apply this choice to all other pending/queued transfers too.
+        apply_to_all: bool,
+    },
     /// Close the active connection.
     Disconnect,
     /// Shut the runtime down and exit the thread.
@@ -247,6 +264,20 @@ pub enum Event {
         /// The local-side path (display form).
         local: String,
     },
+    /// A transfer's destination already exists; the pre-flight gate parked it
+    /// pending the user's [`Command::ResolveCollision`]. Paths are not secrets.
+    TransferCollision {
+        /// The parked transfer's id.
+        id: TransferId,
+        /// Upload or download (which side the existing destination is on).
+        direction: TransferDirection,
+        /// The remote-side path.
+        remote: RemotePath,
+        /// The local-side path (display form).
+        local: String,
+        /// Size of the existing destination, if it could be statted.
+        existing_size: Option<u64>,
+    },
     /// A transfer left the queue and is now running. `total` is the size statted
     /// at start (`None` if it could not be determined).
     TransferStarted {
@@ -264,8 +295,9 @@ pub enum Event {
         /// Instantaneous speed in bytes/sec over the last sample interval.
         speed_bps: u64,
     },
-    /// A transfer reached a terminal state: `Completed`, `Failed` or `Cancelled`.
-    /// `message` carries the credential-free error detail for `Failed`.
+    /// A transfer reached a terminal state: `Completed`, `Failed`, `Cancelled`
+    /// or `Skipped`. `message` carries the credential-free error detail for
+    /// `Failed`.
     TransferDone {
         /// The transfer id.
         id: TransferId,
@@ -542,6 +574,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                                 direction: TransferDirection::Download,
                                 remote: remote.clone(),
                                 local: local.clone(),
+                                on_collision: None,
                             };
                             let id = queue.submit(spec);
                             let _ = events.unbounded_send(Event::TransferQueued {
@@ -561,6 +594,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                                 direction: TransferDirection::Upload,
                                 remote: remote.clone(),
                                 local: local.clone(),
+                                on_collision: None,
                             };
                             let id = queue.submit(spec);
                             let _ = events.unbounded_send(Event::TransferQueued {
@@ -588,6 +622,29 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                         CancelOutcome::WasRunning => {}
                         CancelOutcome::Unknown => {}
                     },
+                    Command::ResolveCollision { id, choice, apply_to_all } => {
+                        // Skip/Cancel resolutions terminate the parked items here
+                        // (no task ran for them); Overwrite re-queues them, so a
+                        // try_start picks them up.
+                        let resolution = queue.resolve(id, choice, apply_to_all);
+                        for sid in resolution.skipped {
+                            last_bytes.remove(&sid);
+                            let _ = events.unbounded_send(Event::TransferDone {
+                                id: sid,
+                                status: TransferStatus::Skipped,
+                                message: None,
+                            });
+                        }
+                        for cid in resolution.cancelled {
+                            last_bytes.remove(&cid);
+                            let _ = events.unbounded_send(Event::TransferDone {
+                                id: cid,
+                                status: TransferStatus::Cancelled,
+                                message: None,
+                            });
+                        }
+                        try_start(&mut queue, &client, &events, &xfer_done_tx);
+                    }
                     Command::Disconnect => {
                         // A disconnect also clears the single-flight slot.
                         in_flight = false;
@@ -634,16 +691,44 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                 }
             }
             Some((id, outcome)) = xfer_done_rx.recv() => {
-                // A copy task finished: free its slot, drop its speed counter,
-                // announce the terminal state, then backfill the freed slot.
-                queue.finish(id);
-                last_bytes.remove(&id);
-                let (status, message) = match outcome {
-                    TransferOutcome::Completed => (TransferStatus::Completed, None),
-                    TransferOutcome::Cancelled => (TransferStatus::Cancelled, None),
-                    TransferOutcome::Failed(msg) => (TransferStatus::Failed, Some(msg)),
-                };
-                let _ = events.unbounded_send(Event::TransferDone { id, status, message });
+                match outcome {
+                    // The pre-flight gate found an existing destination: park the
+                    // item and ask the UI. If there is no UI to answer (the event
+                    // channel is closed), default to Skip — never silent overwrite.
+                    TransferOutcome::Collision { existing_size } => {
+                        if let Some(spec) = queue.park(id) {
+                            let sent = events
+                                .unbounded_send(Event::TransferCollision {
+                                    id,
+                                    direction: spec.direction,
+                                    remote: spec.remote.clone(),
+                                    local: spec.local.display().to_string(),
+                                    existing_size,
+                                })
+                                .is_ok();
+                            if !sent {
+                                for sid in queue.resolve(id, CollisionChoice::Skip, false).skipped {
+                                    last_bytes.remove(&sid);
+                                }
+                            }
+                        }
+                    }
+                    // A copy task finished: free its slot, drop its speed counter,
+                    // announce the terminal state.
+                    terminal => {
+                        queue.finish(id);
+                        last_bytes.remove(&id);
+                        let (status, message) = match terminal {
+                            TransferOutcome::Completed => (TransferStatus::Completed, None),
+                            TransferOutcome::Cancelled => (TransferStatus::Cancelled, None),
+                            TransferOutcome::Skipped => (TransferStatus::Skipped, None),
+                            TransferOutcome::Failed(msg) => (TransferStatus::Failed, Some(msg)),
+                            TransferOutcome::Collision { .. } => unreachable!(),
+                        };
+                        let _ = events.unbounded_send(Event::TransferDone { id, status, message });
+                    }
+                }
+                // Backfill any freed slot (a parked item frees its slot too).
                 try_start(&mut queue, &client, &events, &xfer_done_tx);
             }
             _ = progress_tick.tick() => {
@@ -666,12 +751,21 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
     }
 }
 
-/// The terminal outcome of a spawned copy task, reported to the dispatcher.
+/// The outcome of a spawned copy task, reported to the dispatcher.
 enum TransferOutcome {
+    /// The pre-flight gate found an existing destination and no resolved policy:
+    /// the task wrote nothing and the dispatcher should park the item for a
+    /// user decision. Not a terminal state.
+    Collision {
+        /// Size of the existing destination, if statted.
+        existing_size: Option<u64>,
+    },
     /// The copy finished and the remote writes were acknowledged.
     Completed,
     /// The copy was cancelled mid-flight (a partial file was cleaned up).
     Cancelled,
+    /// The destination existed and the policy resolved to skip; nothing written.
+    Skipped,
     /// The copy failed; the credential-free message is for the UI.
     Failed(String),
 }
@@ -704,6 +798,13 @@ fn spawn_transfer(
 ) {
     let Started { id, spec, progress } = started;
     tokio::spawn(async move {
+        // Pre-flight collision gate: stat the destination before writing a byte.
+        // A reliability-first client must never blind-overwrite.
+        if let Some(outcome) = collision_gate(&client, &spec).await {
+            let _ = xfer_done.send((id, outcome));
+            return;
+        }
+
         // Stat the total up front so the dock can show a real %/total.
         let total = match spec.direction {
             TransferDirection::Download => client.remote_size(&spec.remote).await,
@@ -733,6 +834,41 @@ fn spawn_transfer(
         };
         let _ = xfer_done.send((id, outcome));
     });
+}
+
+/// The transfer pre-flight gate. Stats the destination (remote for an upload,
+/// local for a download) **before** any bytes move.
+///
+/// Returns `Some(outcome)` when the task must stop without writing:
+/// - the destination exists and the policy is unresolved (`None`) → `Collision`
+///   (the dispatcher parks the item and prompts);
+/// - it exists and the policy is `Skip`/`Cancel` → the matching terminal.
+///
+/// Returns `None` to proceed with the copy — either no collision, or the policy
+/// is `Overwrite`. A stat error is treated as "no collision" (proceed): it
+/// mirrors the prior unconditional behavior rather than wedging the transfer.
+async fn collision_gate(client: &SftpClient, spec: &TransferSpec) -> Option<TransferOutcome> {
+    let exists = match spec.direction {
+        TransferDirection::Download => tokio::fs::try_exists(&spec.local).await.unwrap_or(false),
+        TransferDirection::Upload => client.exists(&spec.remote).await.unwrap_or(false),
+    };
+    if !exists {
+        return None;
+    }
+    match spec.on_collision {
+        None => {
+            let existing_size = match spec.direction {
+                TransferDirection::Download => {
+                    tokio::fs::metadata(&spec.local).await.ok().map(|m| m.len())
+                }
+                TransferDirection::Upload => client.remote_size(&spec.remote).await,
+            };
+            Some(TransferOutcome::Collision { existing_size })
+        }
+        Some(CollisionChoice::Skip) => Some(TransferOutcome::Skipped),
+        Some(CollisionChoice::Cancel) => Some(TransferOutcome::Cancelled),
+        Some(CollisionChoice::Overwrite) => None,
+    }
 }
 
 /// Best-effort removal of the half-written file left by a cancelled/failed

@@ -27,6 +27,9 @@ pub enum TransferDirection {
 pub enum TransferStatus {
     /// Waiting in the queue.
     Queued,
+    /// Parked at the pre-flight gate: the destination exists and the user has
+    /// not yet chosen overwrite/skip/cancel.
+    AwaitingDecision,
     /// Actively transferring bytes.
     Running,
     /// Finished successfully.
@@ -35,6 +38,25 @@ pub enum TransferStatus {
     Failed,
     /// Cancelled by the user.
     Cancelled,
+    /// Not transferred because the destination already existed and the user (or
+    /// the headless default) chose to skip it.
+    Skipped,
+}
+
+/// How a transfer resolves a destination that already exists.
+///
+/// `None` on a [`TransferSpec`](crate)'s policy slot means "ask the user"; a
+/// resolved choice short-circuits the prompt (e.g. a pre-answered "apply to
+/// all" batch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CollisionChoice {
+    /// Truncate and overwrite the existing destination.
+    Overwrite,
+    /// Leave the existing destination untouched; the transfer ends `Skipped`.
+    Skip,
+    /// Abort the transfer; it ends `Cancelled`.
+    Cancel,
 }
 
 /// A single queued / running transfer and its progress.

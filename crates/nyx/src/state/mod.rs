@@ -15,7 +15,9 @@ use gpui::{
     prelude::*, App, ClipboardItem, Context, Entity, FocusHandle, PathPromptOptions, Pixels, Point,
     SharedString,
 };
-use nyx_core::{Protocol, RemotePath, Transfer, TransferDirection, TransferId, TransferStatus};
+use nyx_core::{
+    CollisionChoice, Protocol, RemotePath, Transfer, TransferDirection, TransferId, TransferStatus,
+};
 use nyx_keyring::{CredentialStore, OsKeyring};
 use nyx_profile::{
     FileProfileStore, FileSettingsStore, Profile, ProfileColor, ProfileStore, Settings,
@@ -69,6 +71,21 @@ pub struct HostKeyPrompt {
     pub host: SharedString,
     /// The SHA-256 fingerprint, e.g. `SHA256:…`.
     pub fingerprint: SharedString,
+}
+
+/// One transfer parked at the pre-flight gate because its destination exists.
+/// Several can stack up (a multi-file batch); the modal shows them one at a time.
+pub struct CollisionInfo {
+    /// The parked transfer's id.
+    pub id: TransferId,
+    /// Upload or download (which side the existing destination is on).
+    pub direction: TransferDirection,
+    /// The destination's final name (for the prompt copy).
+    pub name: SharedString,
+    /// The full destination path (remote for upload, local for download).
+    pub path: SharedString,
+    /// Size of the existing destination, if known.
+    pub existing_size: Option<u64>,
 }
 
 /// The inline result of an editor "Test connection" probe.
@@ -244,6 +261,11 @@ pub struct AppState {
     pub password_prompt: Option<PasswordPrompt>,
     /// A pending host-key trust prompt (unknown key).
     pub host_key_prompt: Option<HostKeyPrompt>,
+    /// Transfers parked at the pre-flight gate, awaiting an overwrite decision.
+    /// The modal resolves the front one; the rest follow.
+    pub pending_collisions: Vec<CollisionInfo>,
+    /// The "apply to all" toggle's state in the collision modal.
+    pub collision_apply_all: bool,
     /// The connection editor modal, if open.
     pub editor: Option<ConnectionEditor>,
     /// A pending sidebar row context menu, if open.
@@ -349,6 +371,8 @@ impl AppState {
             used_stored_password: None,
             password_prompt: None,
             host_key_prompt: None,
+            pending_collisions: Vec::new(),
+            collision_apply_all: false,
             editor: None,
             row_menu: None,
             delete_confirm: None,
@@ -1305,6 +1329,39 @@ impl AppState {
             .send(Command::HostKeyDecision { accept: false });
     }
 
+    /// Toggle the collision modal's "Apply to all" switch.
+    pub fn set_collision_apply_all(&mut self, on: bool) {
+        self.collision_apply_all = on;
+    }
+
+    /// Resolve the front pending collision with `choice`. With "apply to all" on,
+    /// the service stamps every other pending/queued transfer, so we clear the
+    /// whole local queue; otherwise we advance to the next parked transfer.
+    pub fn resolve_collision(&mut self, choice: CollisionChoice, cx: &mut Context<Self>) {
+        if self.pending_collisions.is_empty() {
+            return;
+        }
+        let id = self.pending_collisions[0].id;
+        let apply_to_all = self.collision_apply_all;
+        if !self.service.send(Command::ResolveCollision {
+            id,
+            choice,
+            apply_to_all,
+        }) {
+            self.push_toast("Backend unavailable", ToastVariant::Error, cx);
+            return;
+        }
+        if apply_to_all {
+            self.pending_collisions.clear();
+            self.collision_apply_all = false;
+        } else {
+            self.pending_collisions.remove(0);
+            if self.pending_collisions.is_empty() {
+                self.collision_apply_all = false;
+            }
+        }
+    }
+
     /// Close the active connection and return to the welcome screen.
     pub fn disconnect(&mut self) {
         self.service.send(Command::Disconnect);
@@ -1313,6 +1370,8 @@ impl AppState {
         self.connecting_id = None;
         self.view = View::Welcome;
         self.transfers.clear();
+        self.pending_collisions.clear();
+        self.collision_apply_all = false;
         self.listing.clear();
         self.selected.clear();
         self.listing_loading = false;
@@ -1416,6 +1475,39 @@ impl AppState {
                     },
                     speed_bps: None,
                     error: None,
+                });
+            }
+            Event::TransferCollision {
+                id,
+                direction,
+                remote,
+                local,
+                existing_size,
+            } => {
+                // Mark the dock row parked, then queue the prompt.
+                let (name, path) = match direction {
+                    TransferDirection::Upload => (
+                        remote.file_name().unwrap_or("/").to_string(),
+                        remote.as_str().to_string(),
+                    ),
+                    TransferDirection::Download => {
+                        let name = std::path::Path::new(&local)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(local.as_str())
+                            .to_string();
+                        (name, local.clone())
+                    }
+                };
+                if let Some(vm) = self.transfers.iter_mut().find(|t| t.transfer.id == id) {
+                    vm.transfer.status = TransferStatus::AwaitingDecision;
+                }
+                self.pending_collisions.push(CollisionInfo {
+                    id,
+                    direction,
+                    name: name.into(),
+                    path: path.into(),
+                    existing_size,
                 });
             }
             Event::TransferStarted { id, total } => {
@@ -1540,6 +1632,8 @@ impl AppState {
             .update(cx, |input, cx| input.set_content("", cx));
         self.dock_open = true;
         self.transfers = Vec::new();
+        self.pending_collisions.clear();
+        self.collision_apply_all = false;
         self.reload_listing(cx);
     }
 
@@ -1713,10 +1807,12 @@ impl AppState {
         let mut counts = (self.transfers.len(), 0, 0, 0);
         for t in &self.transfers {
             match t.transfer.status {
-                TransferStatus::Running | TransferStatus::Queued => counts.1 += 1,
+                TransferStatus::Running
+                | TransferStatus::Queued
+                | TransferStatus::AwaitingDecision => counts.1 += 1,
                 TransferStatus::Completed => counts.2 += 1,
                 TransferStatus::Failed => counts.3 += 1,
-                TransferStatus::Cancelled => {}
+                TransferStatus::Cancelled | TransferStatus::Skipped => {}
             }
         }
         counts
@@ -1738,7 +1834,7 @@ impl AppState {
         self.transfers.retain(|t| {
             matches!(
                 t.transfer.status,
-                TransferStatus::Running | TransferStatus::Queued
+                TransferStatus::Running | TransferStatus::Queued | TransferStatus::AwaitingDecision
             )
         });
     }

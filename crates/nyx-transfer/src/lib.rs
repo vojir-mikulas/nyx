@@ -12,7 +12,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 
-use nyx_core::{RemotePath, TransferDirection, TransferId, TransferProgress};
+use nyx_core::{CollisionChoice, RemotePath, TransferDirection, TransferId, TransferProgress};
 
 /// What the service hands in to enqueue a transfer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +23,10 @@ pub struct TransferSpec {
     pub remote: RemotePath,
     /// The local-side path.
     pub local: PathBuf,
+    /// Pre-resolved collision policy. `None` means "ask the user when the
+    /// destination already exists"; a resolved choice (e.g. an "apply to all"
+    /// stamp) skips the prompt round-trip.
+    pub on_collision: Option<CollisionChoice>,
 }
 
 /// What [`TransferQueue::poll_start`] hands back when a queued transfer is
@@ -41,12 +45,25 @@ pub struct Started {
 /// The result of a [`TransferQueue::cancel`] request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CancelOutcome {
-    /// The id was still queued; it was dropped and will never start.
+    /// The id was still queued (or parked awaiting a decision); it was dropped
+    /// and will never start. No copy task ran for it.
     WasQueued,
     /// The id was running; its cancel flag was set (the copy winds down).
     WasRunning,
     /// The id is unknown (already finished, or never existed).
     Unknown,
+}
+
+/// The transfers a [`TransferQueue::resolve`] decision terminated outright (no
+/// copy ran), so the service can emit their terminal events. `Overwrite`-resolved
+/// transfers are *not* listed: they were re-queued and surface via the normal
+/// start path instead.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Resolution {
+    /// Transfers that end `Skipped` (the destination is left untouched).
+    pub skipped: Vec<TransferId>,
+    /// Transfers that end `Cancelled`.
+    pub cancelled: Vec<TransferId>,
 }
 
 /// An in-memory scheduler: a concurrency cap, a FIFO queue of pending specs and
@@ -58,8 +75,12 @@ pub struct TransferQueue {
     next_id: u64,
     /// Pending transfers, oldest first.
     queued: VecDeque<(TransferId, TransferSpec)>,
-    /// Running transfers, by id, with their shared progress handles.
-    running: HashMap<TransferId, TransferProgress>,
+    /// Running transfers, by id, with their spec and shared progress handle. The
+    /// spec is retained so a collision can [`park`](Self::park) the item.
+    running: HashMap<TransferId, (TransferSpec, TransferProgress)>,
+    /// Transfers parked at the pre-flight gate, awaiting a collision decision.
+    /// A parked item holds no running slot.
+    awaiting: HashMap<TransferId, TransferSpec>,
 }
 
 impl TransferQueue {
@@ -70,6 +91,7 @@ impl TransferQueue {
             next_id: 0,
             queued: VecDeque::new(),
             running: HashMap::new(),
+            awaiting: HashMap::new(),
         }
     }
 
@@ -83,14 +105,73 @@ impl TransferQueue {
 
     /// If a slot is free and a transfer is queued, promote the oldest one into a
     /// running slot and return its [`Started`] handle; otherwise `None`.
+    ///
+    /// "Running" here means "claimed a slot"; the service still runs the
+    /// pre-flight collision gate before any bytes move, and may [`park`](Self::park)
+    /// the item back out if the destination already exists.
     pub fn poll_start(&mut self) -> Option<Started> {
         if self.running.len() >= self.cap {
             return None;
         }
         let (id, spec) = self.queued.pop_front()?;
         let progress = TransferProgress::default();
-        self.running.insert(id, progress.clone());
+        self.running.insert(id, (spec.clone(), progress.clone()));
         Some(Started { id, spec, progress })
+    }
+
+    /// Move a running transfer to the `AwaitingDecision` state (the pre-flight
+    /// gate hit an existing destination), freeing its slot. Returns the parked
+    /// spec so the service can build the collision event; `None` if the id was
+    /// not running.
+    pub fn park(&mut self, id: TransferId) -> Option<TransferSpec> {
+        let (spec, _progress) = self.running.remove(&id)?;
+        self.awaiting.insert(id, spec.clone());
+        Some(spec)
+    }
+
+    /// Apply a collision decision. With `apply_to_all`, the same `choice` is
+    /// applied to **every** currently-parked transfer and stamped onto every
+    /// still-queued transfer (so they won't prompt when they reach the gate).
+    ///
+    /// `Overwrite` re-queues the parked item (with the policy resolved) so it
+    /// runs next; `Skip`/`Cancel` terminate it immediately — the returned
+    /// [`Resolution`] lists those for the service to announce.
+    pub fn resolve(
+        &mut self,
+        id: TransferId,
+        choice: CollisionChoice,
+        apply_to_all: bool,
+    ) -> Resolution {
+        let targets: Vec<TransferId> = if apply_to_all {
+            self.awaiting.keys().copied().collect()
+        } else {
+            vec![id]
+        };
+        let mut out = Resolution::default();
+        for tid in targets {
+            let Some(mut spec) = self.awaiting.remove(&tid) else {
+                continue;
+            };
+            match choice {
+                CollisionChoice::Overwrite => {
+                    spec.on_collision = Some(CollisionChoice::Overwrite);
+                    // Re-admit at the front so the resolved item runs next.
+                    self.queued.push_front((tid, spec));
+                }
+                CollisionChoice::Skip => out.skipped.push(tid),
+                CollisionChoice::Cancel => out.cancelled.push(tid),
+            }
+        }
+        if apply_to_all {
+            // Stamp still-queued items so a later collision resolves silently.
+            // (Don't overwrite an item we just re-admitted with its own policy.)
+            for (_, spec) in self.queued.iter_mut() {
+                if spec.on_collision.is_none() {
+                    spec.on_collision = Some(choice);
+                }
+            }
+        }
+        out
     }
 
     /// Drop a transfer from the running set (it reached a terminal state).
@@ -98,35 +179,44 @@ impl TransferQueue {
         self.running.remove(&id);
     }
 
-    /// Cancel a transfer by id. A queued transfer is dropped immediately; a
-    /// running one has its cancel flag set (the copy loop notices and winds
-    /// down, then the service `finish`es it through the normal terminal path).
+    /// Cancel a transfer by id. A queued or parked transfer is dropped
+    /// immediately (no task ran); a running one has its cancel flag set (the
+    /// copy loop notices and winds down, then the service `finish`es it through
+    /// the normal terminal path).
     pub fn cancel(&mut self, id: TransferId) -> CancelOutcome {
         if let Some(pos) = self.queued.iter().position(|(qid, _)| *qid == id) {
             self.queued.remove(pos);
             return CancelOutcome::WasQueued;
         }
-        if let Some(progress) = self.running.get(&id) {
+        if self.awaiting.remove(&id).is_some() {
+            return CancelOutcome::WasQueued;
+        }
+        if let Some((_, progress)) = self.running.get(&id) {
             progress.cancel();
             return CancelOutcome::WasRunning;
         }
         CancelOutcome::Unknown
     }
 
-    /// Cancel everything: flag every running transfer and drain the queue.
-    /// Returns the ids of the dropped queued transfers (the service emits a
-    /// terminal `Cancelled` event for each, since no task ever ran for them).
+    /// Cancel everything: flag every running transfer and drain the queued and
+    /// parked transfers. Returns the ids of the dropped queued/parked transfers
+    /// (the service emits a terminal `Cancelled` event for each, since no task
+    /// ever ran for them).
     pub fn cancel_all(&mut self) -> Vec<TransferId> {
-        for progress in self.running.values() {
+        for (_, progress) in self.running.values() {
             progress.cancel();
         }
-        self.queued.drain(..).map(|(id, _)| id).collect()
+        let mut dropped: Vec<TransferId> = self.queued.drain(..).map(|(id, _)| id).collect();
+        dropped.extend(self.awaiting.drain().map(|(id, _)| id));
+        dropped
     }
 
     /// Each running transfer's `(id, bytes transferred so far)`, for the
     /// service's progress ticker.
     pub fn running_progress(&self) -> impl Iterator<Item = (TransferId, u64)> + '_ {
-        self.running.iter().map(|(id, p)| (*id, p.transferred()))
+        self.running
+            .iter()
+            .map(|(id, (_, p))| (*id, p.transferred()))
     }
 }
 
@@ -139,6 +229,7 @@ mod tests {
             direction: TransferDirection::Download,
             remote: RemotePath::new(format!("/r/{n}")),
             local: PathBuf::from(format!("/l/{n}")),
+            on_collision: None,
         }
     }
 
@@ -223,6 +314,110 @@ mod tests {
             ids,
             vec![TransferId(0), TransferId(1), TransferId(2), TransferId(3)]
         );
+    }
+
+    #[test]
+    fn park_frees_the_slot_and_resolve_overwrite_runs_next() {
+        let mut q = TransferQueue::new(1);
+        let a = q.submit(spec(0));
+        let b = q.submit(spec(1));
+        // `a` claims the only slot; `b` waits.
+        let started_a = q.poll_start().unwrap();
+        assert_eq!(started_a.id, a);
+        assert!(q.poll_start().is_none());
+
+        // The gate parks `a` (its destination exists) — the slot frees and `b`
+        // can start while `a` awaits a decision.
+        assert!(q.park(a).is_some());
+        let started_b = q.poll_start().unwrap();
+        assert_eq!(started_b.id, b);
+
+        // Overwrite re-admits `a` at the front; once a slot frees it runs next,
+        // and its resolved policy is stamped.
+        let res = q.resolve(a, CollisionChoice::Overwrite, false);
+        assert_eq!(res, Resolution::default());
+        q.finish(b);
+        let restarted = q.poll_start().unwrap();
+        assert_eq!(restarted.id, a);
+        assert_eq!(
+            restarted.spec.on_collision,
+            Some(CollisionChoice::Overwrite)
+        );
+    }
+
+    #[test]
+    fn resolve_skip_and_cancel_terminate_without_running() {
+        let mut q = TransferQueue::new(2);
+        let a = q.submit(spec(0));
+        let b = q.submit(spec(1));
+        q.poll_start().unwrap();
+        q.poll_start().unwrap();
+        q.park(a);
+        q.park(b);
+
+        assert_eq!(
+            q.resolve(a, CollisionChoice::Skip, false),
+            Resolution {
+                skipped: vec![a],
+                cancelled: vec![],
+            }
+        );
+        assert_eq!(
+            q.resolve(b, CollisionChoice::Cancel, false),
+            Resolution {
+                skipped: vec![],
+                cancelled: vec![b],
+            }
+        );
+        // Both left the queue entirely; nothing runs.
+        assert!(q.poll_start().is_none());
+    }
+
+    #[test]
+    fn apply_to_all_stamps_parked_and_queued_items() {
+        let mut q = TransferQueue::new(2);
+        let a = q.submit(spec(0));
+        let b = q.submit(spec(1));
+        let c = q.submit(spec(2)); // stays queued (cap is 2)
+        q.poll_start().unwrap();
+        q.poll_start().unwrap();
+        q.park(a);
+        q.park(b);
+
+        // Skip-all: both parked items end Skipped in one decision…
+        let res = q.resolve(a, CollisionChoice::Skip, true);
+        assert_eq!(res.skipped.len(), 2);
+        assert!(res.skipped.contains(&a) && res.skipped.contains(&b));
+
+        // …and the still-queued `c` is stamped, so it won't prompt at the gate.
+        let started_c = q.poll_start().unwrap();
+        assert_eq!(started_c.id, c);
+        assert_eq!(started_c.spec.on_collision, Some(CollisionChoice::Skip));
+    }
+
+    #[test]
+    fn cancel_parked_drops_it() {
+        let mut q = TransferQueue::new(1);
+        let a = q.submit(spec(0));
+        q.poll_start().unwrap();
+        q.park(a);
+        assert_eq!(q.cancel(a), CancelOutcome::WasQueued);
+        assert_eq!(q.cancel(a), CancelOutcome::Unknown);
+    }
+
+    #[test]
+    fn cancel_all_drains_parked_too() {
+        let mut q = TransferQueue::new(2);
+        let a = q.submit(spec(0));
+        let b = q.submit(spec(1));
+        q.poll_start().unwrap();
+        q.poll_start().unwrap();
+        q.park(a);
+        let dropped = q.cancel_all();
+        // `a` was parked, `b` still running (flagged, not dropped here).
+        assert_eq!(dropped, vec![a]);
+        assert!(q.poll_start().is_none());
+        let _ = b;
     }
 
     #[test]

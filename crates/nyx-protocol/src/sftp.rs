@@ -146,6 +146,19 @@ impl RemoteClient for SftpClient {
         Ok(RemotePath::new(dir))
     }
 
+    async fn exists(&self, path: &RemotePath) -> Result<bool> {
+        match self.sftp()?.metadata(path.as_str()).await {
+            Ok(_) => Ok(true),
+            // A missing file is the expected "no collision" answer, not an error.
+            Err(russh_sftp::client::error::Error::Status(status))
+                if status.status_code == StatusCode::NoSuchFile =>
+            {
+                Ok(false)
+            }
+            Err(err) => Err(map_sftp_err(err)),
+        }
+    }
+
     async fn list_dir(&self, path: &RemotePath) -> Result<Vec<RemoteEntry>> {
         let dir = self
             .sftp()?

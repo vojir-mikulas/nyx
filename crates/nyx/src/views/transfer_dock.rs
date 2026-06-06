@@ -140,12 +140,15 @@ fn transfer_row(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
     let (status_color, status_label) = match status {
         TransferStatus::Running => (theme.blue, format!("{pct}%")),
         TransferStatus::Queued => (theme.text_faint, "Queued".to_string()),
+        TransferStatus::AwaitingDecision => (theme.yellow, "Conflict".to_string()),
         TransferStatus::Completed => (theme.green, "Completed".to_string()),
         TransferStatus::Failed => (theme.red, "Failed".to_string()),
         TransferStatus::Cancelled => (theme.text_dim, "Cancelled".to_string()),
+        TransferStatus::Skipped => (theme.text_dim, "Skipped".to_string()),
     };
 
     let show_bar = matches!(status, TransferStatus::Running | TransferStatus::Queued);
+    let show_cancel = show_bar || status == TransferStatus::AwaitingDecision;
     let path_or_error = if status == TransferStatus::Failed {
         (
             t.error.clone().unwrap_or_else(|| "Transfer failed".into()),
@@ -242,7 +245,7 @@ fn transfer_row(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
                         )
                         .child(status_label),
                 )
-                .when(show_bar, |this| this.child(cancel_button(t, cx)))
+                .when(show_cancel, |this| this.child(cancel_button(t, cx)))
                 .when(status == TransferStatus::Failed, |this| {
                     this.child(retry_button(t, cx))
                 }),

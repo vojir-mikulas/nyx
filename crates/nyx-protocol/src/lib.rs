@@ -39,6 +39,11 @@ pub trait RemoteClient: Send + Sync {
     /// List the entries of a remote directory.
     async fn list_dir(&self, path: &RemotePath) -> Result<Vec<RemoteEntry>>;
 
+    /// Whether a remote path already exists. Used by the transfer pre-flight gate
+    /// to detect an upload that would overwrite an existing destination. A missing
+    /// path is `Ok(false)`; only a real error (permissions, transport) is `Err`.
+    async fn exists(&self, path: &RemotePath) -> Result<bool>;
+
     /// Download a remote file to a local path.
     ///
     /// `progress` is bumped per chunk and checked between chunks: a requested

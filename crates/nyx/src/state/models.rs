@@ -271,7 +271,12 @@ impl DockTab {
         match self {
             DockTab::All => true,
             DockTab::Active => {
-                matches!(status, TransferStatus::Running | TransferStatus::Queued)
+                matches!(
+                    status,
+                    TransferStatus::Running
+                        | TransferStatus::Queued
+                        | TransferStatus::AwaitingDecision
+                )
             }
             DockTab::Completed => status == TransferStatus::Completed,
             DockTab::Failed => status == TransferStatus::Failed,
