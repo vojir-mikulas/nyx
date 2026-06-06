@@ -457,10 +457,10 @@ impl Render for Gallery {
                     .child(format!("Theme: {theme_name}  (click to toggle)")),
             )
             .on_click(cx.listener(|_, _, _, cx| {
-                let next = if cx.theme().name == "One Dark" {
-                    Theme::github_dark()
-                } else {
-                    Theme::one_dark()
+                let next = match cx.theme().name {
+                    "One Dark" => Theme::github_dark(),
+                    "GitHub Dark" => Theme::ayu_dark(),
+                    _ => Theme::one_dark(),
                 };
                 cx.set_global(next);
                 cx.notify();

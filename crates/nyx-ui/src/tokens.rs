@@ -94,4 +94,46 @@ impl Theme {
             radius_sm: px(3.0),
         }
     }
+
+    /// **Ayu Dark** — warm-gold accent on near-black surfaces.
+    pub fn ayu_dark() -> Self {
+        Theme {
+            name: "Ayu Dark",
+
+            bg_app: h(0x0b0e14),
+            bg_panel: h(0x0d1017),
+            bg_panel_2: h(0x090c12),
+            bg_elevated: h(0x11151c),
+            bg_bar: h(0x0d1017),
+            bg_hover: h(0x131721),
+            bg_active: h(0x1a1f29),
+            bg_selected: h(0x1b3a5b),
+            bg_input: h(0x090c12),
+
+            border: h(0x1d242c),
+            border_soft: h(0x131721),
+            border_strong: h(0x273747),
+
+            text: h(0xbfbdb6),
+            text_muted: h(0x808591),
+            text_faint: h(0x565b66),
+            text_dim: h(0x4d5566),
+
+            accent: h(0xe6b450),
+            accent_hover: h(0xffd173),
+            accent_ghost: h(0xe6b450).opacity(0.16),
+            on_accent: h(0x0b0e14),
+
+            green: h(0xaad94c),
+            red: h(0xd95757),
+            blue: h(0x59c2ff),
+            purple: h(0xd2a6ff),
+            yellow: h(0xffd173),
+            orange: h(0xff8f40),
+
+            row_height: px(26.0),
+            radius: px(5.0),
+            radius_sm: px(3.0),
+        }
+    }
 }

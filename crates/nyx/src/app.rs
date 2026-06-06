@@ -635,7 +635,11 @@ fn tweaks_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElemen
     let theme = cx.theme().clone();
     let density_ix = state.density.index();
     let show_perms = state.show_perms;
-    let theme_ix = if cx.theme().name == "One Dark" { 0 } else { 1 };
+    let theme_ix = match cx.theme().name {
+        "One Dark" => 0,
+        "GitHub Dark" => 1,
+        _ => 2,
+    };
     let view = cx.entity();
 
     Modal::new("tweaks")
@@ -660,14 +664,15 @@ fn tweaks_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElemen
                     Segmented::new("tw-theme")
                         .segment("One Dark")
                         .segment("GitHub Dark")
+                        .segment("Ayu Dark")
                         .selected(theme_ix)
                         .on_select({
                             let view = view.clone();
                             move |ix, _window, cx| {
-                                let next = if ix == 0 {
-                                    Theme::one_dark()
-                                } else {
-                                    Theme::github_dark()
+                                let next = match ix {
+                                    0 => Theme::one_dark(),
+                                    1 => Theme::github_dark(),
+                                    _ => Theme::ayu_dark(),
                                 };
                                 cx.set_global(next);
                                 view.update(cx, |_, cx| cx.notify());
