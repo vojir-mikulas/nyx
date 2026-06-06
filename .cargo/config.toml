@@ -1,0 +1,12 @@
+# Cargo configuration for Nyx.
+
+# On macOS, run locally-built binaries through scripts/sign-dev.sh, which signs
+# them with a stable code-signing identity before launching. This keeps the
+# macOS Keychain "Always Allow" grant from being invalidated on every rebuild.
+# See scripts/sign-dev.sh for the one-time cert setup. No-op (warns once) if the
+# identity isn't present, so it's safe for other contributors.
+[target.aarch64-apple-darwin]
+runner = "scripts/sign-dev.sh"
+
+[target.x86_64-apple-darwin]
+runner = "scripts/sign-dev.sh"

@@ -31,6 +31,8 @@ struct Gallery {
     sort: Option<(usize, bool)>,
     toggle_on: bool,
     segment: usize,
+    select: usize,
+    select_open: bool,
     /// The right-clicked row + cursor position for the secondary-click table demo.
     row_menu: Option<(usize, Point<Pixels>)>,
 }
@@ -47,6 +49,8 @@ impl Gallery {
             sort: Some((0, true)),
             toggle_on: true,
             segment: 1,
+            select: 0,
+            select_open: false,
             row_menu: None,
         }
     }
@@ -204,6 +208,33 @@ impl Gallery {
                     cx.notify();
                 });
             })
+    }
+
+    fn select(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity();
+        let toggle_view = view.clone();
+        // Constrain the width so the floating list has a sensible anchor.
+        div().w(gpui::px(220.)).child(
+            Select::new("sel")
+                .option("One Dark")
+                .option("GitHub Dark")
+                .option("Ayu Dark")
+                .selected(self.select)
+                .open(self.select_open)
+                .on_toggle(move |_window, cx| {
+                    toggle_view.update(cx, |this, cx| {
+                        this.select_open = !this.select_open;
+                        cx.notify();
+                    });
+                })
+                .on_select(move |ix, _window, cx| {
+                    view.update(cx, |this, cx| {
+                        this.select = ix;
+                        this.select_open = false;
+                        cx.notify();
+                    });
+                }),
+        )
     }
 
     fn context_menu(&self) -> impl IntoElement {
@@ -474,6 +505,7 @@ impl Render for Gallery {
         let tabs = self.tabs(cx);
         let toggles = self.toggles(cx);
         let segmented = self.segmented(cx);
+        let select = self.select(cx);
         let context_menu = self.context_menu();
         let toasts = self.toasts();
         let tooltip = self.tooltip_demo();
@@ -496,6 +528,7 @@ impl Render for Gallery {
             .child(self.section("Tabs", tabs, cx))
             .child(self.section("Toggle", toggles, cx))
             .child(self.section("Segmented", segmented, cx))
+            .child(self.section("Select", select, cx))
             .child(self.section("Context menu", context_menu, cx))
             .child(self.section("Toasts", toasts, cx))
             .child(self.section("Tooltip", tooltip, cx))

@@ -6,8 +6,8 @@ use gpui::{
     actions, anchored, deferred, div, prelude::*, px, Context, FontWeight, MouseButton, Window,
 };
 use nyx_ui::{
-    ActiveTheme, Button, ButtonVariant, ContextMenu, ContextMenuItem, Modal, Segmented, Theme,
-    Toast, Toggle,
+    ActiveTheme, Button, ButtonVariant, ContextMenu, ContextMenuItem, Modal, Segmented, Select,
+    Theme, Toast, Toggle,
 };
 
 use crate::assets::{FONT_MONO, FONT_UI};
@@ -650,6 +650,7 @@ fn tweaks_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElemen
             move |_window, cx| {
                 view.update(cx, |this, cx| {
                     this.tweaks_open = false;
+                    this.theme_select_open = false;
                     cx.notify();
                 });
             }
@@ -661,11 +662,21 @@ fn tweaks_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElemen
                 .gap_4()
                 .child(field(
                     "Color scheme",
-                    Segmented::new("tw-theme")
-                        .segment("One Dark")
-                        .segment("GitHub Dark")
-                        .segment("Ayu Dark")
+                    Select::new("tw-theme")
+                        .option("One Dark")
+                        .option("GitHub Dark")
+                        .option("Ayu Dark")
                         .selected(theme_ix)
+                        .open(state.theme_select_open)
+                        .on_toggle({
+                            let view = view.clone();
+                            move |_window, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.theme_select_open = !this.theme_select_open;
+                                    cx.notify();
+                                });
+                            }
+                        })
                         .on_select({
                             let view = view.clone();
                             move |ix, _window, cx| {
@@ -676,6 +687,7 @@ fn tweaks_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElemen
                                 };
                                 cx.set_global(next);
                                 view.update(cx, |this, cx| {
+                                    this.theme_select_open = false;
                                     this.save_settings(cx);
                                     cx.notify();
                                 });
@@ -732,6 +744,7 @@ fn tweaks_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElemen
                     .variant(ButtonVariant::Primary)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.tweaks_open = false;
+                        this.theme_select_open = false;
                         cx.notify();
                     })),
             ),

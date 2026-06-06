@@ -57,6 +57,16 @@ fn main() {
         )
         .expect("failed to open Nyx window");
 
+        // Single-window app: closing the last window quits the process. Without
+        // this, GPUI keeps its macOS event loop (and the backend thread) running
+        // after the window is gone, so the app would linger with no UI.
+        cx.on_window_closed(|cx, _| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
+
         cx.activate(true);
     });
 }

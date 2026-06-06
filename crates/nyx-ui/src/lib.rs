@@ -33,6 +33,7 @@ pub use components::icon_button::{IconButton, IconButtonSize};
 pub use components::modal::Modal;
 pub use components::progress_bar::ProgressBar;
 pub use components::segmented::Segmented;
+pub use components::select::Select;
 pub use components::table::{Column, ColumnAlign, ColumnWidth, Table};
 pub use components::tabs::Tabs;
 pub use components::text_input::{TextInput, TextInputEvent};
@@ -51,6 +52,7 @@ pub mod prelude {
     pub use crate::components::modal::Modal;
     pub use crate::components::progress_bar::ProgressBar;
     pub use crate::components::segmented::Segmented;
+    pub use crate::components::select::Select;
     pub use crate::components::table::{Column, ColumnAlign, ColumnWidth, Table};
     pub use crate::components::tabs::Tabs;
     pub use crate::components::text_input::{TextInput, TextInputEvent};

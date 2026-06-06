@@ -115,10 +115,20 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Ad-hoc sign so the bundle launches without "is damaged" on the build machine.
-# (Not a Developer ID signature — fine for local use, not for distribution.)
-codesign --force --deep --sign - "$APP_DIR" >/dev/null 2>&1 || \
-  echo "    (codesign skipped — bundle is unsigned)"
+# Sign the bundle. A *stable* identity (NYX_SIGN_IDENTITY, default "Nyx Dev")
+# keeps the macOS Keychain "Always Allow" grant valid across rebuilds; we fall
+# back to an ad-hoc signature so the bundle still launches without "is damaged".
+# (Neither is a Developer ID signature — fine for local use, not distribution.)
+SIGN_IDENTITY="${NYX_SIGN_IDENTITY:-Nyx Dev}"
+if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$SIGN_IDENTITY"; then
+  echo "==> Signing with '$SIGN_IDENTITY' (stable identity — Keychain grant persists)"
+  codesign --force --deep --sign "$SIGN_IDENTITY" --identifier "$BUNDLE_ID" "$APP_DIR" >/dev/null 2>&1 || \
+    echo "    (codesign with '$SIGN_IDENTITY' failed — bundle is unsigned)"
+else
+  echo "==> Signing ad-hoc ('$SIGN_IDENTITY' not found — Keychain will re-prompt per build)"
+  codesign --force --deep --sign - "$APP_DIR" >/dev/null 2>&1 || \
+    echo "    (codesign skipped — bundle is unsigned)"
+fi
 
 # --- 4. Build the .dmg --------------------------------------------------------
 echo "==> Creating $DMG_PATH"

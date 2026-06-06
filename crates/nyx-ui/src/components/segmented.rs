@@ -1,28 +1,12 @@
-//! `Segmented` — a single-select segmented control (a row of mutually-exclusive
-//! options sharing one recessed track).
-//!
-//! Stateless: the caller owns the selected index and is told about clicks via
-//! [`on_select`](Segmented::on_select). Generic — segments carry plain labels,
-//! no domain types. Used for the protocol picker (M3 connection editor) and the
-//! row-density picker (tweaks).
-//!
-//! ```ignore
-//! Segmented::new("density")
-//!     .segment("Compact")
-//!     .segment("Comfortable")
-//!     .segment("Spacious")
-//!     .selected(self.density_ix)
-//!     .on_select(cx.listener(|this, ix: &usize, _, cx| { this.density_ix = *ix; cx.notify(); }))
-//! ```
+//! A single-select segmented control. Stateless: the caller owns the selected
+//! index and is notified of clicks via [`on_select`](Segmented::on_select).
 
 use gpui::{div, prelude::*, App, SharedString, Window};
 
 use crate::theme::ActiveTheme;
 
-/// A handler invoked with the clicked segment index.
 type SelectHandler = Box<dyn Fn(usize, &mut Window, &mut App) + 'static>;
 
-/// A single-select segmented control.
 #[derive(IntoElement)]
 pub struct Segmented {
     id: SharedString,
@@ -32,7 +16,6 @@ pub struct Segmented {
 }
 
 impl Segmented {
-    /// Create an empty control with a stable `id`.
     pub fn new(id: impl Into<SharedString>) -> Self {
         Self {
             id: id.into(),
@@ -42,19 +25,16 @@ impl Segmented {
         }
     }
 
-    /// Append a segment with the given `label`.
     pub fn segment(mut self, label: impl Into<SharedString>) -> Self {
         self.segments.push(label.into());
         self
     }
 
-    /// Set the selected segment index.
     pub fn selected(mut self, index: usize) -> Self {
         self.selected = index;
         self
     }
 
-    /// Handler invoked with the index of a clicked segment.
     pub fn on_select(mut self, handler: impl Fn(usize, &mut Window, &mut App) + 'static) -> Self {
         self.on_select = Some(Box::new(handler));
         self

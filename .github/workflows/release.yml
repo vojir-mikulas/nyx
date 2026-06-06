@@ -1,0 +1,63 @@
+name: Release
+
+# Build distributable packages on a version tag and attach them to a GitHub
+# Release. Tag a release with e.g. `git tag v0.1.0 && git push origin v0.1.0`.
+on:
+  push:
+    tags: ['v*']
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+# Needed for softprops/action-gh-release to create the release + upload assets.
+permissions:
+  contents: write
+
+jobs:
+  # macOS: .app bundle inside a .dmg (universal arm64 + x86_64).
+  macos:
+    name: Package macOS (.dmg)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Toolchain (channel + components) is pinned by rust-toolchain.toml.
+      - name: Install native deps (cmake for GPUI)
+        run: brew list cmake >/dev/null 2>&1 || brew install cmake
+
+      # GPUI's git dep tree is large; cache it aggressively.
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build .app + .dmg
+        run: scripts/bundle-mac.sh --universal
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/macos/*.dmg
+
+  # Windows: a .zip containing Nyx.exe.
+  #
+  # NOTE: this job will fail until the compile-level Windows changes land
+  # (cfg-gated keyring backend + per-target GPUI features). A failure here does
+  # NOT remove the macOS .dmg already attached above — the jobs upload to the
+  # same release independently.
+  windows:
+    name: Package Windows (.zip)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build .zip
+        shell: pwsh
+        run: scripts/bundle-windows.ps1
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/windows/*.zip

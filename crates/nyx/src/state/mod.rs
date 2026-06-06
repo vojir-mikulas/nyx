@@ -223,6 +223,8 @@ pub struct AppState {
     pub browser_focus: FocusHandle,
     /// Whether the tweaks modal is open.
     pub tweaks_open: bool,
+    /// Whether the color-scheme dropdown inside the tweaks modal is open.
+    pub theme_select_open: bool,
     /// File-row density (exercises `Table::row_height`).
     pub density: Density,
     /// Whether the permissions column is shown.
@@ -352,6 +354,7 @@ impl AppState {
             recent_collapsed: false,
             browser_focus,
             tweaks_open: false,
+            theme_select_open: false,
             density,
             show_perms,
             toast: None,

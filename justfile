@@ -39,3 +39,7 @@ check: fmt lint test
 # Build a macOS .app + .dmg (pass `--universal` for a fat binary).
 bundle-mac *ARGS:
     scripts/bundle-mac.sh {{ARGS}}
+
+# Build a Windows .zip (run on Windows; needs PowerShell + the MSVC toolchain).
+bundle-windows:
+    pwsh scripts/bundle-windows.ps1
