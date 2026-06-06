@@ -40,6 +40,7 @@ impl Theme {
 
             accent: h(0x5d80e6),
             accent_hover: h(0x6e8eea),
+            accent_ghost: h(0x5d80e6).opacity(0.14),
             on_accent: h(0xf3f6ff),
 
             green: h(0x98c379),
@@ -50,6 +51,7 @@ impl Theme {
 
             row_height: px(26.0),
             radius: px(5.0),
+            radius_sm: px(3.0),
         }
     }
 
@@ -79,6 +81,7 @@ impl Theme {
 
             accent: h(0x2f81f7),
             accent_hover: h(0x4895ff),
+            accent_ghost: h(0x2f81f7).opacity(0.15),
             on_accent: h(0xffffff),
 
             green: h(0x3fb950),
@@ -89,6 +92,7 @@ impl Theme {
 
             row_height: px(26.0),
             radius: px(5.0),
+            radius_sm: px(3.0),
         }
     }
 }

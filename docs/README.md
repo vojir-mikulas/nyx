@@ -20,7 +20,9 @@ Sequenced implementation plans live in [`plans/`](plans/):
 - [`plans/plan-01-project-init.md`](plans/plan-01-project-init.md) — workspace
   skeleton, GPUI pin, "hello window", crate contracts, CI, AI-dev setup.
 - [`plans/plan-02-nyx-ui-flint.md`](plans/plan-02-nyx-ui-flint.md) — the
-  `nyx-ui` component library, built to be extracted as **Flint**.
+  `nyx-ui` component library, built to be extracted as **Flint**. Includes
+  **theming v2**: file-authored, hot-reloadable, runtime-switchable themes and a
+  forward path to data-only theme plugins.
 
 ## Visual reference
 

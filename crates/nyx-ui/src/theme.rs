@@ -62,6 +62,8 @@ pub struct Theme {
     pub accent: Hsla,
     /// Accent hover state.
     pub accent_hover: Hsla,
+    /// Translucent accent — focus-ring glow, ghost-accent surfaces.
+    pub accent_ghost: Hsla,
     /// Foreground used on top of `accent`.
     pub on_accent: Hsla,
 
@@ -82,6 +84,8 @@ pub struct Theme {
     pub row_height: Pixels,
     /// Default corner radius.
     pub radius: Pixels,
+    /// Small corner radius (chips, icon buttons, menu items).
+    pub radius_sm: Pixels,
 }
 
 impl Global for Theme {}

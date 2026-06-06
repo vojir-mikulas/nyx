@@ -12,6 +12,8 @@ authors.workspace = true
 # component library that happens to live in this repo today (see plan-02).
 [dependencies]
 gpui.workspace = true
+# Grapheme-aware cursor movement in TextInput (same crate GPUI's text uses).
+unicode-segmentation = "1"
 
 # Dev-only: the gallery example needs `application()` to open a window. This is a
 # dev-dependency, so the *library* still depends on `gpui` alone.

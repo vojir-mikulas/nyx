@@ -7,7 +7,7 @@
 //! These compose common token combinations so views read declaratively
 //! (`div().panel(cx)`) instead of repeating `bg`/`border` token lookups.
 
-use gpui::{App, Styled};
+use gpui::{px, App, BoxShadow, Styled};
 
 use crate::theme::ActiveTheme;
 
@@ -32,9 +32,16 @@ pub trait StyledExt: Styled + Sized {
         self.h(cx.theme().row_height)
     }
 
-    /// Accent focus ring (accent-colored border).
+    /// Accent focus ring: accent border + a soft 2px accent-ghost glow,
+    /// mirroring the design's `box-shadow: 0 0 0 2px var(--accent-ghost)`.
     fn focus_ring(self, cx: &App) -> Self {
-        self.border_1().border_color(cx.theme().accent)
+        self.border_color(cx.theme().accent).shadow(vec![BoxShadow {
+            color: cx.theme().accent_ghost,
+            offset: gpui::point(px(0.), px(0.)),
+            blur_radius: px(0.),
+            spread_radius: px(2.),
+            inset: false,
+        }])
     }
 }
 
