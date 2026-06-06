@@ -19,16 +19,17 @@
 //!     .row_count(entries.len())
 //!     .selected(self.selected)
 //!     .sort(Some((1, false)))
-//!     .on_select(cx.listener(|this, ix: &usize, _, cx| { this.selected = Some(*ix); cx.notify() }))
+//!     .on_select(|ix, _event, _window, _cx| { /* update selection */ })
 //!     .render_row(move |ix, _window, _cx| vec![
 //!         div().child(name_of(ix)).into_any_element(),
 //!         div().child(size_of(ix)).into_any_element(),
 //!     ])
 //! ```
 
+use std::collections::HashSet;
 use std::rc::Rc;
 
-use gpui::{div, prelude::*, uniform_list, App, Pixels, SharedString, Styled, Window};
+use gpui::{div, prelude::*, uniform_list, App, ClickEvent, Pixels, SharedString, Styled, Window};
 
 use crate::theme::ActiveTheme;
 
@@ -111,6 +112,8 @@ fn cell_layout<E: Styled>(el: E, column: &Column, align: ColumnAlign) -> E {
 
 /// A handler invoked with a row or column index.
 type IndexHandler = Box<dyn Fn(usize, &mut Window, &mut App) + 'static>;
+/// A row-click handler that also receives the originating click (for modifiers).
+type RowClickHandler = Box<dyn Fn(usize, &ClickEvent, &mut Window, &mut App) + 'static>;
 /// Builds the cells (one [`AnyElement`] per column) for a given row.
 type RowRenderer = Rc<dyn Fn(usize, &mut Window, &mut App) -> Vec<gpui::AnyElement> + 'static>;
 
@@ -122,8 +125,10 @@ pub struct Table {
     row_count: usize,
     row_height: Option<Pixels>,
     selected: Option<usize>,
+    selected_set: Option<Rc<HashSet<usize>>>,
     sort: Option<(usize, bool)>,
-    on_select: Option<Rc<IndexHandler>>,
+    on_select: Option<Rc<RowClickHandler>>,
+    on_activate: Option<Rc<IndexHandler>>,
     on_sort: Option<Rc<IndexHandler>>,
     render_row: Option<RowRenderer>,
 }
@@ -137,8 +142,10 @@ impl Table {
             row_count: 0,
             row_height: None,
             selected: None,
+            selected_set: None,
             sort: None,
             on_select: None,
+            on_activate: None,
             on_sort: None,
             render_row: None,
         }
@@ -162,15 +169,36 @@ impl Table {
         self
     }
 
+    /// Mark a set of selected rows (multi-selection). A row is highlighted when
+    /// it is in this set *or* equals [`selected`](Self::selected). The two APIs
+    /// compose so single- and multi-selection callers share one component.
+    pub fn selected_set(mut self, selected: HashSet<usize>) -> Self {
+        self.selected_set = Some(Rc::new(selected));
+        self
+    }
+
     /// Set the active sort as `(column_index, ascending)`, to draw the caret.
     pub fn sort(mut self, sort: Option<(usize, bool)>) -> Self {
         self.sort = sort;
         self
     }
 
-    /// Handler invoked with the index of a clicked row.
-    pub fn on_select(mut self, handler: impl Fn(usize, &mut Window, &mut App) + 'static) -> Self {
+    /// Handler invoked when a row is single-clicked, with the row index and the
+    /// originating [`ClickEvent`] (so the owner can read modifiers for
+    /// cmd/ctrl-click multi-selection).
+    pub fn on_select(
+        mut self,
+        handler: impl Fn(usize, &ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
         self.on_select = Some(Rc::new(Box::new(handler)));
+        self
+    }
+
+    /// Handler invoked with the index of a double-clicked (activated) row —
+    /// e.g. opening a directory. A double-click does not also fire
+    /// [`on_select`](Self::on_select).
+    pub fn on_activate(mut self, handler: impl Fn(usize, &mut Window, &mut App) + 'static) -> Self {
+        self.on_activate = Some(Rc::new(Box::new(handler)));
         self
     }
 
@@ -252,7 +280,9 @@ impl RenderOnce for Table {
         let columns_for_rows = columns.clone();
         let render_row = self.render_row.clone();
         let on_select = self.on_select.clone();
+        let on_activate = self.on_activate.clone();
         let selected = self.selected;
+        let selected_set = self.selected_set.clone();
         let row_count = self.row_count;
 
         // Token snapshot so the `'static` row closure doesn't borrow `cx`.
@@ -263,7 +293,8 @@ impl RenderOnce for Table {
         let list = uniform_list("table-rows", row_count, move |range, window, cx| {
             let mut rows = Vec::with_capacity(range.len());
             for ix in range {
-                let is_selected = selected == Some(ix);
+                let is_selected =
+                    selected == Some(ix) || selected_set.as_ref().is_some_and(|s| s.contains(&ix));
                 let cells = render_row
                     .as_ref()
                     .map(|r| r(ix, window, cx))
@@ -285,6 +316,8 @@ impl RenderOnce for Table {
                 });
 
                 let on_select = on_select.clone();
+                let on_activate = on_activate.clone();
+                let clickable = on_select.is_some() || on_activate.is_some();
                 rows.push(
                     div()
                         .id(ix)
@@ -294,9 +327,19 @@ impl RenderOnce for Table {
                         .text_color(text)
                         .when(is_selected, |this| this.bg(bg_selected))
                         .when(!is_selected, |this| this.hover(move |s| s.bg(bg_hover)))
-                        .when_some(on_select, |this, on_select| {
-                            this.cursor_pointer()
-                                .on_click(move |_, window, cx| on_select(ix, window, cx))
+                        .when(clickable, |this| this.cursor_pointer())
+                        .when(clickable, |this| {
+                            this.on_click(move |event, window, cx| {
+                                if event.click_count() >= 2 {
+                                    if let Some(on_activate) = on_activate.as_ref() {
+                                        on_activate(ix, window, cx);
+                                        return;
+                                    }
+                                }
+                                if let Some(on_select) = on_select.as_ref() {
+                                    on_select(ix, event, window, cx);
+                                }
+                            })
                         })
                         .children(laid_out),
                 );

@@ -18,9 +18,11 @@ back here.
 Sequenced implementation plans live in [`plans/`](plans/); completed ones move
 to [`plans/done/`](plans/done/).
 
-- [`plans/plan-03-mvp.md`](plans/plan-03-mvp.md) — **active.** The MVP (SFTP V1):
-  app shell → connect+list → profiles/keyring → file ops → live transfer queue →
-  polish.
+- [`plans/mvp-master-plan.md`](plans/mvp-master-plan.md) — **active.** The MVP
+  (SFTP V1): app shell → connect+list → profiles/keyring → file ops → live
+  transfer queue → polish.
+  - [`plans/mvp-m1-app-shell.md`](plans/mvp-m1-app-shell.md) — detailed breakdown
+    of **M1** (app shell, UI only, in-memory data).
 - [`plans/done/plan-01-project-init.md`](plans/done/plan-01-project-init.md) —
   ✅ workspace skeleton, GPUI pin, "hello window", crate contracts, CI, AI-dev setup.
 - [`plans/done/plan-02-nyx-ui-flint.md`](plans/done/plan-02-nyx-ui-flint.md) —

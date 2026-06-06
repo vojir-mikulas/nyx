@@ -1,0 +1,97 @@
+// Copyright 2026 vojir-mikulas
+// SPDX-License-Identifier: Apache-2.0
+
+//! `Toggle` — a binary on/off switch (settings, feature flags).
+//!
+//! Stateless: the caller owns the boolean and is told about flips via
+//! [`on_change`](Toggle::on_change). The track fills with `accent` when on and
+//! shows a neutral surface when off; the knob slides between the two ends.
+//!
+//! ```ignore
+//! Toggle::new("show-perms", self.show_perms)
+//!     .on_change(cx.listener(|this, on: &bool, _, cx| { this.show_perms = *on; cx.notify(); }))
+//! ```
+
+use gpui::{div, prelude::*, App, ElementId, Window};
+
+use crate::theme::ActiveTheme;
+
+/// A handler invoked with the new on/off value when the switch is clicked.
+type ChangeHandler = Box<dyn Fn(&bool, &mut Window, &mut App) + 'static>;
+
+/// A binary on/off switch.
+#[derive(IntoElement)]
+pub struct Toggle {
+    id: ElementId,
+    checked: bool,
+    disabled: bool,
+    on_change: Option<ChangeHandler>,
+}
+
+impl Toggle {
+    /// Create a switch with a stable `id` and its current `checked` state.
+    pub fn new(id: impl Into<ElementId>, checked: bool) -> Self {
+        Self {
+            id: id.into(),
+            checked,
+            disabled: false,
+            on_change: None,
+        }
+    }
+
+    /// Mark the switch disabled (dimmed, no hover, no click).
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    /// Attach a handler called with the toggled-to value.
+    pub fn on_change(mut self, handler: impl Fn(&bool, &mut Window, &mut App) + 'static) -> Self {
+        self.on_change = Some(Box::new(handler));
+        self
+    }
+}
+
+impl RenderOnce for Toggle {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.theme();
+        let checked = self.checked;
+        let track_bg = if checked {
+            theme.accent
+        } else {
+            theme.bg_active
+        };
+        let knob = div()
+            .absolute()
+            .top(gpui::px(2.))
+            .size(gpui::px(14.))
+            .rounded_full()
+            .bg(if checked {
+                theme.on_accent
+            } else {
+                theme.text_muted
+            })
+            .when(checked, |this| this.right(gpui::px(2.)))
+            .when(!checked, |this| this.left(gpui::px(2.)));
+
+        let base = div()
+            .id(self.id)
+            .relative()
+            .w(gpui::px(34.))
+            .h(gpui::px(18.))
+            .rounded_full()
+            .bg(track_bg)
+            .border_1()
+            .border_color(if checked { theme.accent } else { theme.border })
+            .child(knob);
+
+        let next = !checked;
+        match (self.disabled, self.on_change) {
+            (false, Some(handler)) => base
+                .cursor_pointer()
+                .on_click(move |_, window, cx| handler(&next, window, cx)),
+            (false, None) => base.cursor_pointer(),
+            (true, _) => base.opacity(0.5),
+        }
+    }
+}

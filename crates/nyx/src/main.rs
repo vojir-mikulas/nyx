@@ -3,30 +3,34 @@
 
 //! The Nyx application binary.
 //!
-//! For now this is "hello window": it installs the One Dark theme global and
-//! opens an empty, themed GPUI window. The real app shell (sidebar, browser,
-//! transfer dock) is built out in later plans on top of `nyx-ui` components.
+//! M1 assembles the full app shell — sidebar, welcome / connection manager,
+//! file browser, transfer dock and status bar — driven entirely by in-memory
+//! fixtures (no backend, no network, no disk beyond the embedded font/icon
+//! assets). The single root [`AppState`] entity owns all state and interaction
+//! logic; see `docs/plans/mvp-m1-app-shell.md`.
 
-use gpui::{
-    div, prelude::*, App, Bounds, Context, TitlebarOptions, Window, WindowBounds, WindowOptions,
-};
+mod app;
+mod assets;
+mod icon;
+mod state;
+mod views;
+
+use gpui::{prelude::*, App, Bounds, TitlebarOptions, WindowBounds, WindowOptions};
 use gpui_platform::application;
 use nyx_ui::prelude::*;
 
-/// The root view. Currently just paints the app background with the active theme.
-struct Nyx;
-
-impl Render for Nyx {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().bg(cx.theme().bg_app)
-    }
-}
+use crate::assets::Assets;
+use crate::state::AppState;
 
 fn main() {
-    application().run(|cx: &mut App| {
+    application().with_assets(Assets).run(|cx: &mut App| {
         cx.set_global(Theme::one_dark());
+        if let Err(err) = Assets::load_fonts(cx) {
+            eprintln!("warning: failed to load vendored fonts: {err}");
+        }
+        TextInput::bind_keys(cx);
 
-        let bounds = Bounds::centered(None, gpui::size(gpui::px(1000.0), gpui::px(680.0)), cx);
+        let bounds = Bounds::centered(None, gpui::size(gpui::px(1100.0), gpui::px(720.0)), cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -36,7 +40,7 @@ fn main() {
                 }),
                 ..Default::default()
             },
-            |_, cx| cx.new(|_| Nyx),
+            |_, cx| cx.new(AppState::new),
         )
         .expect("failed to open Nyx window");
 

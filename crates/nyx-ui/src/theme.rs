@@ -78,6 +78,8 @@ pub struct Theme {
     pub purple: Hsla,
     /// Yellow (warning).
     pub yellow: Hsla,
+    /// Orange (archives, secondary warning).
+    pub orange: Hsla,
 
     // --- Metrics ---
     /// File-row height.

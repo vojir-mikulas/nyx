@@ -1,0 +1,252 @@
+// Copyright 2026 vojir-mikulas
+// SPDX-License-Identifier: Apache-2.0
+
+//! The bottom transfer dock: collapsible header (tabs + clear) and rows.
+
+use gpui::{div, prelude::*, px, Context};
+use nyx_core::{TransferDirection, TransferStatus};
+use nyx_ui::{
+    ActiveTheme, Badge, BadgeVariant, IconButton, IconButtonSize, ProgressBar, Tabs, ToastVariant,
+};
+
+use crate::icon::icon;
+use crate::state::models::{fmt_bytes_pair, fmt_size, DockTab, TransferVm};
+use crate::state::AppState;
+
+/// Render the transfer dock.
+pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    let theme = cx.theme().clone();
+    let open = state.dock_open;
+    let height = if open { 218.0 } else { 32.0 };
+
+    div()
+        .flex()
+        .flex_col()
+        .flex_shrink_0()
+        .min_h_0()
+        .h(px(height))
+        .bg(theme.bg_panel)
+        .border_t_1()
+        .border_color(theme.border)
+        .child(header(state, cx))
+        .when(open, |this| this.child(body(state, cx)))
+}
+
+fn header(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    let theme = cx.theme().clone();
+    let (all, active, completed, failed) = state.dock_counts();
+    let open = state.dock_open;
+
+    div()
+        .flex()
+        .items_center()
+        .gap_0p5()
+        .h(px(32.))
+        .flex_shrink_0()
+        .pl_1()
+        .pr_1p5()
+        .border_b_1()
+        .border_color(theme.border_soft)
+        .child(
+            IconButton::new(
+                "dock-collapse",
+                icon(if open { "chevD" } else { "chevR" }, 14.),
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.dock_open = !this.dock_open;
+                cx.notify();
+            })),
+        )
+        .child(
+            Tabs::new("dock-tabs")
+                .tab("Transfers", Some(all))
+                .tab("Active", Some(active))
+                .tab("Completed", Some(completed))
+                .tab("Failed", Some(failed))
+                .selected(state.dock_tab.index())
+                .on_select({
+                    let view = cx.entity();
+                    move |ix, _window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.dock_tab = DockTab::from_index(ix);
+                            cx.notify();
+                        });
+                    }
+                }),
+        )
+        .child(div().flex_1())
+        .child(
+            IconButton::new("dock-clear", icon("trash", 14.)).on_click(cx.listener(
+                |this, _, _, cx| {
+                    this.clear_finished();
+                    cx.notify();
+                },
+            )),
+        )
+}
+
+fn body(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    let theme = cx.theme().clone();
+    let rows = state.dock_rows();
+
+    let content: gpui::AnyElement = if rows.is_empty() {
+        div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .p(px(28.))
+            .text_color(theme.text_dim)
+            .text_sm()
+            .child("No transfers here.")
+            .into_any_element()
+    } else {
+        div()
+            .flex()
+            .flex_col()
+            .children(rows.iter().map(|t| transfer_row(t, cx)).collect::<Vec<_>>())
+            .into_any_element()
+    };
+
+    div()
+        .id("dock-body")
+        .flex_1()
+        .min_h_0()
+        .overflow_y_scroll()
+        .child(content)
+}
+
+fn transfer_row(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
+    let theme = cx.theme().clone();
+    let mono = crate::assets::FONT_MONO;
+    let status = t.transfer.status;
+
+    let (dir_icon, dir_color) = match t.transfer.direction {
+        TransferDirection::Upload => ("upload", theme.blue),
+        TransferDirection::Download => ("download", theme.green),
+    };
+
+    let name = t
+        .transfer
+        .remote_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(&t.transfer.remote_path)
+        .to_string();
+    let pct = (t.transfer.progress().unwrap_or(0.0) * 100.0).round() as u32;
+
+    let speed_label = match status {
+        TransferStatus::Running => t
+            .speed_bps
+            .map(|b| format!("{:.1} MB/s", b as f64 / 1_000_000.0))
+            .unwrap_or_else(|| "—".into()),
+        TransferStatus::Completed => fmt_size(t.transfer.total_bytes.unwrap_or(0)),
+        _ => "—".to_string(),
+    };
+
+    let (badge_variant, badge_label) = match status {
+        TransferStatus::Running => (BadgeVariant::Info, format!("{pct}%")),
+        TransferStatus::Queued => (BadgeVariant::Neutral, "Queued".to_string()),
+        TransferStatus::Completed => (BadgeVariant::Success, "Completed".to_string()),
+        TransferStatus::Failed => (BadgeVariant::Danger, "Failed".to_string()),
+        TransferStatus::Cancelled => (BadgeVariant::Neutral, "Cancelled".to_string()),
+    };
+
+    let show_bar = matches!(status, TransferStatus::Running | TransferStatus::Queued);
+    let path_or_error = if status == TransferStatus::Failed {
+        (
+            t.error.clone().unwrap_or_else(|| "Transfer failed".into()),
+            theme.red,
+        )
+    } else {
+        (t.transfer.remote_path.clone().into(), theme.text_faint)
+    };
+
+    div()
+        .flex()
+        .items_center()
+        .gap_2p5()
+        .px_3()
+        .py(px(7.))
+        .border_b_1()
+        .border_color(theme.border_soft)
+        .hover(|s| s.bg(theme.bg_hover))
+        .child(div().text_color(dir_color).child(icon(dir_icon, 15.)))
+        .child(
+            // Main: name + path/error + optional progress bar.
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .font_family(mono)
+                        .text_xs()
+                        .text_color(theme.text)
+                        .truncate()
+                        .child(name.clone()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(path_or_error.1)
+                        .truncate()
+                        .child(path_or_error.0),
+                )
+                .when(show_bar, |this| {
+                    this.child(div().mt_1p5().child(ProgressBar::new(
+                        gpui::SharedString::from(format!("bar-{}", t.transfer.id.0)),
+                        t.transfer.progress().unwrap_or(0.0),
+                    )))
+                }),
+        )
+        .child(
+            div()
+                .w(px(86.))
+                .font_family(mono)
+                .text_xs()
+                .text_color(theme.text_muted)
+                .text_right()
+                .child(fmt_bytes_pair(&t.transfer)),
+        )
+        .child(
+            div()
+                .w(px(80.))
+                .font_family(mono)
+                .text_xs()
+                .text_color(theme.text_muted)
+                .text_right()
+                .child(speed_label),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_end()
+                .gap_1p5()
+                .w(px(110.))
+                .child(Badge::new(badge_label).variant(badge_variant))
+                .when(show_bar, |this| {
+                    this.child(trailing_action(t, "x", "Cancel", cx))
+                })
+                .when(status == TransferStatus::Failed, |this| {
+                    this.child(trailing_action(t, "refresh", "Retry", cx))
+                }),
+        )
+}
+
+fn trailing_action(
+    t: &TransferVm,
+    glyph: &str,
+    label: &'static str,
+    cx: &Context<AppState>,
+) -> impl IntoElement {
+    let id = t.transfer.id.0;
+    IconButton::new(
+        gpui::SharedString::from(format!("xfer-{label}-{id}")),
+        icon(glyph, 13.),
+    )
+    .size(IconButtonSize::Xs)
+    .on_click(cx.listener(move |this, _, _, cx| {
+        this.push_toast(format!("{label} — coming in M5"), ToastVariant::Info, cx);
+        cx.notify();
+    }))
+}

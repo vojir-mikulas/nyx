@@ -48,6 +48,7 @@ impl Theme {
             blue: h(0x61afef),
             purple: h(0xc678dd),
             yellow: h(0xe5c07b),
+            orange: h(0xd19a66),
 
             row_height: px(26.0),
             radius: px(5.0),
@@ -89,6 +90,7 @@ impl Theme {
             blue: h(0x79c0ff),
             purple: h(0xd2a8ff),
             yellow: h(0xe3b341),
+            orange: h(0xffa657),
 
             row_height: px(26.0),
             radius: px(5.0),

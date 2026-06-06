@@ -31,6 +31,8 @@ struct Gallery {
     modal_open: bool,
     selected_row: Option<usize>,
     sort: Option<(usize, bool)>,
+    toggle_on: bool,
+    segment: usize,
 }
 
 impl Gallery {
@@ -42,6 +44,8 @@ impl Gallery {
             modal_open: false,
             selected_row: Some(2),
             sort: Some((0, true)),
+            toggle_on: true,
+            segment: 1,
         }
     }
 
@@ -160,6 +164,40 @@ impl Gallery {
             })
     }
 
+    fn toggles(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity();
+        div()
+            .flex()
+            .gap_3()
+            .items_center()
+            .child(
+                Toggle::new("tg", self.toggle_on).on_change(move |on, _window, cx| {
+                    let on = *on;
+                    view.update(cx, |this, cx| {
+                        this.toggle_on = on;
+                        cx.notify();
+                    });
+                }),
+            )
+            .child(Toggle::new("tg-off", false))
+            .child(Toggle::new("tg-disabled", true).disabled(true))
+    }
+
+    fn segmented(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity();
+        Segmented::new("seg")
+            .segment("Compact")
+            .segment("Comfortable")
+            .segment("Spacious")
+            .selected(self.segment)
+            .on_select(move |ix, _window, cx| {
+                view.update(cx, |this, cx| {
+                    this.segment = ix;
+                    cx.notify();
+                });
+            })
+    }
+
     fn context_menu(&self) -> impl IntoElement {
         ContextMenu::new("demo-menu")
             .item(ContextMenuItem::new("download", "Download").shortcut("⌘D"))
@@ -222,7 +260,7 @@ impl Gallery {
                 .row_count(ROWS.len())
                 .selected(self.selected_row)
                 .sort(self.sort)
-                .on_select(move |ix, _window, cx| {
+                .on_select(move |ix, _event, _window, cx| {
                     select_view.update(cx, |this, cx| {
                         this.selected_row = Some(ix);
                         cx.notify();
@@ -331,6 +369,8 @@ impl Render for Gallery {
         let inputs = self.inputs();
         let progress = self.progress(cx);
         let tabs = self.tabs(cx);
+        let toggles = self.toggles(cx);
+        let segmented = self.segmented(cx);
         let context_menu = self.context_menu();
         let toasts = self.toasts();
         let tooltip = self.tooltip_demo();
@@ -350,6 +390,8 @@ impl Render for Gallery {
             .child(self.section("Text inputs", inputs, cx))
             .child(self.section("Progress", progress, cx))
             .child(self.section("Tabs", tabs, cx))
+            .child(self.section("Toggle", toggles, cx))
+            .child(self.section("Segmented", segmented, cx))
             .child(self.section("Context menu", context_menu, cx))
             .child(self.section("Toasts", toasts, cx))
             .child(self.section("Tooltip", tooltip, cx))

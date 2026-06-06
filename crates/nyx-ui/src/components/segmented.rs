@@ -1,0 +1,115 @@
+// Copyright 2026 vojir-mikulas
+// SPDX-License-Identifier: Apache-2.0
+
+//! `Segmented` — a single-select segmented control (a row of mutually-exclusive
+//! options sharing one recessed track).
+//!
+//! Stateless: the caller owns the selected index and is told about clicks via
+//! [`on_select`](Segmented::on_select). Generic — segments carry plain labels,
+//! no domain types. Used for the protocol picker (M3 connection editor) and the
+//! row-density picker (tweaks).
+//!
+//! ```ignore
+//! Segmented::new("density")
+//!     .segment("Compact")
+//!     .segment("Comfortable")
+//!     .segment("Spacious")
+//!     .selected(self.density_ix)
+//!     .on_select(cx.listener(|this, ix: &usize, _, cx| { this.density_ix = *ix; cx.notify(); }))
+//! ```
+
+use gpui::{div, prelude::*, App, SharedString, Window};
+
+use crate::theme::ActiveTheme;
+
+/// A handler invoked with the clicked segment index.
+type SelectHandler = Box<dyn Fn(usize, &mut Window, &mut App) + 'static>;
+
+/// A single-select segmented control.
+#[derive(IntoElement)]
+pub struct Segmented {
+    id: SharedString,
+    segments: Vec<SharedString>,
+    selected: usize,
+    on_select: Option<SelectHandler>,
+}
+
+impl Segmented {
+    /// Create an empty control with a stable `id`.
+    pub fn new(id: impl Into<SharedString>) -> Self {
+        Self {
+            id: id.into(),
+            segments: Vec::new(),
+            selected: 0,
+            on_select: None,
+        }
+    }
+
+    /// Append a segment with the given `label`.
+    pub fn segment(mut self, label: impl Into<SharedString>) -> Self {
+        self.segments.push(label.into());
+        self
+    }
+
+    /// Set the selected segment index.
+    pub fn selected(mut self, index: usize) -> Self {
+        self.selected = index;
+        self
+    }
+
+    /// Handler invoked with the index of a clicked segment.
+    pub fn on_select(mut self, handler: impl Fn(usize, &mut Window, &mut App) + 'static) -> Self {
+        self.on_select = Some(Box::new(handler));
+        self
+    }
+}
+
+impl RenderOnce for Segmented {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.theme();
+        let selected = self.selected;
+        let on_select = self.on_select.map(std::rc::Rc::new);
+
+        let segments = self.segments.into_iter().enumerate().map(|(ix, label)| {
+            let is_active = ix == selected;
+            let (fg, bg) = if is_active {
+                (theme.text, theme.bg_active)
+            } else {
+                (theme.text_faint, gpui::transparent_black())
+            };
+            let handler = on_select.clone();
+
+            div()
+                .id(ix)
+                .flex()
+                .items_center()
+                .justify_center()
+                .h(gpui::px(24.))
+                .px_3()
+                .rounded(theme.radius_sm)
+                .text_sm()
+                .text_color(fg)
+                .bg(bg)
+                .cursor_pointer()
+                .when(!is_active, |this| {
+                    this.hover(|s| s.text_color(theme.text_muted))
+                })
+                .child(label)
+                .when_some(handler, |this, handler| {
+                    this.on_click(move |_, window, cx| handler(ix, window, cx))
+                })
+        });
+
+        div()
+            .id(self.id)
+            .flex()
+            .items_center()
+            .gap_0p5()
+            .p_0p5()
+            .rounded(theme.radius)
+            .bg(theme.bg_input)
+            .border_1()
+            .border_color(theme.border)
+            .children(segments)
+    }
+}

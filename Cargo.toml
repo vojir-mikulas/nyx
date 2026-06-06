@@ -34,6 +34,9 @@ async-trait = "0.1"
 # --- Logging / tracing ---
 tracing = "0.1"
 
+# --- Embedded assets (fonts + icons baked into the app binary) ---
+rust-embed = { version = "8", features = ["interpolate-folder-path"] }
+
 # --- Internal crates (path deps; become git/crates.io on extraction) ---
 nyx-core = { path = "crates/nyx-core" }
 nyx-service = { path = "crates/nyx-service" }

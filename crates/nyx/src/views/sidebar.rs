@@ -1,0 +1,234 @@
+// Copyright 2026 vojir-mikulas
+// SPDX-License-Identifier: Apache-2.0
+
+//! The left sidebar: brand header, saved + recent connection groups, footer.
+
+use gpui::{div, prelude::*, px, Context, FontWeight, MouseButton};
+use nyx_ui::{ActiveTheme, Badge, Button, ButtonSize, IconButton, ToastVariant};
+
+use crate::icon::icon;
+use crate::state::models::{protocol_badge, ConnectionVm};
+use crate::state::AppState;
+
+use super::status_dot;
+
+/// Render the sidebar.
+pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    let theme = cx.theme().clone();
+    let saved = state.connections.len();
+    let recent = state.connections.iter().filter(|c| c.is_recent).count();
+
+    // `cx.listener` results aren't `Clone`, so each call site gets its own.
+    let header_new = cx.listener(|this, _, _, cx| {
+        this.push_toast("New connection — coming in M3", ToastVariant::Info, cx);
+        cx.notify();
+    });
+    let footer_new = cx.listener(|this, _, _, cx| {
+        this.push_toast("New connection — coming in M3", ToastVariant::Info, cx);
+        cx.notify();
+    });
+    let open_settings = cx.listener(|this, _, _, cx| {
+        this.tweaks_open = true;
+        cx.notify();
+    });
+
+    div()
+        .flex()
+        .flex_col()
+        .min_h_0()
+        .w(px(244.))
+        .bg(theme.bg_panel)
+        .child(
+            // Header: brand + new-connection button.
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .h(px(38.))
+                .pl(px(13.))
+                .pr(px(10.))
+                .flex_shrink_0()
+                .child(brand(cx))
+                .child(div().flex_1())
+                .child(IconButton::new("sb-new", icon("plus", 15.)).on_click(header_new)),
+        )
+        .child(
+            // Scrollable connection groups.
+            div()
+                .id("sidebar-scroll")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .pb_2()
+                .child(group(state, "Saved", saved, &state.connections_all(), cx))
+                .child(group(
+                    state,
+                    "Recent",
+                    recent,
+                    &state.connections_recent(),
+                    cx,
+                )),
+        )
+        .child(
+            // Footer: New + settings.
+            div()
+                .flex()
+                .gap_1()
+                .p_1p5()
+                .border_t_1()
+                .border_color(theme.border_soft)
+                .child(
+                    div().flex_1().child(
+                        Button::new("sb-foot-new", "New")
+                            .size(ButtonSize::Sm)
+                            .on_click(footer_new),
+                    ),
+                )
+                .child(
+                    IconButton::new("sb-foot-settings", icon("settings", 14.))
+                        .on_click(open_settings),
+                ),
+        )
+}
+
+fn brand(cx: &Context<AppState>) -> impl IntoElement {
+    let theme = cx.theme().clone();
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .text_color(theme.text)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(18.))
+                .rounded(theme.radius_sm)
+                .bg(theme.accent)
+                .text_color(theme.on_accent)
+                .child(icon("zap", 11.)),
+        )
+        .child(
+            div()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_sm()
+                .child("Nyx"),
+        )
+}
+
+fn group(
+    state: &AppState,
+    label: &'static str,
+    count: usize,
+    conns: &[&ConnectionVm],
+    cx: &mut Context<AppState>,
+) -> impl IntoElement {
+    let theme = cx.theme().clone();
+    div()
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_1p5()
+                .pt_3()
+                .pb_1()
+                .pl(px(14.))
+                .pr_3()
+                .text_color(theme.text_dim)
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(label),
+                )
+                .child(div().text_xs().child(format!("· {count}"))),
+        )
+        .children(
+            conns
+                .iter()
+                .map(|conn| conn_row(state, conn, cx))
+                .collect::<Vec<_>>(),
+        )
+}
+
+fn conn_row(state: &AppState, conn: &ConnectionVm, cx: &mut Context<AppState>) -> impl IntoElement {
+    let theme = cx.theme().clone();
+    let id = conn.profile.id.clone();
+    let is_active = state.active_id.as_deref() == Some(id.as_str());
+    let is_online = state.online_id.as_deref() == Some(id.as_str());
+    let (badge_variant, badge_label) = protocol_badge(conn.profile.protocol);
+
+    let dot_color = if is_online {
+        theme.green
+    } else {
+        theme.text_dim
+    };
+    let ring = is_online.then(|| theme.green.opacity(0.16));
+
+    let open_id = id.clone();
+    let ctx_name = conn.profile.name.clone();
+
+    div()
+        .id(gpui::SharedString::from(format!("conn-{id}")))
+        .relative()
+        .flex()
+        .items_center()
+        .gap(px(9.))
+        .py(px(5.))
+        .pl(px(14.))
+        .pr_3()
+        .cursor_pointer()
+        .when(is_active, |this| this.bg(theme.bg_active))
+        .when(!is_active, |this| this.hover(|s| s.bg(theme.bg_hover)))
+        .when(is_active, |this| {
+            this.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top(px(4.))
+                    .bottom(px(4.))
+                    .w(px(2.))
+                    .bg(theme.accent),
+            )
+        })
+        .child(status_dot(dot_color, ring))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme.text)
+                        .truncate()
+                        .child(conn.profile.name.clone()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.text_faint)
+                        .font_family(crate::assets::FONT_MONO)
+                        .truncate()
+                        .child(conn.user_host()),
+                ),
+        )
+        .child(Badge::new(badge_label).variant(badge_variant))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.open_connection(&open_id, cx);
+            cx.notify();
+        }))
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |this, _, _, cx| {
+                this.push_toast(
+                    format!("Edit / Remove “{ctx_name}” — coming in M3"),
+                    ToastVariant::Info,
+                    cx,
+                );
+                cx.notify();
+            }),
+        )
+}

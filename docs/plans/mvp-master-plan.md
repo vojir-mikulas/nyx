@@ -45,6 +45,8 @@ Parked decisions to resolve when reached:
 
 ## M1 — App shell (UI only, in-memory data)
 
+> **Detailed breakdown:** [`mvp-m1-app-shell.md`](./mvp-m1-app-shell.md).
+
 Assemble the real Nyx layout from existing `nyx-ui` components, driven by
 hardcoded/in-memory state. **No backend.** This makes the app look real, creates
 the surfaces real data plugs into later, and surfaces any `nyx-ui` gaps before
