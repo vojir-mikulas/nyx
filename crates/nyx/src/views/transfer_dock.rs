@@ -123,9 +123,8 @@ fn transfer_row(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
     let name = t
         .transfer
         .remote_path
-        .rsplit('/')
-        .next()
-        .unwrap_or(&t.transfer.remote_path)
+        .file_name()
+        .unwrap_or("/")
         .to_string();
     let pct = (t.transfer.progress().unwrap_or(0.0) * 100.0).round() as u32;
 
@@ -153,7 +152,7 @@ fn transfer_row(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
             theme.red,
         )
     } else {
-        (t.transfer.remote_path.clone().into(), theme.text_faint)
+        (t.transfer.remote_path.as_str().into(), theme.text_faint)
     };
 
     div()

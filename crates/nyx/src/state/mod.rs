@@ -15,7 +15,7 @@ use gpui::{
     prelude::*, App, ClipboardItem, Context, Entity, FocusHandle, PathPromptOptions, Pixels, Point,
     SharedString,
 };
-use nyx_core::{Protocol, Transfer, TransferDirection, TransferId, TransferStatus};
+use nyx_core::{Protocol, RemotePath, Transfer, TransferDirection, TransferId, TransferStatus};
 use nyx_keyring::{CredentialStore, OsKeyring};
 use nyx_profile::{
     FileProfileStore, FileSettingsStore, Profile, ProfileColor, ProfileStore, Settings,
@@ -181,10 +181,10 @@ pub struct AppState {
     /// The connection shown as connected (fake: equals `active_id`).
     pub online_id: Option<String>,
 
-    /// Current path segments, e.g. `["var", "www"]`.
-    pub cwd: Vec<SharedString>,
+    /// The current working directory (canonical, absolute).
+    pub cwd: RemotePath,
     /// Back/forward navigation stack.
-    pub history: Vec<Vec<SharedString>>,
+    pub history: Vec<RemotePath>,
     /// Cursor into `history`.
     pub history_ix: usize,
     /// Fixture listing for the current `cwd`.
@@ -321,8 +321,8 @@ impl AppState {
             connections,
             active_id: None,
             online_id: None,
-            cwd: Vec::new(),
-            history: vec![Vec::new()],
+            cwd: RemotePath::root(),
+            history: vec![RemotePath::root()],
             history_ix: 0,
             listing: Vec::new(),
             filter,
@@ -957,16 +957,6 @@ impl AppState {
         );
     }
 
-    /// The absolute remote path of an entry `name` in the current directory.
-    fn remote_path_of(&self, name: &str) -> String {
-        let cwd = self.current_path();
-        if cwd == "/" {
-            format!("/{name}")
-        } else {
-            format!("{cwd}/{name}")
-        }
-    }
-
     /// Open the file-row context menu. Right-click on an unselected row replaces
     /// the selection with just it; right-click inside the selection keeps it.
     pub fn open_file_menu(&mut self, name: SharedString, is_dir: bool, position: Point<Pixels>) {
@@ -1080,15 +1070,15 @@ impl AppState {
         self.input_prompt = None;
         let command = match action {
             InputAction::NewFolder => Command::Mkdir {
-                path: self.remote_path_of(&value),
+                path: self.cwd.join(&value),
             },
             InputAction::Rename { original } => {
                 if value == original.as_ref() {
                     return; // unchanged → nothing to do
                 }
                 Command::Rename {
-                    from: self.remote_path_of(&original),
-                    to: self.remote_path_of(&value),
+                    from: self.cwd.join(&original),
+                    to: self.cwd.join(&value),
                 }
             }
         };
@@ -1128,7 +1118,7 @@ impl AppState {
         };
         let mut ok = true;
         for (name, is_dir) in &confirm.entries {
-            let path = self.remote_path_of(name);
+            let path = self.cwd.join(name);
             if !self.service.send(Command::Remove {
                 path,
                 is_dir: *is_dir,
@@ -1146,8 +1136,8 @@ impl AppState {
         let Some(menu) = self.file_menu.take() else {
             return;
         };
-        let path = self.remote_path_of(&menu.name);
-        cx.write_to_clipboard(ClipboardItem::new_string(path));
+        let path = self.cwd.join(&menu.name);
+        cx.write_to_clipboard(ClipboardItem::new_string(path.as_str().to_string()));
         self.push_toast("Path copied", ToastVariant::Success, cx);
     }
 
@@ -1156,7 +1146,7 @@ impl AppState {
     /// skipped with a toast (directory download is not yet supported).
     pub fn download_selection(&mut self, cx: &mut Context<Self>) {
         self.close_file_menu();
-        let mut files: Vec<(String, String)> = Vec::new();
+        let mut files: Vec<(RemotePath, String)> = Vec::new();
         let mut skipped_folder = false;
         for name in &self.selected {
             let Some(row) = self
@@ -1170,7 +1160,7 @@ impl AppState {
                 skipped_folder = true;
                 continue;
             }
-            files.push((self.remote_path_of(name), name.to_string()));
+            files.push((self.cwd.join(name), name.to_string()));
         }
         if skipped_folder {
             self.push_toast("Folders can't be downloaded yet", ToastVariant::Info, cx);
@@ -1274,8 +1264,8 @@ impl AppState {
                 continue;
             };
             let remote = match subdir.as_ref() {
-                Some(dir) => format!("{}/{}", self.remote_path_of(dir), name),
-                None => self.remote_path_of(name),
+                Some(dir) => self.cwd.join(dir).join(name),
+                None => self.cwd.join(name),
             };
             if self.service.send(Command::Upload { local, remote }) {
                 sent += 1;
@@ -1379,7 +1369,7 @@ impl AppState {
             }
             Event::DirListing { path, entries } => {
                 // Drop a listing for a directory we've since navigated away from.
-                if path == self.current_path() {
+                if path == self.cwd {
                     self.listing = entries.into_iter().map(EntryRow::new).collect();
                     self.listing_loading = false;
                 }
@@ -1455,7 +1445,7 @@ impl AppState {
                 status,
                 message,
             } => {
-                let cwd = self.current_path();
+                let cwd = self.cwd.clone();
                 let mut refresh = false;
                 if let Some(vm) = self.transfers.iter_mut().find(|t| t.transfer.id == id) {
                     vm.transfer.status = status;
@@ -1467,7 +1457,7 @@ impl AppState {
                                 vm.transfer.transferred_bytes = total;
                             }
                             refresh = vm.transfer.direction == TransferDirection::Upload
-                                && remote_parent(&vm.transfer.remote_path) == cwd;
+                                && vm.transfer.remote_path.parent().as_ref() == Some(&cwd);
                         }
                         TransferStatus::Failed => {
                             vm.error = message.map(SharedString::from);
@@ -1525,7 +1515,7 @@ impl AppState {
     /// directory: the profile's configured remote path if set, otherwise the
     /// server-resolved home (`home`) — so the user lands somewhere writable
     /// instead of the filesystem root.
-    fn enter_browser(&mut self, profile_id: String, home: String, cx: &mut Context<Self>) {
+    fn enter_browser(&mut self, profile_id: String, home: RemotePath, cx: &mut Context<Self>) {
         let configured = self
             .connections
             .iter()
@@ -1533,7 +1523,10 @@ impl AppState {
             .and_then(|c| c.profile.remote_path.as_deref())
             .map(str::trim)
             .filter(|p| !p.is_empty());
-        let root = path_segments(configured.unwrap_or(&home));
+        let root = match configured {
+            Some(path) => RemotePath::new(path),
+            None => home,
+        };
 
         self.active_id = Some(profile_id.clone());
         self.online_id = Some(profile_id.clone());
@@ -1550,28 +1543,13 @@ impl AppState {
         self.reload_listing(cx);
     }
 
-    /// The current working directory as an absolute remote path (`"/"` at root).
-    fn current_path(&self) -> String {
-        if self.cwd.is_empty() {
-            "/".to_string()
-        } else {
-            let joined = self
-                .cwd
-                .iter()
-                .map(|s| s.as_ref())
-                .collect::<Vec<_>>()
-                .join("/");
-            format!("/{joined}")
-        }
-    }
-
     /// Request a listing for the current `cwd` from the backend. The result
     /// arrives asynchronously as an [`Event::DirListing`].
     fn reload_listing(&mut self, cx: &mut Context<Self>) {
         self.listing.clear();
         self.listing_loading = true;
         if !self.service.send(Command::ListDir {
-            path: self.current_path(),
+            path: self.cwd.clone(),
         }) {
             self.listing_loading = false;
             self.push_toast("Backend unavailable", ToastVariant::Error, cx);
@@ -1579,14 +1557,14 @@ impl AppState {
     }
 
     /// Navigate to a path, optionally pushing onto the history stack.
-    fn go_to_path(&mut self, segs: Vec<SharedString>, push_history: bool, cx: &mut Context<Self>) {
-        self.cwd = segs.clone();
+    fn go_to_path(&mut self, path: RemotePath, push_history: bool, cx: &mut Context<Self>) {
+        self.cwd = path.clone();
         self.selected.clear();
         self.filter
             .update(cx, |input, cx| input.set_content("", cx));
         if push_history {
             self.history.truncate(self.history_ix + 1);
-            self.history.push(segs);
+            self.history.push(path);
             self.history_ix = self.history.len() - 1;
         }
         self.reload_listing(cx);
@@ -1594,24 +1572,25 @@ impl AppState {
 
     /// Open a child directory by name.
     pub fn open_dir(&mut self, name: &SharedString, cx: &mut Context<Self>) {
-        let mut segs = self.cwd.clone();
-        segs.push(name.clone());
-        self.go_to_path(segs, true, cx);
+        let path = self.cwd.join(name);
+        self.go_to_path(path, true, cx);
     }
 
-    /// Jump to the `n`-th breadcrumb (0 = root).
+    /// Jump to the `n`-th breadcrumb (0 = root): rebuild the prefix from the
+    /// first `n` components of the current path.
     pub fn nav_crumb(&mut self, n: usize, cx: &mut Context<Self>) {
-        let segs = self.cwd[..n.min(self.cwd.len())].to_vec();
-        self.go_to_path(segs, true, cx);
+        let mut path = RemotePath::root();
+        for seg in self.cwd.components().take(n) {
+            path = path.join(seg);
+        }
+        self.go_to_path(path, true, cx);
     }
 
     /// Go up one directory level.
     pub fn go_up(&mut self, cx: &mut Context<Self>) {
-        if self.cwd.is_empty() {
-            return;
+        if let Some(parent) = self.cwd.parent() {
+            self.go_to_path(parent, true, cx);
         }
-        let segs = self.cwd[..self.cwd.len() - 1].to_vec();
-        self.go_to_path(segs, true, cx);
     }
 
     pub fn can_back(&self) -> bool {
@@ -1628,8 +1607,8 @@ impl AppState {
             return;
         }
         self.history_ix -= 1;
-        let segs = self.history[self.history_ix].clone();
-        self.go_to_path(segs, false, cx);
+        let path = self.history[self.history_ix].clone();
+        self.go_to_path(path, false, cx);
     }
 
     /// Step forward in history.
@@ -1638,8 +1617,8 @@ impl AppState {
             return;
         }
         self.history_ix += 1;
-        let segs = self.history[self.history_ix].clone();
-        self.go_to_path(segs, false, cx);
+        let path = self.history[self.history_ix].clone();
+        self.go_to_path(path, false, cx);
     }
 
     /// Refresh the current listing.
@@ -1802,22 +1781,4 @@ fn default_download_dir() -> std::path::PathBuf {
         .and_then(|u| u.download_dir().map(|p| p.to_path_buf()))
         .or_else(|| dirs.as_ref().map(|u| u.home_dir().to_path_buf()))
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-}
-
-/// Split a remote path into non-empty segments.
-fn path_segments(path: &str) -> Vec<SharedString> {
-    path.split('/')
-        .filter(|s| !s.is_empty())
-        .map(SharedString::from)
-        .collect()
-}
-
-/// The parent directory of an absolute remote file path (`"/"` at the root),
-/// matching [`AppState::current_path`]'s form so the two can be compared to
-/// decide whether a completed upload landed in the current directory.
-fn remote_parent(path: &str) -> String {
-    match path.rsplit_once('/') {
-        Some((parent, _)) if !parent.is_empty() => parent.to_string(),
-        _ => "/".to_string(),
-    }
 }

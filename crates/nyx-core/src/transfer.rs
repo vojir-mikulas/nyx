@@ -5,6 +5,8 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::RemotePath;
+
 /// A unique, monotonically assigned identifier for a queued transfer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct TransferId(pub u64);
@@ -43,8 +45,8 @@ pub struct Transfer {
     /// Upload or download.
     pub direction: TransferDirection,
     /// The remote-side path.
-    pub remote_path: String,
-    /// The local-side path.
+    pub remote_path: RemotePath,
+    /// The local-side path (display form).
     pub local_path: String,
     /// Total size in bytes, if known up front.
     pub total_bytes: Option<u64>,

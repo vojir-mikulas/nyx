@@ -6,9 +6,11 @@
 //! free.
 
 mod error;
+mod path;
 mod remote;
 mod transfer;
 
 pub use error::{NyxError, Result};
+pub use path::{RemotePath, RemotePathError};
 pub use remote::{EntryKind, Protocol, RemoteEntry};
 pub use transfer::{Transfer, TransferDirection, TransferId, TransferProgress, TransferStatus};

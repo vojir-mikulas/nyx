@@ -12,7 +12,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 
-use nyx_core::{TransferDirection, TransferId, TransferProgress};
+use nyx_core::{RemotePath, TransferDirection, TransferId, TransferProgress};
 
 /// What the service hands in to enqueue a transfer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,7 +20,7 @@ pub struct TransferSpec {
     /// Upload or download.
     pub direction: TransferDirection,
     /// The remote-side path.
-    pub remote: String,
+    pub remote: RemotePath,
     /// The local-side path.
     pub local: PathBuf,
 }
@@ -137,7 +137,7 @@ mod tests {
     fn spec(n: u64) -> TransferSpec {
         TransferSpec {
             direction: TransferDirection::Download,
-            remote: format!("/r/{n}"),
+            remote: RemotePath::new(format!("/r/{n}")),
             local: PathBuf::from(format!("/l/{n}")),
         }
     }

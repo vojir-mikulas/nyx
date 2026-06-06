@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use nyx_core::{EntryKind, NyxError, RemoteEntry, Result, TransferProgress};
+use nyx_core::{EntryKind, NyxError, RemoteEntry, RemotePath, Result, TransferProgress};
 use russh::client::{self, Handle};
 use russh::keys::ssh_key::PublicKey;
 use russh::keys::HashAlg;
@@ -82,8 +82,8 @@ impl SftpClient {
     /// Best-effort size of a remote file, for showing a transfer's total up
     /// front. `None` if the stat fails or the size is unknown — the transfer
     /// still runs, just without a `%`/total.
-    pub async fn remote_size(&self, path: &str) -> Option<u64> {
-        self.sftp().ok()?.metadata(path).await.ok()?.size
+    pub async fn remote_size(&self, path: &RemotePath) -> Option<u64> {
+        self.sftp().ok()?.metadata(path.as_str()).await.ok()?.size
     }
 }
 
@@ -137,14 +137,19 @@ impl RemoteClient for SftpClient {
         Ok(())
     }
 
-    async fn default_dir(&self) -> Result<String> {
+    async fn default_dir(&self) -> Result<RemotePath> {
         // `canonicalize(".")` resolves the SFTP session's start directory (the
         // user's home on most servers) to an absolute path.
-        self.sftp()?.canonicalize(".").await.map_err(map_sftp_err)
+        let dir = self.sftp()?.canonicalize(".").await.map_err(map_sftp_err)?;
+        Ok(RemotePath::new(dir))
     }
 
-    async fn list_dir(&self, path: &str) -> Result<Vec<RemoteEntry>> {
-        let dir = self.sftp()?.read_dir(path).await.map_err(map_sftp_err)?;
+    async fn list_dir(&self, path: &RemotePath) -> Result<Vec<RemoteEntry>> {
+        let dir = self
+            .sftp()?
+            .read_dir(path.as_str())
+            .await
+            .map_err(map_sftp_err)?;
         let mut entries: Vec<RemoteEntry> = Vec::new();
         for item in dir {
             let meta = item.metadata();
@@ -166,7 +171,7 @@ impl RemoteClient for SftpClient {
 
     async fn download(
         &self,
-        remote: &str,
+        remote: &RemotePath,
         local: &Path,
         progress: &TransferProgress,
     ) -> Result<()> {
@@ -174,17 +179,22 @@ impl RemoteClient for SftpClient {
         // The remote-open / local-create halves keep their split mapping; the
         // byte loop itself goes through the `AsyncRead`/`AsyncWrite` interface,
         // which yields `std::io::Error` on either side (mapped via `map_io_err`).
-        let mut reader = sftp.open(remote).await.map_err(map_sftp_err)?;
+        let mut reader = sftp.open(remote.as_str()).await.map_err(map_sftp_err)?;
         let mut writer = tokio::fs::File::create(local).await.map_err(map_io_err)?;
         copy_counting(&mut reader, &mut writer, progress).await?;
         writer.flush().await.map_err(map_io_err)?;
         Ok(())
     }
 
-    async fn upload(&self, local: &Path, remote: &str, progress: &TransferProgress) -> Result<()> {
+    async fn upload(
+        &self,
+        local: &Path,
+        remote: &RemotePath,
+        progress: &TransferProgress,
+    ) -> Result<()> {
         let sftp = self.sftp()?;
         let mut reader = tokio::fs::File::open(local).await.map_err(map_io_err)?;
-        let mut writer = sftp.create(remote).await.map_err(map_sftp_err)?;
+        let mut writer = sftp.create(remote.as_str()).await.map_err(map_sftp_err)?;
         copy_counting(&mut reader, &mut writer, progress).await?;
         // Flush + close the remote handle so all queued writes are acknowledged
         // before we report success.
@@ -192,15 +202,19 @@ impl RemoteClient for SftpClient {
         Ok(())
     }
 
-    async fn rename(&self, from: &str, to: &str) -> Result<()> {
-        self.sftp()?.rename(from, to).await.map_err(map_sftp_err)
+    async fn rename(&self, from: &RemotePath, to: &RemotePath) -> Result<()> {
+        self.sftp()?
+            .rename(from.as_str(), to.as_str())
+            .await
+            .map_err(map_sftp_err)
     }
 
-    async fn remove(&self, path: &str) -> Result<()> {
+    async fn remove(&self, path: &RemotePath) -> Result<()> {
         let sftp = self.sftp()?;
         // SFTP's `remove_dir` only deletes an *empty* directory, so a directory
         // target is removed depth-first (children before parent). The traversal
         // is planned with an explicit work-stack (no boxed async recursion).
+        let path = path.as_str();
         let is_dir = sftp.metadata(path).await.map_err(map_sftp_err)?.is_dir();
         let ops = plan_removal(path, is_dir, move |dir| async move {
             let entries = sftp.read_dir(dir).await.map_err(map_sftp_err)?;
@@ -218,8 +232,11 @@ impl RemoteClient for SftpClient {
         Ok(())
     }
 
-    async fn mkdir(&self, path: &str) -> Result<()> {
-        self.sftp()?.create_dir(path).await.map_err(map_sftp_err)
+    async fn mkdir(&self, path: &RemotePath) -> Result<()> {
+        self.sftp()?
+            .create_dir(path.as_str())
+            .await
+            .map_err(map_sftp_err)
     }
 
     async fn disconnect(&mut self) -> Result<()> {

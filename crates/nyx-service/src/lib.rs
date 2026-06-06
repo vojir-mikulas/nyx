@@ -30,7 +30,7 @@ use futures::channel::mpsc::{
     unbounded as futures_unbounded, UnboundedReceiver as FuturesReceiver,
     UnboundedSender as FuturesSender,
 };
-use nyx_core::{NyxError, RemoteEntry, TransferDirection, TransferId, TransferStatus};
+use nyx_core::{NyxError, RemoteEntry, RemotePath, TransferDirection, TransferId, TransferStatus};
 use nyx_profile::Profile;
 use nyx_protocol::{KnownHosts, RemoteClient, SftpClient};
 use nyx_transfer::{CancelOutcome, Started, TransferQueue, TransferSpec};
@@ -112,19 +112,19 @@ pub enum Command {
     /// List a remote directory on the active connection.
     ListDir {
         /// Absolute remote path to list.
-        path: String,
+        path: RemotePath,
     },
     /// Create a remote directory on the active connection.
     Mkdir {
         /// Absolute remote path of the new directory.
-        path: String,
+        path: RemotePath,
     },
     /// Rename / move a remote entry on the active connection.
     Rename {
         /// Current absolute remote path.
-        from: String,
+        from: RemotePath,
         /// New absolute remote path.
-        to: String,
+        to: RemotePath,
     },
     /// Delete a remote entry on the active connection.
     ///
@@ -132,14 +132,14 @@ pub enum Command {
     /// delete without an extra stat round-trip on the UI's behalf.
     Remove {
         /// Absolute remote path to delete.
-        path: String,
+        path: RemotePath,
         /// Whether the target is a directory (recursive delete).
         is_dir: bool,
     },
     /// Download a remote file to a chosen local path.
     Download {
         /// Absolute remote path to read.
-        remote: String,
+        remote: RemotePath,
         /// Local destination chosen by the user.
         local: PathBuf,
     },
@@ -148,7 +148,7 @@ pub enum Command {
         /// Local source path chosen by the user.
         local: PathBuf,
         /// Absolute remote destination path.
-        remote: String,
+        remote: RemotePath,
     },
     /// Validate a profile's credentials without opening a browser session.
     ///
@@ -204,12 +204,12 @@ pub enum Event {
         profile_id: String,
         /// The resolved default landing directory (home), used when the profile
         /// has no explicit remote path.
-        home: String,
+        home: RemotePath,
     },
     /// A directory listing for `path` on the active connection.
     DirListing {
         /// The path that was listed (echoed so the UI can drop stale listings).
-        path: String,
+        path: RemotePath,
         /// The entries in that directory.
         entries: Vec<RemoteEntry>,
     },
@@ -243,7 +243,7 @@ pub enum Event {
         /// Upload or download.
         direction: TransferDirection,
         /// The remote-side path.
-        remote: String,
+        remote: RemotePath,
         /// The local-side path (display form).
         local: String,
     },
@@ -375,7 +375,7 @@ enum TaskOutcome {
         profile_id: String,
         client: Box<SftpClient>,
         /// The resolved default landing directory (home).
-        home: String,
+        home: RemotePath,
     },
     /// A live connect failed with a credential-free message.
     ConnectFailed { message: String },
@@ -761,10 +761,10 @@ fn not_connected(events: &FuturesSender<Event>) {
     });
 }
 
-/// The last non-empty path segment (the file/folder name) for toast copy.
-/// Paths are not secrets, so this is safe to surface.
-fn base_name(path: &str) -> &str {
-    path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(path)
+/// The path's final component (the file/folder name) for toast copy, falling
+/// back to `/` at the root. Paths are not secrets, so this is safe to surface.
+fn base_name(path: &RemotePath) -> &str {
+    path.file_name().unwrap_or("/")
 }
 
 /// Spawn a slow file op as a detached task: run `fut` against the cloned session,
@@ -826,7 +826,10 @@ async fn run_task(
         (TaskKind::Connect, Ok(())) => {
             // Resolve the landing directory once, up front; fall back to root if
             // the server doesn't answer `canonicalize`.
-            let home = client.default_dir().await.unwrap_or_else(|_| "/".into());
+            let home = client
+                .default_dir()
+                .await
+                .unwrap_or_else(|_| RemotePath::root());
             TaskOutcome::Connected {
                 profile_id,
                 client: Box::new(client),

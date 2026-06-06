@@ -10,7 +10,7 @@
 use std::path::Path;
 
 use async_trait::async_trait;
-use nyx_core::{RemoteEntry, Result, TransferProgress};
+use nyx_core::{RemoteEntry, RemotePath, Result, TransferProgress};
 
 mod host_key;
 mod known_hosts;
@@ -34,32 +34,41 @@ pub trait RemoteClient: Send + Sync {
     /// absolute path — used as the starting directory when a profile has no
     /// explicit remote path, so the user lands somewhere writable rather than at
     /// the filesystem root.
-    async fn default_dir(&self) -> Result<String>;
+    async fn default_dir(&self) -> Result<RemotePath>;
 
     /// List the entries of a remote directory.
-    async fn list_dir(&self, path: &str) -> Result<Vec<RemoteEntry>>;
+    async fn list_dir(&self, path: &RemotePath) -> Result<Vec<RemoteEntry>>;
 
     /// Download a remote file to a local path.
     ///
     /// `progress` is bumped per chunk and checked between chunks: a requested
     /// cancellation short-circuits the copy with [`nyx_core::NyxError::Cancelled`].
-    async fn download(&self, remote: &str, local: &Path, progress: &TransferProgress)
-        -> Result<()>;
+    async fn download(
+        &self,
+        remote: &RemotePath,
+        local: &Path,
+        progress: &TransferProgress,
+    ) -> Result<()>;
 
     /// Upload a local file to a remote path.
     ///
     /// `progress` is bumped per chunk and checked between chunks: a requested
     /// cancellation short-circuits the copy with [`nyx_core::NyxError::Cancelled`].
-    async fn upload(&self, local: &Path, remote: &str, progress: &TransferProgress) -> Result<()>;
+    async fn upload(
+        &self,
+        local: &Path,
+        remote: &RemotePath,
+        progress: &TransferProgress,
+    ) -> Result<()>;
 
     /// Rename / move a remote entry.
-    async fn rename(&self, from: &str, to: &str) -> Result<()>;
+    async fn rename(&self, from: &RemotePath, to: &RemotePath) -> Result<()>;
 
     /// Delete a remote file or (empty) directory.
-    async fn remove(&self, path: &str) -> Result<()>;
+    async fn remove(&self, path: &RemotePath) -> Result<()>;
 
     /// Create a remote directory.
-    async fn mkdir(&self, path: &str) -> Result<()>;
+    async fn mkdir(&self, path: &RemotePath) -> Result<()>;
 
     /// Close the connection cleanly.
     async fn disconnect(&mut self) -> Result<()>;

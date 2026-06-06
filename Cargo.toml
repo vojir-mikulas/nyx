@@ -35,6 +35,8 @@ russh-sftp = "2.3"
 serde = { version = "1", features = ["derive"] }
 # Profile store on-disk format (a single `profiles.toml` table-array).
 toml = "0.8"
+# Test-only: a self-describing format for serde round-trip assertions.
+serde_json = "1"
 
 # --- Persistence / paths / ids ---
 # OS keychain for secrets (passwords); the platform-native backend feature is

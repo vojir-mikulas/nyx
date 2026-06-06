@@ -137,7 +137,7 @@ fn toolbar(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
     let can_back = state.can_back();
     let can_fwd = state.can_forward();
-    let can_up = !state.cwd.is_empty();
+    let can_up = !state.cwd.is_root();
 
     div()
         .flex()
@@ -228,21 +228,22 @@ fn breadcrumb(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
         .min_w_0()
         .items_center()
         .gap_0p5()
-        .overflow_hidden()
+        .overflow_x_scroll()
         .font_family(crate::assets::FONT_MONO)
         .text_sm();
 
     // Root crumb.
-    row = row.child(crumb("/", 0, false, state.cwd.is_empty(), cx));
-    for (i, seg) in state.cwd.iter().enumerate() {
-        let is_last = i + 1 == state.cwd.len();
+    let comps: Vec<&str> = state.cwd.components().collect();
+    row = row.child(crumb("/", 0, false, comps.is_empty(), cx));
+    for (i, seg) in comps.iter().enumerate() {
+        let is_last = i + 1 == comps.len();
         row = row
-            .child(
-                div()
-                    .text_color(theme.text_dim)
-                    .child(icon("chevR", 12., theme.text_dim)),
-            )
-            .child(crumb(seg.clone(), i + 1, is_last, is_last, cx));
+            .child(div().flex_shrink_0().text_color(theme.text_dim).child(icon(
+                "chevR",
+                12.,
+                theme.text_dim,
+            )))
+            .child(crumb(seg.to_string(), i + 1, is_last, is_last, cx));
     }
     row
 }
@@ -262,6 +263,7 @@ fn crumb(
     };
     div()
         .id(("crumb", index))
+        .flex_shrink_0()
         .px_1p5()
         .py_0p5()
         .rounded(theme.radius_sm)
