@@ -1,0 +1,23 @@
+[package]
+name = "nyx-ui"
+description = "In-house GPUI component library + theme for Nyx (extract → Flint). Zero app coupling."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# HARD RULE: nyx-ui must NEVER depend on any nyx-* crate. It is a generic GPUI
+# component library that happens to live in this repo today (see plan-02).
+[dependencies]
+gpui.workspace = true
+
+# Dev-only: the gallery example needs `application()` to open a window. This is a
+# dev-dependency, so the *library* still depends on `gpui` alone.
+[dev-dependencies]
+gpui_platform.workspace = true
+
+[[example]]
+name = "gallery"
+path = "examples/gallery.rs"

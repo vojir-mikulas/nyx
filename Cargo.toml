@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.96"
+license = "Apache-2.0"
+repository = "https://github.com/vojir-mikulas/nyx"
+authors = ["vojir-mikulas <vojir.mikulas@gmail.com>"]
+
+[workspace.dependencies]
+# --- GPUI (pinned to a specific Zed revision for reproducible builds) ---
+# At this rev GPUI is split: `gpui` (core) + `gpui_platform` (`application()`,
+# platform dispatch) + `gpui_macros` (transitive). On macOS we enable `font-kit`
+# and deliberately leave the Linux-only `x11`/`wayland` features OFF.
+gpui = { git = "https://github.com/zed-industries/zed", rev = "137e677a0561eb7284cfad1bedccea70155e2473", default-features = false, features = ["font-kit"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "137e677a0561eb7284cfad1bedccea70155e2473", default-features = false, features = ["font-kit"] }
+
+# --- Async / backend ---
+tokio = { version = "1", default-features = false }
+
+# --- Serialization ---
+serde = { version = "1", features = ["derive"] }
+
+# --- Errors ---
+anyhow = "1"
+thiserror = "2"
+
+# --- Async trait objects (object-safe RemoteClient) ---
+async-trait = "0.1"
+
+# --- Logging / tracing ---
+tracing = "0.1"
+
+# --- Internal crates (path deps; become git/crates.io on extraction) ---
+nyx-core = { path = "crates/nyx-core" }
+nyx-service = { path = "crates/nyx-service" }
+nyx-protocol = { path = "crates/nyx-protocol" }
+nyx-transfer = { path = "crates/nyx-transfer" }
+nyx-profile = { path = "crates/nyx-profile" }
+nyx-keyring = { path = "crates/nyx-keyring" }
+nyx-ui = { path = "crates/nyx-ui" }
+
+[profile.dev]
+# GPUI's dep tree is large; a touch of opt on deps keeps debug builds usable
+# without slowing iteration on our own crates.
+[profile.dev.package."*"]
+opt-level = 2

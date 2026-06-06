@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # macOS first (the V1 target). Linux is added later.
+  check:
+    name: fmt · clippy · test · build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Toolchain (channel + components) is pinned by rust-toolchain.toml.
+      - name: Show toolchain
+        run: rustc --version && cargo --version
+
+      - name: Install native deps (cmake for GPUI)
+        run: brew list cmake >/dev/null 2>&1 || brew install cmake
+
+      # GPUI's git dep tree is large; cache it aggressively.
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Build
+        run: cargo build --workspace

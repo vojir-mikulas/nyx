@@ -1,0 +1,12 @@
+[package]
+name = "nyx-keyring"
+description = "OS-keychain credential storage. Credentials never touch logs or profile files."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+nyx-core.workspace = true

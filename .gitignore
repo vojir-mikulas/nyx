@@ -1,0 +1,13 @@
+# Rust build artifacts
+/target
+
+# Cargo.lock is intentionally committed (this is an application/binary).
+
+# Editor / OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Local Claude/agent settings overrides
+.claude/settings.local.json
