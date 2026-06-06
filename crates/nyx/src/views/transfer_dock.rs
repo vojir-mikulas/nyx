@@ -5,9 +5,7 @@
 
 use gpui::{div, prelude::*, px, Context};
 use nyx_core::{TransferDirection, TransferStatus};
-use nyx_ui::{
-    ActiveTheme, Badge, BadgeVariant, IconButton, IconButtonSize, ProgressBar, Tabs, ToastVariant,
-};
+use nyx_ui::{ActiveTheme, IconButton, IconButtonSize, ProgressBar, Tabs, ToastVariant};
 
 use crate::icon::icon;
 use crate::state::models::{fmt_bytes_pair, fmt_size, DockTab, TransferVm};
@@ -143,12 +141,14 @@ fn transfer_row(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
         _ => "—".to_string(),
     };
 
-    let (badge_variant, badge_label) = match status {
-        TransferStatus::Running => (BadgeVariant::Info, format!("{pct}%")),
-        TransferStatus::Queued => (BadgeVariant::Neutral, "Queued".to_string()),
-        TransferStatus::Completed => (BadgeVariant::Success, "Completed".to_string()),
-        TransferStatus::Failed => (BadgeVariant::Danger, "Failed".to_string()),
-        TransferStatus::Cancelled => (BadgeVariant::Neutral, "Cancelled".to_string()),
+    // Status shows as a small colored dot + label (matching the design's
+    // `.xstatus`), not an oval badge.
+    let (status_color, status_label) = match status {
+        TransferStatus::Running => (theme.blue, format!("{pct}%")),
+        TransferStatus::Queued => (theme.text_faint, "Queued".to_string()),
+        TransferStatus::Completed => (theme.green, "Completed".to_string()),
+        TransferStatus::Failed => (theme.red, "Failed".to_string()),
+        TransferStatus::Cancelled => (theme.text_dim, "Cancelled".to_string()),
     };
 
     let show_bar = matches!(status, TransferStatus::Running | TransferStatus::Queued);
@@ -233,30 +233,54 @@ fn transfer_row(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
                 .gap_1p5()
                 .w(px(112.))
                 .flex_shrink_0()
-                .child(Badge::new(badge_label).variant(badge_variant))
-                .when(show_bar, |this| {
-                    this.child(trailing_action(t, "x", "Cancel", cx))
-                })
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
+                        .text_xs()
+                        .text_color(status_color)
+                        .child(
+                            div()
+                                .size(px(6.))
+                                .rounded_full()
+                                .bg(status_color)
+                                .flex_shrink_0(),
+                        )
+                        .child(status_label),
+                )
+                .when(show_bar, |this| this.child(cancel_button(t, cx)))
                 .when(status == TransferStatus::Failed, |this| {
-                    this.child(trailing_action(t, "refresh", "Retry", cx))
+                    this.child(retry_button(t, cx))
                 }),
         )
 }
 
-fn trailing_action(
-    t: &TransferVm,
-    glyph: &str,
-    label: &'static str,
-    cx: &Context<AppState>,
-) -> impl IntoElement {
-    let id = t.transfer.id.0;
+/// The cancel (`x`) button on a running/queued row — sends a real cancel command.
+fn cancel_button(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
+    let id = t.transfer.id;
     IconButton::new(
-        gpui::SharedString::from(format!("xfer-{label}-{id}")),
-        icon(glyph, 13., cx.theme().text_faint),
+        gpui::SharedString::from(format!("xfer-cancel-{}", id.0)),
+        icon("x", 13., cx.theme().text_faint),
     )
     .size(IconButtonSize::Xs)
     .on_click(cx.listener(move |this, _, _, cx| {
-        this.push_toast(format!("{label} — coming in M5"), ToastVariant::Info, cx);
+        this.cancel_transfer(id);
+        cx.notify();
+    }))
+}
+
+/// The retry (`refresh`) button on a failed row. Wiring re-issue is deferred
+/// (M5 D13); for now it surfaces a placeholder toast.
+fn retry_button(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
+    let id = t.transfer.id.0;
+    IconButton::new(
+        gpui::SharedString::from(format!("xfer-retry-{id}")),
+        icon("refresh", 13., cx.theme().text_faint),
+    )
+    .size(IconButtonSize::Xs)
+    .on_click(cx.listener(move |this, _, _, cx| {
+        this.push_toast("Retry — coming soon", ToastVariant::Info, cx);
         cx.notify();
     }))
 }

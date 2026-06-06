@@ -59,6 +59,8 @@ async-trait = "0.1"
 tracing = "0.1"
 # App-edge log init (the binary only; libraries stay subscriber-agnostic).
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Rolling daily log file in the per-OS data dir (app edge only).
+tracing-appender = "0.2"
 
 # --- Embedded assets (fonts + icons baked into the app binary) ---
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }

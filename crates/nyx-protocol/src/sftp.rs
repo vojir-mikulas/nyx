@@ -17,14 +17,17 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use nyx_core::{EntryKind, NyxError, RemoteEntry, Result};
+use nyx_core::{EntryKind, NyxError, RemoteEntry, Result, TransferProgress};
 use russh::client::{self, Handle};
 use russh::keys::ssh_key::PublicKey;
 use russh::keys::HashAlg;
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::{FileType, StatusCode};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::warn;
+
+/// The copy-loop chunk size (64 KiB).
+const COPY_CHUNK: usize = 64 * 1024;
 
 use crate::host_key::HostKeyPrompt;
 use crate::known_hosts::{KnownHostStatus, KnownHosts};
@@ -79,6 +82,13 @@ impl SftpClient {
         self.sftp
             .as_ref()
             .ok_or_else(|| NyxError::Connection("not connected".into()))
+    }
+
+    /// Best-effort size of a remote file, for showing a transfer's total up
+    /// front (M5, D6). `None` if the stat fails or the size is unknown — the
+    /// transfer still runs, just without a `%`/total.
+    pub async fn remote_size(&self, path: &str) -> Option<u64> {
+        self.sftp().ok()?.metadata(path).await.ok()?.size
     }
 }
 
@@ -153,26 +163,28 @@ impl RemoteClient for SftpClient {
         Ok(entries)
     }
 
-    async fn download(&self, remote: &str, local: &Path) -> Result<()> {
+    async fn download(
+        &self,
+        remote: &str,
+        local: &Path,
+        progress: &TransferProgress,
+    ) -> Result<()> {
         let sftp = self.sftp()?;
-        // Remote read half maps through `map_sftp_err`; the local write half
-        // (and the byte copy) maps through `map_io_err`.
+        // The remote-open / local-create halves keep their split mapping; the
+        // byte loop itself goes through the `AsyncRead`/`AsyncWrite` interface,
+        // which yields `std::io::Error` on either side (mapped via `map_io_err`).
         let mut reader = sftp.open(remote).await.map_err(map_sftp_err)?;
         let mut writer = tokio::fs::File::create(local).await.map_err(map_io_err)?;
-        tokio::io::copy(&mut reader, &mut writer)
-            .await
-            .map_err(map_io_err)?;
+        copy_counting(&mut reader, &mut writer, progress).await?;
         writer.flush().await.map_err(map_io_err)?;
         Ok(())
     }
 
-    async fn upload(&self, local: &Path, remote: &str) -> Result<()> {
+    async fn upload(&self, local: &Path, remote: &str, progress: &TransferProgress) -> Result<()> {
         let sftp = self.sftp()?;
         let mut reader = tokio::fs::File::open(local).await.map_err(map_io_err)?;
         let mut writer = sftp.create(remote).await.map_err(map_sftp_err)?;
-        tokio::io::copy(&mut reader, &mut writer)
-            .await
-            .map_err(map_io_err)?;
+        copy_counting(&mut reader, &mut writer, progress).await?;
         // Flush + close the remote handle so all queued writes are acknowledged
         // before we report success.
         writer.shutdown().await.map_err(map_io_err)?;
@@ -300,6 +312,37 @@ fn map_russh_err(err: russh::Error) -> NyxError {
         russh::Error::IO(e) => NyxError::Io(e.to_string()),
         other => NyxError::Connection(other.to_string()),
     }
+}
+
+/// Copy `reader` → `writer` in 64 KiB chunks, bumping `progress` per chunk and
+/// checking for a requested cancel between chunks.
+///
+/// Both halves are driven through tokio's `AsyncRead`/`AsyncWrite`, which surface
+/// `std::io::Error` regardless of which side (remote SFTP handle or local file)
+/// errors — hence the single [`map_io_err`]. A cancel short-circuits with
+/// [`NyxError::Cancelled`]; the caller (service) does any partial-file cleanup.
+async fn copy_counting<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    progress: &TransferProgress,
+) -> Result<()>
+where
+    R: AsyncReadExt + Unpin,
+    W: AsyncWriteExt + Unpin,
+{
+    let mut buf = vec![0u8; COPY_CHUNK];
+    loop {
+        if progress.is_cancelled() {
+            return Err(NyxError::Cancelled);
+        }
+        let n = reader.read(&mut buf).await.map_err(map_io_err)?;
+        if n == 0 {
+            break;
+        }
+        writer.write_all(&buf[..n]).await.map_err(map_io_err)?;
+        progress.add(n as u64);
+    }
+    Ok(())
 }
 
 /// Map a **local** filesystem / transfer-copy error to [`NyxError`]. Used for

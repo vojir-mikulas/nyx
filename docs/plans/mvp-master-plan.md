@@ -139,6 +139,8 @@ confirmations and error toasts.
 
 ## M5 — Transfer queue (live)
 
+> **Detailed breakdown:** [`mvp-m5-transfer-queue.md`](./mvp-m5-transfer-queue.md).
+
 - [ ] `nyx-transfer`: real queue with a concurrency cap; each transfer streams
       progress (bytes, speed) and supports cancellation.
 - [ ] Service drives the queue on the Tokio thread; emits `TransferProgress`
@@ -159,7 +161,6 @@ one mid-flight cleanly.
 - [ ] Sort persistence per session; filter clears sensibly.
 - [ ] `tracing` wired to a log file (never credentials); `anyhow` context at edges.
 - [ ] Pass: no raw hex in app code; `nyx-ui` still has zero `nyx-*` deps.
-- [ ] README/CLAUDE screenshots + a short "first connection" note.
 
 **Done when:** the V1 scope in the overview is fully clickable end-to-end.
 

@@ -26,24 +26,37 @@
 //! TestConnection) is in flight at a time, so there is never more than one
 //! pending host-key decision.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use futures::channel::mpsc::{
     unbounded as futures_unbounded, UnboundedReceiver as FuturesReceiver,
     UnboundedSender as FuturesSender,
 };
-use nyx_core::RemoteEntry;
+use nyx_core::{NyxError, RemoteEntry, TransferDirection, TransferId, TransferStatus};
 use nyx_profile::Profile;
 use nyx_protocol::{KnownHosts, RemoteClient, SftpClient};
+use nyx_transfer::{CancelOutcome, Started, TransferQueue, TransferSpec};
 use tokio::sync::mpsc::{
     unbounded_channel, UnboundedReceiver as TokioReceiver, UnboundedSender as TokioSender,
 };
 use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
+
+/// The global concurrency cap: at most this many transfers run at once;
+/// submissions past it wait in the queue (plan M5, D2). Per-profile / settings
+/// caps are post-MVP.
+const MAX_CONCURRENT_TRANSFERS: usize = 3;
+
+/// How often the dispatcher samples running transfers' byte counters to emit a
+/// throttled [`Event::TransferProgress`] (plan M5, D12). The fixed interval also
+/// serves as the speed denominator, so no `Instant` is needed.
+const PROGRESS_TICK: Duration = Duration::from_millis(150);
 
 /// The per-OS path to the trust-on-first-use `known_hosts` store
 /// (`<data_dir>/known_hosts`, resolved via the `directories` crate).
@@ -156,6 +169,15 @@ pub enum Command {
         /// The login password (redacted in `Debug`).
         password: Secret,
     },
+    /// Cancel a queued or running transfer by id (plan M5, D7).
+    ///
+    /// A queued transfer is dropped before it starts; a running one is stopped
+    /// mid-flight between chunks. Either way the UI receives a terminal
+    /// [`Event::TransferDone`] with `Cancelled`.
+    CancelTransfer {
+        /// The transfer to cancel.
+        id: TransferId,
+    },
     /// Close the active connection.
     Disconnect,
     /// Shut the runtime down and exit the thread.
@@ -217,6 +239,45 @@ pub enum Event {
         op: FileOp,
         /// A credential-free, human-readable success message.
         message: String,
+    },
+    /// A transfer was accepted into the queue (plan M5, D5). The UI creates a
+    /// `Queued` dock row; paths are not secrets, so they are safe to carry.
+    TransferQueued {
+        /// The assigned transfer id.
+        id: TransferId,
+        /// Upload or download.
+        direction: TransferDirection,
+        /// The remote-side path.
+        remote: String,
+        /// The local-side path (display form).
+        local: String,
+    },
+    /// A transfer left the queue and is now running. `total` is the size statted
+    /// at start (`None` if it could not be determined).
+    TransferStarted {
+        /// The transfer id.
+        id: TransferId,
+        /// Total size in bytes, if known.
+        total: Option<u64>,
+    },
+    /// A throttled progress sample for a running transfer (~every 150 ms).
+    TransferProgress {
+        /// The transfer id.
+        id: TransferId,
+        /// Cumulative bytes transferred so far.
+        transferred: u64,
+        /// Instantaneous speed in bytes/sec over the last sample interval.
+        speed_bps: u64,
+    },
+    /// A transfer reached a terminal state: `Completed`, `Failed` or `Cancelled`.
+    /// `message` carries the credential-free error detail for `Failed`.
+    TransferDone {
+        /// The transfer id.
+        id: TransferId,
+        /// The terminal status.
+        status: TransferStatus,
+        /// An error detail for `Failed`; `None` otherwise.
+        message: Option<String>,
     },
     /// An operation failed. The message is human-readable and credential-free.
     Error {
@@ -348,9 +409,20 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
     // Whether a connect-like op (Connect or TestConnection) is in flight.
     let mut in_flight = false;
 
+    // The transfer scheduler (sans-IO policy, plan M5 D1/D9) and the per-id
+    // byte counters from the previous progress tick (for the speed delta, D12).
+    let mut queue = TransferQueue::new(MAX_CONCURRENT_TRANSFERS);
+    let mut last_bytes: HashMap<TransferId, u64> = HashMap::new();
+
     // Internal channels: connect-like task → dispatcher.
     let (register_tx, mut register_rx) = unbounded_channel::<oneshot::Sender<bool>>();
     let (done_tx, mut done_rx) = unbounded_channel::<TaskOutcome>();
+    // Internal channel: a finished copy task → dispatcher (mirrors `done`).
+    let (xfer_done_tx, mut xfer_done_rx) = unbounded_channel::<(TransferId, TransferOutcome)>();
+
+    // The throttle ticker for progress sampling. The first tick fires
+    // immediately; on an idle loop it samples an empty set (cheap no-op).
+    let mut progress_tick = tokio::time::interval(PROGRESS_TICK);
 
     loop {
         tokio::select! {
@@ -463,47 +535,82 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                         }
                         None => not_connected(&events),
                     },
-                    Command::Download { remote, local } => match client.clone() {
-                        Some(session) => {
-                            let name = base_name(&remote).to_string();
-                            let dest = local
-                                .parent()
-                                .map(|p| p.display().to_string())
-                                .unwrap_or_default();
-                            let message = if dest.is_empty() {
-                                format!("Saved “{name}”")
-                            } else {
-                                format!("Saved “{name}” to {dest}")
+                    // Transfers go through the queue: submit → announce → try to
+                    // start (subject to the cap). The dock row is the feedback —
+                    // no `FileOpDone` toast for transfers anymore (plan M5 D5/D6).
+                    Command::Download { remote, local } => {
+                        if client.is_none() {
+                            not_connected(&events);
+                        } else {
+                            let spec = TransferSpec {
+                                direction: TransferDirection::Download,
+                                remote: remote.clone(),
+                                local: local.clone(),
                             };
-                            spawn_file_op(
-                                FileOp::Download,
-                                message,
-                                events.clone(),
-                                async move { session.download(&remote, &local).await },
-                            );
+                            let id = queue.submit(spec);
+                            let _ = events.unbounded_send(Event::TransferQueued {
+                                id,
+                                direction: TransferDirection::Download,
+                                remote,
+                                local: local.display().to_string(),
+                            });
+                            try_start(&mut queue, &client, &events, &xfer_done_tx);
                         }
-                        None => not_connected(&events),
-                    },
-                    Command::Upload { local, remote } => match client.clone() {
-                        Some(session) => {
-                            let message = format!("Uploaded “{}”", base_name(&remote));
-                            spawn_file_op(
-                                FileOp::Upload,
-                                message,
-                                events.clone(),
-                                async move { session.upload(&local, &remote).await },
-                            );
+                    }
+                    Command::Upload { local, remote } => {
+                        if client.is_none() {
+                            not_connected(&events);
+                        } else {
+                            let spec = TransferSpec {
+                                direction: TransferDirection::Upload,
+                                remote: remote.clone(),
+                                local: local.clone(),
+                            };
+                            let id = queue.submit(spec);
+                            let _ = events.unbounded_send(Event::TransferQueued {
+                                id,
+                                direction: TransferDirection::Upload,
+                                remote,
+                                local: local.display().to_string(),
+                            });
+                            try_start(&mut queue, &client, &events, &xfer_done_tx);
                         }
-                        None => not_connected(&events),
+                    }
+                    Command::CancelTransfer { id } => match queue.cancel(id) {
+                        // Never started: no task will report, so emit the terminal
+                        // Cancelled directly.
+                        CancelOutcome::WasQueued => {
+                            last_bytes.remove(&id);
+                            let _ = events.unbounded_send(Event::TransferDone {
+                                id,
+                                status: TransferStatus::Cancelled,
+                                message: None,
+                            });
+                        }
+                        // Running: the copy loop notices the flag and reports
+                        // through `xfer_done` on the normal terminal path.
+                        CancelOutcome::WasRunning => {}
+                        CancelOutcome::Unknown => {}
                     },
                     Command::Disconnect => {
                         // A disconnect also clears the single-flight slot.
                         in_flight = false;
+                        // Cancel everything: flag the running transfers (their
+                        // tasks wind down and report Cancelled via `xfer_done`)
+                        // and drain the queued ones (no task ran, so emit their
+                        // terminal Cancelled here) — then drop the session (M5 D11).
+                        for id in queue.cancel_all() {
+                            last_bytes.remove(&id);
+                            let _ = events.unbounded_send(Event::TransferDone {
+                                id,
+                                status: TransferStatus::Cancelled,
+                                message: None,
+                            });
+                        }
                         // Drop the shared session: its `Drop` closes the channel
-                        // + connection. We no longer call `disconnect().await`
-                        // (we can't get `&mut` through the `Arc`); any in-flight
-                        // transfer task holding a clone keeps the connection alive
-                        // until it finishes (explicit cancellation is M5, D1).
+                        // + connection. Any still-winding-down transfer task holds
+                        // a clone that keeps the connection alive until its next
+                        // cancel check ends the copy.
                         if client.take().is_some() {
                             info!("disconnected");
                         }
@@ -529,6 +636,123 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                         let _ = events.unbounded_send(Event::TestResult { profile_id, ok, message });
                     }
                 }
+            }
+            Some((id, outcome)) = xfer_done_rx.recv() => {
+                // A copy task finished: free its slot, drop its speed counter,
+                // announce the terminal state, then backfill the freed slot.
+                queue.finish(id);
+                last_bytes.remove(&id);
+                let (status, message) = match outcome {
+                    TransferOutcome::Completed => (TransferStatus::Completed, None),
+                    TransferOutcome::Cancelled => (TransferStatus::Cancelled, None),
+                    TransferOutcome::Failed(msg) => (TransferStatus::Failed, Some(msg)),
+                };
+                let _ = events.unbounded_send(Event::TransferDone { id, status, message });
+                try_start(&mut queue, &client, &events, &xfer_done_tx);
+            }
+            _ = progress_tick.tick() => {
+                // Sample every running transfer's byte counter and emit a
+                // throttled progress event with an instantaneous speed (D12).
+                let samples: Vec<(TransferId, u64)> = queue.running_progress().collect();
+                for (id, transferred) in samples {
+                    let last = last_bytes.get(&id).copied().unwrap_or(0);
+                    let delta = transferred.saturating_sub(last);
+                    let speed_bps = delta * 1000 / PROGRESS_TICK.as_millis() as u64;
+                    last_bytes.insert(id, transferred);
+                    let _ = events.unbounded_send(Event::TransferProgress {
+                        id,
+                        transferred,
+                        speed_bps,
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// The terminal outcome of a spawned copy task, reported to the dispatcher.
+enum TransferOutcome {
+    /// The copy finished and the remote writes were acknowledged.
+    Completed,
+    /// The copy was cancelled mid-flight (a partial file was cleaned up).
+    Cancelled,
+    /// The copy failed; the credential-free message is for the UI.
+    Failed(String),
+}
+
+/// Promote and spawn as many queued transfers as the cap allows.
+///
+/// A missing session is a guard, not an error: queued transfers only exist while
+/// connected (the senders check), and `Disconnect` drains the queue — so this is
+/// just belt-and-braces against promoting a transfer with no session to run it.
+fn try_start(
+    queue: &mut TransferQueue,
+    client: &Option<Arc<SftpClient>>,
+    events: &FuturesSender<Event>,
+    xfer_done: &TokioSender<(TransferId, TransferOutcome)>,
+) {
+    let Some(client) = client else { return };
+    while let Some(started) = queue.poll_start() {
+        spawn_transfer(client.clone(), started, events.clone(), xfer_done.clone());
+    }
+}
+
+/// Spawn the copy task for a just-started transfer: stat the size, announce the
+/// start, run the protocol copy, clean up any partial file on cancel/fail, and
+/// report the terminal outcome back to the dispatcher (plan M5 D6/D8).
+fn spawn_transfer(
+    client: Arc<SftpClient>,
+    started: Started,
+    events: FuturesSender<Event>,
+    xfer_done: TokioSender<(TransferId, TransferOutcome)>,
+) {
+    let Started { id, spec, progress } = started;
+    tokio::spawn(async move {
+        // Stat the total up front so the dock can show a real %/total.
+        let total = match spec.direction {
+            TransferDirection::Download => client.remote_size(&spec.remote).await,
+            TransferDirection::Upload => {
+                tokio::fs::metadata(&spec.local).await.ok().map(|m| m.len())
+            }
+        };
+        let _ = events.unbounded_send(Event::TransferStarted { id, total });
+
+        let result = match spec.direction {
+            TransferDirection::Download => {
+                client.download(&spec.remote, &spec.local, &progress).await
+            }
+            TransferDirection::Upload => client.upload(&spec.local, &spec.remote, &progress).await,
+        };
+
+        let outcome = match result {
+            Ok(()) => TransferOutcome::Completed,
+            Err(NyxError::Cancelled) => {
+                cleanup_partial(&client, &spec).await;
+                TransferOutcome::Cancelled
+            }
+            Err(err) => {
+                cleanup_partial(&client, &spec).await;
+                TransferOutcome::Failed(err.to_string())
+            }
+        };
+        let _ = xfer_done.send((id, outcome));
+    });
+}
+
+/// Best-effort removal of the half-written file left by a cancelled/failed
+/// transfer (plan M5 D8): the local destination for a download, the remote
+/// destination for an upload. Errors are logged at `debug` and never surfaced —
+/// the terminal `TransferDone` already tells the user the real story.
+async fn cleanup_partial(client: &SftpClient, spec: &TransferSpec) {
+    match spec.direction {
+        TransferDirection::Download => {
+            if let Err(err) = tokio::fs::remove_file(&spec.local).await {
+                debug!(error = %err, "could not remove partial download");
+            }
+        }
+        TransferDirection::Upload => {
+            if let Err(err) = client.remove(&spec.remote).await {
+                debug!(error = %err, "could not remove partial upload");
             }
         }
     }

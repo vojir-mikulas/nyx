@@ -249,6 +249,9 @@ impl Gallery {
         let theme = cx.theme();
         let dir_color = theme.blue;
         let muted = theme.text_muted;
+        // Demonstrate the generic `sort_carets` slot: the caller supplies its own
+        // caret glyph (here a chevron pair) instead of the built-in triangles.
+        let caret = theme.accent;
 
         div()
             .h(gpui::px(200.))
@@ -271,6 +274,22 @@ impl Gallery {
                 .row_count(ROWS.len())
                 .selected(self.selected_row)
                 .sort(self.sort)
+                .sort_carets(
+                    move || {
+                        div()
+                            .text_xs()
+                            .text_color(caret)
+                            .child("⌃")
+                            .into_any_element()
+                    },
+                    move || {
+                        div()
+                            .text_xs()
+                            .text_color(caret)
+                            .child("⌄")
+                            .into_any_element()
+                    },
+                )
                 .on_select(move |ix, _event, _window, cx| {
                     select_view.update(cx, |this, cx| {
                         this.selected_row = Some(ix);

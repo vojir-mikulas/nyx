@@ -14,4 +14,4 @@ mod transfer;
 
 pub use error::{NyxError, Result};
 pub use remote::{EntryKind, Protocol, RemoteEntry};
-pub use transfer::{Transfer, TransferDirection, TransferId, TransferStatus};
+pub use transfer::{Transfer, TransferDirection, TransferId, TransferProgress, TransferStatus};

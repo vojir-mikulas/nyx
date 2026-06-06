@@ -38,7 +38,7 @@ pub use components::progress_bar::ProgressBar;
 pub use components::segmented::Segmented;
 pub use components::table::{Column, ColumnAlign, ColumnWidth, Table};
 pub use components::tabs::Tabs;
-pub use components::text_input::TextInput;
+pub use components::text_input::{TextInput, TextInputEvent};
 pub use components::toast::{Toast, ToastVariant};
 pub use components::toggle::Toggle;
 pub use components::tooltip::Tooltip;
@@ -56,7 +56,7 @@ pub mod prelude {
     pub use crate::components::segmented::Segmented;
     pub use crate::components::table::{Column, ColumnAlign, ColumnWidth, Table};
     pub use crate::components::tabs::Tabs;
-    pub use crate::components::text_input::TextInput;
+    pub use crate::components::text_input::{TextInput, TextInputEvent};
     pub use crate::components::toast::{Toast, ToastVariant};
     pub use crate::components::toggle::Toggle;
     pub use crate::components::tooltip::Tooltip;

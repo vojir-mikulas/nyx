@@ -3,7 +3,9 @@
 
 //! The left sidebar: header, saved connections, footer.
 
-use gpui::{div, prelude::*, px, Context, FontWeight, MouseButton};
+use gpui::{
+    div, prelude::*, px, radians, Context, FontWeight, MouseButton, SharedString, Transformation,
+};
 use nyx_ui::{ActiveTheme, Badge, Button, ButtonSize, ButtonVariant, IconButton};
 
 use crate::icon::icon;
@@ -25,10 +27,6 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
     });
     let footer_new = cx.listener(|this, _, _, cx| {
         this.open_editor_create(cx);
-        cx.notify();
-    });
-    let open_settings = cx.listener(|this, _, _, cx| {
-        this.tweaks_open = true;
         cx.notify();
     });
 
@@ -67,12 +65,27 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                 .overflow_y_scroll()
                 .pb_2()
                 .when(!recents.is_empty(), |this| {
-                    this.child(group(state, "Recent", recents.len(), &recents, cx))
+                    this.child(group(
+                        state,
+                        "Recent",
+                        recents.len(),
+                        &recents,
+                        Some(state.recent_collapsed),
+                        cx,
+                    ))
                 })
-                .child(group(state, "Saved", saved, &state.connections_all(), cx)),
+                .child(group(
+                    state,
+                    "Saved",
+                    saved,
+                    &state.connections_all(),
+                    None,
+                    cx,
+                )),
         )
         .child(
-            // Footer: New + settings.
+            // Footer: just the "New" button — the single settings entry point
+            // now lives in the status bar (plan M6 D5).
             div()
                 .flex()
                 .gap_1()
@@ -86,52 +99,76 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                             .size(ButtonSize::Sm)
                             .on_click(footer_new),
                     ),
-                )
-                .child(
-                    IconButton::new("sb-foot-settings", icon("settings", 14., theme.text_faint))
-                        .on_click(open_settings),
                 ),
         )
 }
 
+/// Render a connection group. When `collapsed` is `Some`, the header becomes a
+/// collapse toggle (a chevron that rotates) and the rows are hidden while
+/// collapsed; `None` renders a plain, always-expanded group (plan M6 D6).
 fn group(
     state: &AppState,
     label: &'static str,
     count: usize,
     conns: &[&ConnectionVm],
+    collapsed: Option<bool>,
     cx: &mut Context<AppState>,
 ) -> impl IntoElement {
     let theme = cx.theme().clone();
     // Row ids are namespaced by group so a profile appearing in both Recent and
     // Saved doesn't collide on a duplicate element id.
     let prefix = label;
-    div()
+    let is_collapsed = collapsed.unwrap_or(false);
+
+    let mut header = div()
+        .id(SharedString::from(format!("group-{label}")))
         .flex()
-        .flex_col()
+        .items_center()
+        .gap_1p5()
+        .pt_3()
+        .pb_1()
+        .pl(px(14.))
+        .pr_3()
+        .text_color(theme.text_dim);
+    if collapsed.is_some() {
+        // A disclosure chevron: down when expanded, rotated to point right when
+        // collapsed. Only Recent is collapsible today, so the toggle is fixed.
+        let rotation = if is_collapsed {
+            -std::f32::consts::FRAC_PI_2
+        } else {
+            0.
+        };
+        header = header
+            .cursor_pointer()
+            .hover(|s| s.text_color(theme.text_muted))
+            .child(
+                icon("chevD", 12., theme.text_dim)
+                    .with_transformation(Transformation::rotate(radians(rotation))),
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.toggle_recent_collapsed();
+                cx.notify();
+            }));
+    }
+    header = header
         .child(
             div()
-                .flex()
-                .items_center()
-                .gap_1p5()
-                .pt_3()
-                .pb_1()
-                .pl(px(14.))
-                .pr_3()
-                .text_color(theme.text_dim)
-                .child(
-                    div()
-                        .text_xs()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(label),
-                )
-                .child(div().text_xs().child(format!("· {count}"))),
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(label),
         )
-        .children(
-            conns
-                .iter()
-                .map(|conn| conn_row(state, conn, prefix, cx))
-                .collect::<Vec<_>>(),
-        )
+        .child(div().text_xs().child(format!("· {count}")));
+
+    let rows = if is_collapsed {
+        Vec::new()
+    } else {
+        conns
+            .iter()
+            .map(|conn| conn_row(state, conn, prefix, cx))
+            .collect::<Vec<_>>()
+    };
+
+    div().flex().flex_col().child(header).children(rows)
 }
 
 fn conn_row(

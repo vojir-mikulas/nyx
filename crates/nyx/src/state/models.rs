@@ -88,7 +88,7 @@ fn fmt_relative(ts: OffsetDateTime) -> String {
 pub struct TransferVm {
     /// The real domain transfer (progress reads straight off this).
     pub transfer: Transfer,
-    /// Synthetic transfer speed in bytes/sec (real progress arrives in M5).
+    /// Live transfer speed in bytes/sec, from `Event::TransferProgress`.
     pub speed_bps: Option<u64>,
     /// Display copy for a failed transfer.
     pub error: Option<SharedString>,

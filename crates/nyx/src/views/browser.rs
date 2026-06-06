@@ -5,12 +5,43 @@
 
 use std::rc::Rc;
 
-use gpui::{div, prelude::*, px, Context, Hsla, SharedString};
+use gpui::{
+    actions, div, prelude::*, px, radians, App, Context, Hsla, KeyBinding, MouseButton,
+    SharedString, Transformation,
+};
 use nyx_ui::{ActiveTheme, Button, ButtonSize, ButtonVariant, Column, IconButton, Table};
 
 use crate::icon::icon;
 use crate::state::AppState;
 use crate::views::titlebar_drag;
+
+actions!(
+    nyx_browser,
+    [
+        /// Open the selected entry (directory → list into it; file → download).
+        Open,
+        /// Go up one directory level.
+        GoUp,
+        /// Rename the single selected entry.
+        Rename,
+        /// Delete the current selection (confirmed).
+        Delete,
+    ]
+);
+
+/// Register the browser's keyboard bindings (scoped to the `"Browser"` key
+/// context, so they only fire when the file table — not an input — has focus).
+/// Call once at startup, alongside [`nyx_ui::TextInput::bind_keys`] (plan M6 D11).
+pub fn bind_keys(cx: &mut App) {
+    let ctx = Some("Browser");
+    cx.bind_keys([
+        KeyBinding::new("enter", Open, ctx),
+        KeyBinding::new("backspace", GoUp, ctx),
+        KeyBinding::new("f2", Rename, ctx),
+        KeyBinding::new("delete", Delete, ctx),
+        KeyBinding::new("cmd-backspace", Delete, ctx),
+    ]);
+}
 
 /// Render the browser column (tab strip + toolbar + table).
 pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
@@ -45,11 +76,13 @@ fn tab_strip(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
             .bg(theme.bg_bar)
             .border_b_1()
             .border_color(theme.border_soft)
-            .when(!sidebar_open, |this| this.pl(px(72.)))
+            // When the sidebar is hidden, leave a comfortable gap between the
+            // traffic lights and the first tab (plan M6 D4).
+            .when(!sidebar_open, |this| this.pl(px(80.)))
             .child(
-                // Active connection tab.
+                // Active connection tab. The selected tab is distinguished by
+                // `bg_app` + the right divider; no top accent line (plan M6 D4).
                 div()
-                    .relative()
                     .flex()
                     .items_center()
                     .gap_2()
@@ -60,15 +93,6 @@ fn tab_strip(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
                     .text_sm()
                     .border_r_1()
                     .border_color(theme.border_soft)
-                    .child(
-                        div()
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .top_0()
-                            .h(px(1.))
-                            .bg(theme.accent),
-                    )
                     .child(div().text_color(color).child(icon("server", 13., color)))
                     .child(div().truncate().child(name))
                     .child(
@@ -331,6 +355,10 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
 
     let muted = theme.text_muted;
     let faint = theme.text_faint;
+    // The sort caret matches the design's chevron (an app icon), passed into the
+    // domain-free `Table` via its generic caret slot: up for ascending, down for
+    // descending (plan M6 D9).
+    let caret_color = theme.text_muted;
     let rows_for_render = rows.clone();
     let rows_for_select = rows.clone();
     let rows_for_secondary = rows.clone();
@@ -351,6 +379,14 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
             .row_height(px(row_height))
             .selected_set(selected_set)
             .sort(Some((state.sort.0.column(), state.sort.1)))
+            .sort_carets(
+                move || {
+                    icon("chevD", 11., caret_color)
+                        .with_transformation(Transformation::rotate(radians(std::f32::consts::PI)))
+                        .into_any_element()
+                },
+                move || icon("chevD", 11., caret_color).into_any_element(),
+            )
             .on_sort({
                 let view = view.clone();
                 move |col, _window, cx| {
@@ -461,6 +497,34 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
         .min_h_0()
         .bg(theme.bg_app)
         .text_sm()
+        // The `"Browser"` key context (Enter / Backspace / F2 / Delete). It only
+        // wraps the table — not the toolbar's filter box — so its keys never
+        // fight `TextInput` while the filter is focused (plan M6 D11). A click
+        // anywhere in the table focuses it so the keys dispatch.
+        .key_context("Browser")
+        .track_focus(&state.browser_focus)
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _, window, cx| {
+                window.focus(&this.browser_focus, cx);
+            }),
+        )
+        .on_action(cx.listener(|this, _: &Open, _, cx| {
+            this.activate_selection(cx);
+            cx.notify();
+        }))
+        .on_action(cx.listener(|this, _: &GoUp, _, cx| {
+            this.go_up(cx);
+            cx.notify();
+        }))
+        .on_action(cx.listener(|this, _: &Rename, _, cx| {
+            this.rename_selection(cx);
+            cx.notify();
+        }))
+        .on_action(cx.listener(|this, _: &Delete, _, cx| {
+            this.start_delete(cx);
+            cx.notify();
+        }))
         .child(body)
 }
 

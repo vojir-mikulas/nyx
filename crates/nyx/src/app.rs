@@ -5,7 +5,12 @@
 //! (tweaks modal + toasts). [`AppState`] is the single root entity; this file
 //! is its `Render` impl.
 
-use gpui::{anchored, deferred, div, prelude::*, px, Context, FontWeight, MouseButton, Window};
+use std::time::Duration;
+
+use gpui::{
+    actions, anchored, deferred, div, percentage, prelude::*, px, Animation, AnimationExt, Context,
+    FontWeight, MouseButton, Transformation, Window,
+};
 use nyx_ui::{
     ActiveTheme, Button, ButtonVariant, ContextMenu, ContextMenuItem, Modal, Segmented, Theme,
     Toast, Toggle,
@@ -16,6 +21,21 @@ use crate::icon::icon;
 use crate::state::models::Density;
 use crate::state::{AppState, View};
 use crate::views;
+
+actions!(
+    nyx_app,
+    [
+        /// Open the connection editor in Create mode (the ⌘N shortcut shown on
+        /// the welcome screen).
+        NewConnection,
+    ]
+);
+
+/// Register the app-wide keyboard shortcuts (global, no key context). Call once
+/// at startup.
+pub fn bind_keys(cx: &mut gpui::App) {
+    cx.bind_keys([gpui::KeyBinding::new("cmd-n", NewConnection, None)]);
+}
 
 impl Render for AppState {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -54,6 +74,17 @@ impl Render for AppState {
             .bg(theme.bg_panel_2)
             .text_color(theme.text)
             .text_sm()
+            // Blur on click-away: GPUI keeps focus until another focusable
+            // element takes it, so a click on empty chrome would otherwise leave
+            // an input focused. This runs in the capture phase (root first), so a
+            // click that lands on a field still focuses it on the way down — but a
+            // click that hits nothing focusable drops focus (plan M6 D1).
+            .capture_any_mouse_down(|_, window, _| window.blur())
+            // ⌘N opens the connection editor (the welcome screen advertises it).
+            .on_action(cx.listener(|this, _: &NewConnection, _, cx| {
+                this.open_editor_create(cx);
+                cx.notify();
+            }))
             .child(
                 div()
                     .flex()
@@ -593,9 +624,15 @@ fn connecting_overlay(state: &AppState, cx: &Context<AppState>) -> impl IntoElem
                 .border_color(theme.border_strong)
                 .shadow_lg()
                 .child(
-                    div()
-                        .text_color(theme.accent)
-                        .child(icon("zap", 24., theme.accent)),
+                    // A continuously rotating spinner (matches the design's
+                    // `.connecting .spin` ring) instead of a static glyph.
+                    icon("refresh", 26., theme.accent).with_animation(
+                        "connecting-spinner",
+                        Animation::new(Duration::from_secs(1)).repeat(),
+                        |icon, delta| {
+                            icon.with_transformation(Transformation::rotate(percentage(delta)))
+                        },
+                    ),
                 )
                 .child(
                     div()

@@ -122,6 +122,10 @@ type RowClickHandler = Box<dyn Fn(usize, &ClickEvent, &mut Window, &mut App) + '
 type RowSecondaryHandler = Box<dyn Fn(usize, Point<Pixels>, &mut Window, &mut App) + 'static>;
 /// Builds the cells (one [`AnyElement`] per column) for a given row.
 type RowRenderer = Rc<dyn Fn(usize, &mut Window, &mut App) -> Vec<gpui::AnyElement> + 'static>;
+/// Builds the sort caret element for the active column. Generic (returns an
+/// [`AnyElement`]) so the library stays domain- and icon-set-free; the caller
+/// supplies its own glyph (plan M6 D9).
+type CaretBuilder = Rc<dyn Fn() -> gpui::AnyElement + 'static>;
 
 /// A virtualized, fixed-row-height data table.
 #[derive(IntoElement)]
@@ -138,6 +142,8 @@ pub struct Table {
     on_activate: Option<Rc<IndexHandler>>,
     on_sort: Option<Rc<IndexHandler>>,
     render_row: Option<RowRenderer>,
+    sort_caret_asc: Option<CaretBuilder>,
+    sort_caret_desc: Option<CaretBuilder>,
 }
 
 impl Table {
@@ -156,6 +162,8 @@ impl Table {
             on_activate: None,
             on_sort: None,
             render_row: None,
+            sort_caret_asc: None,
+            sort_caret_desc: None,
         }
     }
 
@@ -228,6 +236,22 @@ impl Table {
         self
     }
 
+    /// Supply the caret elements drawn next to the active sort column's title:
+    /// `asc` when the sort is ascending, `desc` when descending. Each is a
+    /// closure returning an [`AnyElement`](gpui::AnyElement), so the caller picks
+    /// the glyph (e.g. an app icon) without leaking domain or icon-set types into
+    /// the library. When unset, the table falls back to its built-in Unicode
+    /// triangles (plan M6 D9).
+    pub fn sort_carets(
+        mut self,
+        asc: impl Fn() -> gpui::AnyElement + 'static,
+        desc: impl Fn() -> gpui::AnyElement + 'static,
+    ) -> Self {
+        self.sort_caret_asc = Some(Rc::new(asc));
+        self.sort_caret_desc = Some(Rc::new(desc));
+        self
+    }
+
     /// Supply the per-row cell renderer (one element per column).
     pub fn render_row(
         mut self,
@@ -247,10 +271,24 @@ impl RenderOnce for Table {
 
         // --- Header ---
         let on_sort = self.on_sort.clone();
+        let caret_asc = self.sort_caret_asc.clone();
+        let caret_desc = self.sort_caret_desc.clone();
         let header_cells = columns.iter().enumerate().map(|(ix, column)| {
             let sorted = sort.map(|(c, _)| c == ix).unwrap_or(false);
-            let caret = match sort {
-                Some((c, asc)) if c == ix => Some(if asc { "▲" } else { "▼" }),
+            // The caret for the active column: a caller-supplied glyph if set,
+            // else the built-in Unicode triangle (plan M6 D9).
+            let caret: Option<gpui::AnyElement> = match sort {
+                Some((c, asc)) if c == ix => Some(if asc {
+                    caret_asc
+                        .as_ref()
+                        .map(|f| f())
+                        .unwrap_or_else(|| div().text_xs().child("▲").into_any_element())
+                } else {
+                    caret_desc
+                        .as_ref()
+                        .map(|f| f())
+                        .unwrap_or_else(|| div().text_xs().child("▼").into_any_element())
+                }),
                 _ => None,
             };
             let color = if sorted {
@@ -269,9 +307,7 @@ impl RenderOnce for Table {
                 .px_2p5()
                 .text_color(color)
                 .child(column.title.clone())
-                .when_some(caret, |this, caret| {
-                    this.child(div().text_xs().child(caret))
-                });
+                .when_some(caret, |this, caret| this.child(caret));
             let cell = cell_layout(cell, column, column.align);
 
             if column.sortable {

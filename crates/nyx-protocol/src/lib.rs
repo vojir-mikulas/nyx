@@ -13,7 +13,7 @@
 use std::path::Path;
 
 use async_trait::async_trait;
-use nyx_core::{RemoteEntry, Result};
+use nyx_core::{RemoteEntry, Result, TransferProgress};
 
 mod host_key;
 mod known_hosts;
@@ -37,10 +37,17 @@ pub trait RemoteClient: Send + Sync {
     async fn list_dir(&self, path: &str) -> Result<Vec<RemoteEntry>>;
 
     /// Download a remote file to a local path.
-    async fn download(&self, remote: &str, local: &Path) -> Result<()>;
+    ///
+    /// `progress` is bumped per chunk and checked between chunks: a requested
+    /// cancellation short-circuits the copy with [`nyx_core::NyxError::Cancelled`].
+    async fn download(&self, remote: &str, local: &Path, progress: &TransferProgress)
+        -> Result<()>;
 
     /// Upload a local file to a remote path.
-    async fn upload(&self, local: &Path, remote: &str) -> Result<()>;
+    ///
+    /// `progress` is bumped per chunk and checked between chunks: a requested
+    /// cancellation short-circuits the copy with [`nyx_core::NyxError::Cancelled`].
+    async fn upload(&self, local: &Path, remote: &str, progress: &TransferProgress) -> Result<()>;
 
     /// Rename / move a remote entry.
     async fn rename(&self, from: &str, to: &str) -> Result<()>;

@@ -24,8 +24,8 @@ use std::ops::Range;
 
 use gpui::{
     actions, div, fill, point, prelude::*, px, size, App, Bounds, ClipboardItem, Context,
-    CursorStyle, Element, ElementId, ElementInputHandler, Entity, EntityInputHandler, FocusHandle,
-    Focusable, GlobalElementId, InspectorElementId, KeyBinding, LayoutId, MouseButton,
+    CursorStyle, Element, ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter,
+    FocusHandle, Focusable, GlobalElementId, InspectorElementId, KeyBinding, LayoutId, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine,
     SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window,
 };
@@ -39,19 +39,43 @@ actions!(
     [
         Backspace,
         Delete,
+        DeleteWordLeft,
+        DeleteWordRight,
         Left,
         Right,
+        WordLeft,
+        WordRight,
         SelectLeft,
         SelectRight,
+        SelectWordLeft,
+        SelectWordRight,
         SelectAll,
         Home,
         End,
+        SelectHome,
+        SelectEnd,
+        FocusNext,
+        FocusPrev,
+        Submit,
+        Cancel,
         ShowCharacterPalette,
         Paste,
         Cut,
         Copy,
     ]
 );
+
+/// Events a [`TextInput`] emits so its owning view can react without a callback
+/// baked into the field (the field can't know whether "submit" means *create
+/// folder* or *save profile*). Owners `cx.subscribe` and route these to the same
+/// handlers their primary / cancel buttons call (plan M6 D3).
+#[derive(Clone, Copy, Debug)]
+pub enum TextInputEvent {
+    /// The user pressed Enter — treat as confirming the field's form.
+    Submit,
+    /// The user pressed Escape — treat as dismissing the field's form.
+    Cancel,
+}
 
 /// A single-line, themed text field.
 ///
@@ -79,7 +103,10 @@ impl TextInput {
     /// to set placeholder text.
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
-            focus_handle: cx.focus_handle(),
+            // A tab stop so `window.focus_next/prev` (Tab / Shift-Tab) can walk
+            // between fields in a form — the only configuration the built-in
+            // tab-stop ring needs (plan M6 D1).
+            focus_handle: cx.focus_handle().tab_stop(true),
             content: SharedString::default(),
             placeholder: SharedString::default(),
             selected_range: 0..0,
@@ -137,8 +164,16 @@ impl TextInput {
         cx.bind_keys([
             KeyBinding::new("backspace", Backspace, ctx),
             KeyBinding::new("delete", Delete, ctx),
+            // Word delete (macOS: alt-backspace / alt-delete).
+            KeyBinding::new("alt-backspace", DeleteWordLeft, ctx),
+            KeyBinding::new("alt-delete", DeleteWordRight, ctx),
             KeyBinding::new("left", Left, ctx),
             KeyBinding::new("right", Right, ctx),
+            // Word movement (macOS: alt-left / alt-right and selecting variants).
+            KeyBinding::new("alt-left", WordLeft, ctx),
+            KeyBinding::new("alt-right", WordRight, ctx),
+            KeyBinding::new("alt-shift-left", SelectWordLeft, ctx),
+            KeyBinding::new("alt-shift-right", SelectWordRight, ctx),
             KeyBinding::new("shift-left", SelectLeft, ctx),
             KeyBinding::new("shift-right", SelectRight, ctx),
             KeyBinding::new("cmd-a", SelectAll, ctx),
@@ -147,6 +182,20 @@ impl TextInput {
             KeyBinding::new("cmd-x", Cut, ctx),
             KeyBinding::new("home", Home, ctx),
             KeyBinding::new("end", End, ctx),
+            // Line movement (macOS: cmd-left / cmd-right alias home / end).
+            KeyBinding::new("cmd-left", Home, ctx),
+            KeyBinding::new("cmd-right", End, ctx),
+            KeyBinding::new("cmd-shift-left", SelectHome, ctx),
+            KeyBinding::new("cmd-shift-right", SelectEnd, ctx),
+            KeyBinding::new("shift-home", SelectHome, ctx),
+            KeyBinding::new("shift-end", SelectEnd, ctx),
+            // Tab traversal between fields (no default `tab` binding exists, so
+            // we add our own — plan M6 D1).
+            KeyBinding::new("tab", FocusNext, ctx),
+            KeyBinding::new("shift-tab", FocusPrev, ctx),
+            // Submit / dismiss, surfaced to the owner as `TextInputEvent` (D3).
+            KeyBinding::new("enter", Submit, ctx),
+            KeyBinding::new("escape", Cancel, ctx),
             KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, ctx),
         ]);
     }
@@ -186,6 +235,80 @@ impl TextInput {
 
     fn end(&mut self, _: &End, _: &mut Window, cx: &mut Context<Self>) {
         self.move_to(self.content.len(), cx);
+    }
+
+    fn select_home(&mut self, _: &SelectHome, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(0, cx);
+    }
+
+    fn select_end(&mut self, _: &SelectEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.content.len(), cx);
+    }
+
+    fn word_left(&mut self, _: &WordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(self.previous_word_boundary(self.cursor_offset()), cx);
+    }
+
+    fn word_right(&mut self, _: &WordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(self.next_word_boundary(self.cursor_offset()), cx);
+    }
+
+    fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.previous_word_boundary(self.cursor_offset()), cx);
+    }
+
+    fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.next_word_boundary(self.cursor_offset()), cx);
+    }
+
+    fn delete_word_left(
+        &mut self,
+        _: &DeleteWordLeft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_range.is_empty() {
+            let prev = self.previous_word_boundary(self.cursor_offset());
+            if self.cursor_offset() == prev {
+                window.play_system_bell();
+                return;
+            }
+            self.select_to(prev, cx);
+        }
+        self.replace_text_in_range(None, "", window, cx);
+    }
+
+    fn delete_word_right(
+        &mut self,
+        _: &DeleteWordRight,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_range.is_empty() {
+            let next = self.next_word_boundary(self.cursor_offset());
+            if self.cursor_offset() == next {
+                window.play_system_bell();
+                return;
+            }
+            self.select_to(next, cx);
+        }
+        self.replace_text_in_range(None, "", window, cx);
+    }
+
+    fn focus_next(&mut self, _: &FocusNext, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus_next(cx);
+    }
+
+    fn focus_prev(&mut self, _: &FocusPrev, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus_prev(cx);
+    }
+
+    fn submit(&mut self, _: &Submit, _: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(TextInputEvent::Submit);
+    }
+
+    fn cancel(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(TextInputEvent::Cancel);
     }
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
@@ -359,6 +482,25 @@ impl TextInput {
         self.content
             .grapheme_indices(true)
             .find_map(|(idx, _)| (idx > offset).then_some(idx))
+            .unwrap_or(self.content.len())
+    }
+
+    /// The start of the nearest word *before* `offset` (macOS alt-left). Words
+    /// are Unicode word segments, so leading whitespace/punctuation is skipped.
+    fn previous_word_boundary(&self, offset: usize) -> usize {
+        self.content
+            .unicode_word_indices()
+            .rev()
+            .find_map(|(idx, _)| (idx < offset).then_some(idx))
+            .unwrap_or(0)
+    }
+
+    /// The end of the nearest word *after* `offset` (macOS alt-right).
+    fn next_word_boundary(&self, offset: usize) -> usize {
+        self.content
+            .unicode_word_indices()
+            .map(|(idx, word)| idx + word.len())
+            .find(|&end| end > offset)
             .unwrap_or(self.content.len())
     }
 }
@@ -703,6 +845,8 @@ impl Focusable for TextInput {
     }
 }
 
+impl EventEmitter<TextInputEvent> for TextInput {}
+
 impl Render for TextInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window);
@@ -722,13 +866,25 @@ impl Render for TextInput {
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
+            .on_action(cx.listener(Self::delete_word_left))
+            .on_action(cx.listener(Self::delete_word_right))
             .on_action(cx.listener(Self::left))
             .on_action(cx.listener(Self::right))
+            .on_action(cx.listener(Self::word_left))
+            .on_action(cx.listener(Self::word_right))
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
+            .on_action(cx.listener(Self::select_word_left))
+            .on_action(cx.listener(Self::select_word_right))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::home))
             .on_action(cx.listener(Self::end))
+            .on_action(cx.listener(Self::select_home))
+            .on_action(cx.listener(Self::select_end))
+            .on_action(cx.listener(Self::focus_next))
+            .on_action(cx.listener(Self::focus_prev))
+            .on_action(cx.listener(Self::submit))
+            .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::show_character_palette))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))

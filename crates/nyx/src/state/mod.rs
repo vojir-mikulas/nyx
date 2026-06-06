@@ -8,10 +8,9 @@
 //! helpers that read a `&AppState` and emit elements; only the filter
 //! [`TextInput`] is its own entity (it needs focus/IME state). Derived getters
 //! ([`visible_entries`](AppState::visible_entries), [`dock_rows`](AppState::dock_rows))
-//! compute from the fixtures with no cached duplicate state, so M2 can swap the
-//! fixture source for real events with no logic change.
+//! compute from the live state with no cached duplicate, so the source can be a
+//! real backend event with no logic change.
 
-pub mod fixtures;
 pub mod models;
 
 use std::collections::HashSet;
@@ -19,13 +18,14 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use gpui::{
-    prelude::*, App, ClipboardItem, Context, Entity, PathPromptOptions, Pixels, Point, SharedString,
+    prelude::*, App, ClipboardItem, Context, Entity, FocusHandle, PathPromptOptions, Pixels, Point,
+    SharedString,
 };
-use nyx_core::{Protocol, TransferStatus};
+use nyx_core::{Protocol, Transfer, TransferDirection, TransferId, TransferStatus};
 use nyx_keyring::{CredentialStore, OsKeyring};
 use nyx_profile::{FileProfileStore, Profile, ProfileColor, ProfileStore};
 use nyx_service::{Command, Event, FileOp, Secret, ServiceHandle};
-use nyx_ui::{TextInput, ToastVariant};
+use nyx_ui::{TextInput, TextInputEvent, ToastVariant};
 use time::OffsetDateTime;
 
 use models::{AccentKind, ConnectionVm, Density, DockTab, EntryRow, SortKey, TransferVm};
@@ -216,6 +216,12 @@ pub struct AppState {
     // --- chrome / tweaks ---
     /// Whether the sidebar is shown.
     pub sidebar_open: bool,
+    /// Whether the sidebar's **Recent** group is collapsed (session-only; not
+    /// persisted to the profile store for MVP — plan M6 D6).
+    pub recent_collapsed: bool,
+    /// Focus handle for the file browser table, so the `"Browser"` key context
+    /// (Enter / Backspace / F2 / Delete) has somewhere to dispatch (plan M6 D11).
+    pub browser_focus: FocusHandle,
     /// Whether the tweaks modal is open.
     pub tweaks_open: bool,
     /// File-row density (exercises `Table::row_height`).
@@ -270,6 +276,7 @@ impl AppState {
         let filter = cx.new(|cx| TextInput::new(cx).with_placeholder("Filter this folder…"));
         // Re-render whenever the filter text changes.
         cx.observe(&filter, |_, _, cx| cx.notify()).detach();
+        let browser_focus = cx.focus_handle();
 
         // Spawn the backend thread and drain its events into this entity. The
         // drain runs on the GPUI foreground executor: `next().await` yields, so it
@@ -321,6 +328,8 @@ impl AppState {
             dock_tab: DockTab::All,
             transfers: Vec::new(),
             sidebar_open: true,
+            recent_collapsed: false,
+            browser_focus,
             tweaks_open: false,
             density: Density::Comfortable,
             show_perms: true,
@@ -429,6 +438,7 @@ impl AppState {
     fn show_password_prompt(&mut self, profile: Profile, cx: &mut Context<Self>) {
         let host_label = format!("{}@{}:{}", profile.username, profile.host, profile.port);
         let input = cx.new(|cx| TextInput::new(cx).with_placeholder("Password").obscured());
+        self.wire_input(&input, cx);
         self.password_prompt = Some(PasswordPrompt {
             profile_id: profile.id.clone(),
             profile_name: profile.name.clone().into(),
@@ -533,6 +543,51 @@ impl AppState {
         }
     }
 
+    // --- text-input submit/cancel wiring (D3) ----------------------------
+
+    /// Subscribe to a modal field's [`TextInputEvent`]s so Enter submits and Esc
+    /// dismisses the modal it belongs to — without a mouse. The field can't know
+    /// what "submit" means, so the dispatch is routed by *which* modal is open
+    /// (they're mutually exclusive in practice). The filter box is deliberately
+    /// **not** wired (plan M6 D3).
+    fn wire_input(&self, input: &Entity<TextInput>, cx: &mut Context<Self>) {
+        cx.subscribe(input, |this, _input, event, cx| {
+            match event {
+                TextInputEvent::Submit => this.submit_focused_modal(cx),
+                TextInputEvent::Cancel => this.cancel_focused_modal(),
+            }
+            cx.notify();
+        })
+        .detach();
+    }
+
+    /// Route an Enter from a wired field to the open modal's primary action.
+    fn submit_focused_modal(&mut self, cx: &mut Context<Self>) {
+        if self.password_prompt.is_some() {
+            self.confirm_password(cx);
+        } else if self.input_prompt.is_some() {
+            self.submit_input(cx);
+        } else if self.editor.is_some() {
+            self.save_editor(cx);
+        }
+    }
+
+    /// Route an Esc from a wired field to the open modal's dismiss action.
+    fn cancel_focused_modal(&mut self) {
+        if self.password_prompt.is_some() {
+            self.cancel_password();
+        } else if self.input_prompt.is_some() {
+            self.cancel_input();
+        } else if self.editor.is_some() {
+            self.close_editor();
+        }
+    }
+
+    /// Toggle the sidebar **Recent** group's collapsed state (plan M6 D6).
+    pub fn toggle_recent_collapsed(&mut self) {
+        self.recent_collapsed = !self.recent_collapsed;
+    }
+
     // --- connection editor + CRUD ----------------------------------------
 
     /// Open the editor in **Create** mode (a fresh id, blank form).
@@ -552,6 +607,7 @@ impl AppState {
             test_status: None,
             testing: false,
         });
+        self.wire_editor_inputs(cx);
     }
 
     /// Open the editor in **Edit** mode, prefilled from an existing profile. The
@@ -585,6 +641,26 @@ impl AppState {
             test_status: None,
             testing: false,
         });
+        self.wire_editor_inputs(cx);
+    }
+
+    /// Wire every editor field's submit/cancel events (Enter saves, Esc closes)
+    /// after the editor has been constructed (plan M6 D3).
+    fn wire_editor_inputs(&self, cx: &mut Context<Self>) {
+        let Some(editor) = self.editor.as_ref() else {
+            return;
+        };
+        let inputs = [
+            editor.name.clone(),
+            editor.host.clone(),
+            editor.port.clone(),
+            editor.username.clone(),
+            editor.remote_path.clone(),
+            editor.password.clone(),
+        ];
+        for input in &inputs {
+            self.wire_input(input, cx);
+        }
     }
 
     /// Close the editor without saving.
@@ -910,6 +986,7 @@ impl AppState {
         self.close_file_menu();
         let input = cx.new(|cx| TextInput::new(cx).with_placeholder("Folder name"));
         cx.observe(&input, |_, _, cx| cx.notify()).detach();
+        self.wire_input(&input, cx);
         self.input_prompt = Some(InputPrompt {
             title: "New folder".into(),
             label: "Name".into(),
@@ -926,8 +1003,26 @@ impl AppState {
         };
         let name = menu.name.clone();
         self.close_file_menu();
+        self.open_rename_prompt(name, cx);
+    }
+
+    /// Open the **Rename** modal for the current single-row selection — the
+    /// keyboard (F2) entry point that has no context menu to read (plan M6 D11).
+    pub fn rename_selection(&mut self, cx: &mut Context<Self>) {
+        if self.selected.len() != 1 {
+            return;
+        }
+        let Some(name) = self.selected.iter().next().cloned() else {
+            return;
+        };
+        self.open_rename_prompt(name, cx);
+    }
+
+    /// Build and show the rename modal for `name` (shared by the menu + F2).
+    fn open_rename_prompt(&mut self, name: SharedString, cx: &mut Context<Self>) {
         let input = cx.new(|cx| TextInput::new(cx).with_content(name.clone()));
         cx.observe(&input, |_, _, cx| cx.notify()).detach();
+        self.wire_input(&input, cx);
         self.input_prompt = Some(InputPrompt {
             title: "Rename".into(),
             label: "New name".into(),
@@ -935,6 +1030,26 @@ impl AppState {
             input,
             action: InputAction::Rename { original: name },
         });
+    }
+
+    /// Activate the current selection (the browser's Enter key, plan M6 D11): a
+    /// single selected directory is opened; otherwise the selection is downloaded
+    /// (files only — folders are skipped with a toast by `download_selection`).
+    pub fn activate_selection(&mut self, cx: &mut Context<Self>) {
+        if self.selected.len() == 1 {
+            if let Some(name) = self.selected.iter().next().cloned() {
+                let is_dir = self
+                    .listing
+                    .iter()
+                    .find(|row| row.entry.name.as_str() == name.as_ref())
+                    .is_some_and(|row| row.entry.is_dir);
+                if is_dir {
+                    self.open_dir(&name, cx);
+                    return;
+                }
+            }
+        }
+        self.download_selection(cx);
     }
 
     /// Dismiss the input modal without acting.
@@ -1170,6 +1285,12 @@ impl AppState {
         self.listing_loading = false;
     }
 
+    /// Cancel a queued or running transfer (the dock's `x` button, M5 D7). The
+    /// row updates reactively when the matching [`Event::TransferDone`] arrives.
+    pub fn cancel_transfer(&mut self, id: TransferId) {
+        self.service.send(Command::CancelTransfer { id });
+    }
+
     /// Apply a backend [`Event`] to the state and request a redraw. This is the
     /// single sink for everything the service emits (see [`AppState::new`]).
     fn apply_event(&mut self, event: Event, cx: &mut Context<Self>) {
@@ -1215,10 +1336,86 @@ impl AppState {
             }
             Event::FileOpDone { op, message } => {
                 // Always toast the success line; refresh the listing only for the
-                // mutating ops (a download leaves the remote unchanged, D9).
+                // mutating ops. Transfers (Download/Upload) no longer arrive here
+                // — they feed the dock and refresh via `TransferDone` (M5 D5/D10).
                 self.push_toast(message, ToastVariant::Success, cx);
                 if !matches!(op, FileOp::Download) {
                     self.selected.clear();
+                    self.reload_listing(cx);
+                }
+            }
+            // A new transfer entered the queue: add a Queued dock row (M5 D10).
+            Event::TransferQueued {
+                id,
+                direction,
+                remote,
+                local,
+            } => {
+                self.transfers.push(TransferVm {
+                    transfer: Transfer {
+                        id,
+                        direction,
+                        remote_path: remote,
+                        local_path: local,
+                        total_bytes: None,
+                        transferred_bytes: 0,
+                        status: TransferStatus::Queued,
+                    },
+                    speed_bps: None,
+                    error: None,
+                });
+            }
+            // A transfer left the queue and is running: set Running + total.
+            Event::TransferStarted { id, total } => {
+                if let Some(vm) = self.transfers.iter_mut().find(|t| t.transfer.id == id) {
+                    vm.transfer.status = TransferStatus::Running;
+                    vm.transfer.total_bytes = total;
+                }
+            }
+            // A throttled progress sample. Ignore it for a row that is no longer
+            // Running (a late tick can arrive after TransferDone, M5 D10/Risks).
+            Event::TransferProgress {
+                id,
+                transferred,
+                speed_bps,
+            } => {
+                if let Some(vm) = self.transfers.iter_mut().find(|t| t.transfer.id == id) {
+                    if vm.transfer.status == TransferStatus::Running {
+                        vm.transfer.transferred_bytes = transferred;
+                        vm.speed_bps = Some(speed_bps);
+                    }
+                }
+            }
+            // A transfer reached a terminal state. Keep the row so the
+            // Completed/Failed tabs populate; on a completed upload into the
+            // current directory, refresh the listing (the refresh that used to
+            // live on the FileOpDone path, M5 D5/D10).
+            Event::TransferDone {
+                id,
+                status,
+                message,
+            } => {
+                let cwd = self.current_path();
+                let mut refresh = false;
+                if let Some(vm) = self.transfers.iter_mut().find(|t| t.transfer.id == id) {
+                    vm.transfer.status = status;
+                    vm.speed_bps = None;
+                    match status {
+                        TransferStatus::Completed => {
+                            // Snap the bar to 100% even if no final sample landed.
+                            if let Some(total) = vm.transfer.total_bytes {
+                                vm.transfer.transferred_bytes = total;
+                            }
+                            refresh = vm.transfer.direction == TransferDirection::Upload
+                                && remote_parent(&vm.transfer.remote_path) == cwd;
+                        }
+                        TransferStatus::Failed => {
+                            vm.error = message.map(SharedString::from);
+                        }
+                        _ => {}
+                    }
+                }
+                if refresh {
                     self.reload_listing(cx);
                 }
             }
@@ -1286,12 +1483,8 @@ impl AppState {
         self.filter
             .update(cx, |input, cx| input.set_content("", cx));
         self.dock_open = true;
-        // Transfers are still fixtures until M5; seed the prod box's dock.
-        self.transfers = if profile_id == "prod" {
-            fixtures::fake_transfers()
-        } else {
-            Vec::new()
-        };
+        // The dock is fed by real transfer events (M5); it starts empty.
+        self.transfers = Vec::new();
         self.reload_listing(cx);
     }
 
@@ -1565,4 +1758,14 @@ fn path_segments(path: &str) -> Vec<SharedString> {
         .filter(|s| !s.is_empty())
         .map(SharedString::from)
         .collect()
+}
+
+/// The parent directory of an absolute remote file path (`"/"` at the root),
+/// matching [`AppState::current_path`]'s form so the two can be compared to
+/// decide whether a completed upload landed in the current directory.
+fn remote_parent(path: &str) -> String {
+    match path.rsplit_once('/') {
+        Some((parent, _)) if !parent.is_empty() => parent.to_string(),
+        _ => "/".to_string(),
+    }
 }

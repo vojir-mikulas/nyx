@@ -5,7 +5,7 @@
 
 use gpui::{div, prelude::*, px, Context, FontWeight};
 use nyx_core::Protocol;
-use nyx_ui::{ActiveTheme, Badge};
+use nyx_ui::{ActiveTheme, Badge, IconButton, IconButtonSize};
 
 use crate::icon::icon;
 use crate::state::models::{protocol_badge, ConnectionVm};
@@ -115,10 +115,29 @@ fn card(conn: &ConnectionVm, cx: &mut Context<AppState>) -> impl IntoElement {
     } else {
         "globe"
     };
-    let path = conn.profile.remote_path.clone().unwrap_or_default();
+    // Subtitle: `user@host:port`, plus `· path` only when a remote path is set —
+    // no dangling separator when it's unset (plan M6 D8).
+    let subtitle = match conn.profile.remote_path.as_deref() {
+        Some(path) if !path.trim().is_empty() => {
+            format!("{}  ·  {}", conn.user_host_port(), path)
+        }
+        _ => conn.user_host_port(),
+    };
+
+    let name: gpui::SharedString = conn.profile.name.clone().into();
+    let group = gpui::SharedString::from(format!("wm-card-{id}"));
+    // Edit / Remove (and the right-click menu) call the existing CRUD handlers —
+    // no new logic, just discoverable affordances on the card (plan M6 D7).
+    let open_id = id.clone();
+    let menu_id = id.clone();
+    let menu_name = name.clone();
+    let edit_id = id.clone();
+    let remove_id = id.clone();
+    let remove_name = name.clone();
 
     div()
         .id(gpui::SharedString::from(format!("wm-{id}")))
+        .group(group.clone())
         .flex()
         .items_center()
         .gap(px(13.))
@@ -166,18 +185,77 @@ fn card(conn: &ConnectionVm, cx: &mut Context<AppState>) -> impl IntoElement {
                         .text_color(theme.text_faint)
                         .font_family(crate::assets::FONT_MONO)
                         .truncate()
-                        .child(format!("{}  ·  {}", conn.user_host_port(), path)),
+                        .child(subtitle),
                 ),
         )
+        // Trailing slot: the chevron by default, swapped for Edit / Remove on
+        // hover (the buttons stop propagation so they don't open the connection).
         .child(
             div()
-                .text_color(theme.text_dim)
-                .child(icon("chevR", 16., theme.text_dim)),
+                .relative()
+                .flex()
+                .items_center()
+                .justify_end()
+                .w(px(58.))
+                .child(
+                    div()
+                        .group_hover(group.clone(), |s| s.invisible())
+                        .text_color(theme.text_dim)
+                        .child(icon("chevR", 16., theme.text_dim)),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .right_0()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .invisible()
+                        .group_hover(group, |s| s.visible())
+                        .child(
+                            IconButton::new(
+                                gpui::SharedString::from(format!("wm-edit-{edit_id}")),
+                                icon("pencil", 14., theme.text_muted),
+                            )
+                            .size(IconButtonSize::Xs)
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.open_editor_edit(&edit_id, cx);
+                                    cx.notify();
+                                },
+                            )),
+                        )
+                        .child(
+                            IconButton::new(
+                                gpui::SharedString::from(format!("wm-remove-{remove_id}")),
+                                icon("trash", 14., theme.red),
+                            )
+                            .size(IconButtonSize::Xs)
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.open_delete_confirm(
+                                        remove_id.clone(),
+                                        remove_name.clone(),
+                                    );
+                                    cx.notify();
+                                },
+                            )),
+                        ),
+                ),
         )
         .on_click(cx.listener(move |this, _, _, cx| {
-            this.open_connection(&id, cx);
+            this.open_connection(&open_id, cx);
             cx.notify();
         }))
+        .on_mouse_down(
+            gpui::MouseButton::Right,
+            cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                this.open_row_menu(menu_id.clone(), menu_name.clone(), event.position);
+                cx.notify();
+            }),
+        )
 }
 
 fn recent_row(conn: &ConnectionVm, cx: &mut Context<AppState>) -> impl IntoElement {
