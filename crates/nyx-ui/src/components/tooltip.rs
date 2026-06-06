@@ -1,27 +1,16 @@
-//! `Tooltip` — a small elevated label shown on hover.
-//!
-//! GPUI's `.tooltip(..)` takes a builder closure returning an `AnyView`, so a
-//! tooltip must be a view. [`Tooltip`] is that view; [`Tooltip::text`] is a
-//! convenience that returns a ready-made builder closure:
-//!
-//! ```ignore
-//! div()
-//!     .id("save")
-//!     .tooltip(Tooltip::text("Save connection"))
-//!     .child(/* … */)
-//! ```
+//! `Tooltip` — a small elevated label shown on hover. GPUI's `.tooltip(..)`
+//! wants a closure returning an `AnyView`, so a tooltip must be a view;
+//! [`Tooltip::text`] returns a ready-made builder closure.
 
 use gpui::{div, prelude::*, AnyView, App, SharedString, Window};
 
 use crate::theme::ActiveTheme;
 
-/// A small elevated label view, shown on hover via GPUI's tooltip machinery.
 pub struct Tooltip {
     text: SharedString,
 }
 
 impl Tooltip {
-    /// Create a tooltip view with the given `text`.
     pub fn new(text: impl Into<SharedString>) -> Self {
         Self { text: text.into() }
     }

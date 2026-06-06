@@ -59,6 +59,13 @@ cargo fmt --all                               # format
 - **Components:** stateless → `RenderOnce`; stateful views → `Render` + `Entity`.
 - **Crate metadata** is inherited from `[workspace.package]`; shared deps from
   `[workspace.dependencies]`.
+- **Comments — minimal.** Comment only what the code can't say itself: a
+  non-obvious *why*, an invariant (concurrency/safety), a real gotcha. Write them
+  terse — a clause, not a paragraph. Do **not** add: echo doc comments that
+  restate a name (`/// Set the selected index.` over `fn selected`), what-comments
+  that narrate the next line, section dividers (`// --- foo ---`), commented-out
+  code, or plan-doc provenance (`M3`, `plan M6 D4`). Self-documenting code over a
+  comment, every time.
 
 ## Gotchas
 

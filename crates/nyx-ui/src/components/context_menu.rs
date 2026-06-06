@@ -1,24 +1,12 @@
-//! `ContextMenu` — a floating list of actions (right-click / overflow menus).
-//!
-//! This component renders only the **menu surface** (the panel + items). Where
-//! it appears is the caller's concern: wrap it in [`gpui::anchored`] /
-//! [`gpui::deferred`] to pin it to a cursor position or a trigger button.
-//!
-//! ```ignore
-//! ContextMenu::new("row-menu")
-//!     .item(ContextMenuItem::new("download", "Download").shortcut("⌘D"))
-//!     .separator()
-//!     .item(ContextMenuItem::new("delete", "Delete").danger())
-//! ```
+//! `ContextMenu` — a floating list of actions. Renders only the menu surface;
+//! the caller anchors it (via [`gpui::anchored`] / [`gpui::deferred`]).
 
 use gpui::{div, prelude::*, App, ClickEvent, SharedString, Window};
 
 use crate::theme::ActiveTheme;
 
-/// A boxed click handler in GPUI's `(event, window, app)` shape.
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
-/// A single actionable row in a [`ContextMenu`].
 pub struct ContextMenuItem {
     key: SharedString,
     label: SharedString,
@@ -29,7 +17,7 @@ pub struct ContextMenuItem {
 }
 
 impl ContextMenuItem {
-    /// Create an item with a stable `key` (used as its element id) and a label.
+    /// `key` doubles as the element id.
     pub fn new(key: impl Into<SharedString>, label: impl Into<SharedString>) -> Self {
         Self {
             key: key.into(),
@@ -41,25 +29,21 @@ impl ContextMenuItem {
         }
     }
 
-    /// Show a keyboard-shortcut hint, right-aligned.
     pub fn shortcut(mut self, shortcut: impl Into<SharedString>) -> Self {
         self.shortcut = Some(shortcut.into());
         self
     }
 
-    /// Render this item in the destructive (red) style.
     pub fn danger(mut self) -> Self {
         self.danger = true;
         self
     }
 
-    /// Disable the item (dimmed, no hover, no click).
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
     }
 
-    /// Attach a click handler.
     pub fn on_click(
         mut self,
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -69,13 +53,11 @@ impl ContextMenuItem {
     }
 }
 
-/// One entry in the menu: an item or a visual separator.
 enum Entry {
     Item(ContextMenuItem),
     Separator,
 }
 
-/// A floating list of actions.
 #[derive(IntoElement)]
 pub struct ContextMenu {
     id: SharedString,
@@ -83,7 +65,6 @@ pub struct ContextMenu {
 }
 
 impl ContextMenu {
-    /// Create an empty menu with a stable `id`.
     pub fn new(id: impl Into<SharedString>) -> Self {
         Self {
             id: id.into(),
@@ -91,13 +72,11 @@ impl ContextMenu {
         }
     }
 
-    /// Append an action item.
     pub fn item(mut self, item: ContextMenuItem) -> Self {
         self.entries.push(Entry::Item(item));
         self
     }
 
-    /// Append a separator line.
     pub fn separator(mut self) -> Self {
         self.entries.push(Entry::Separator);
         self

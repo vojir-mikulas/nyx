@@ -21,8 +21,9 @@ types to generic component props *in the app*, not in the component.
   `sftp_badge_color`. App-specific styling lives in the app.
 - **Public API via the `prelude`**: `use nyx_ui::prelude::*;`.
 - **Gallery-first.** Every public component gets a gallery entry
-  (`examples/gallery.rs`) and doc comments. Iterate there before wiring into the
-  app: `cargo run -p nyx-ui --example gallery`.
+  (`examples/gallery.rs`). Iterate there before wiring into the app:
+  `cargo run -p nyx-ui --example gallery`. A doc comment is welcome only when it
+  adds non-obvious info — see the comment policy in the root `CLAUDE.md`.
 - **Apache-2.0 license header** on every file (matches the future Flint repo).
 - **No external widget crate.** Build on GPUI primitives (`div`, the styling
   API). That includes `TextInput` — built in-house.

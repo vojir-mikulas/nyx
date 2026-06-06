@@ -1,27 +1,7 @@
-//! `Table` — a virtualized, fixed-row-height data table (the file browser's
-//! backbone), built on GPUI's [`uniform_list`](gpui::uniform_list).
-//!
-//! It is **fully generic**: it knows nothing about the data. The caller declares
-//! [`Column`]s (width / alignment / sortability) and supplies a row renderer
-//! closure that maps a row index to one cell element per column. Selection and
-//! sort are *stateless* here — the table renders the state it is given and
-//! reports clicks via [`on_select`](Table::on_select) / [`on_sort`](Table::on_sort);
-//! the owning view keeps the state. This keeps domain types out of the library.
-//!
-//! ```ignore
-//! Table::new("files", vec![
-//!         Column::new("Name").flex(),
-//!         Column::new("Size").width(px(90.)).align_end().sortable(),
-//!     ])
-//!     .row_count(entries.len())
-//!     .selected(self.selected)
-//!     .sort(Some((1, false)))
-//!     .on_select(|ix, _event, _window, _cx| { /* update selection */ })
-//!     .render_row(move |ix, _window, _cx| vec![
-//!         div().child(name_of(ix)).into_any_element(),
-//!         div().child(size_of(ix)).into_any_element(),
-//!     ])
-//! ```
+//! `Table` — a virtualized, fixed-row-height data table on GPUI's
+//! [`uniform_list`](gpui::uniform_list). Fully generic and stateless: the caller
+//! declares [`Column`]s + a row renderer and owns selection/sort, which the table
+//! renders and reports clicks against.
 
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -33,27 +13,21 @@ use gpui::{
 
 use crate::theme::ActiveTheme;
 
-/// How a [`Column`] is sized.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub enum ColumnWidth {
-    /// Grow to share leftover space equally with other flex columns.
+    /// Shares leftover space equally with other flex columns.
     #[default]
     Flex,
-    /// A fixed pixel width.
     Fixed(Pixels),
 }
 
-/// Horizontal alignment of a column's content.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum ColumnAlign {
-    /// Left-aligned (default).
     #[default]
     Start,
-    /// Right-aligned (numbers, sizes).
     End,
 }
 
-/// A column definition: title, sizing, alignment and sortability.
 #[derive(Clone)]
 pub struct Column {
     title: SharedString,
@@ -63,7 +37,6 @@ pub struct Column {
 }
 
 impl Column {
-    /// Create a flexible, left-aligned, non-sortable column.
     pub fn new(title: impl Into<SharedString>) -> Self {
         Self {
             title: title.into(),
@@ -73,32 +46,27 @@ impl Column {
         }
     }
 
-    /// Give the column a fixed pixel width.
     pub fn width(mut self, width: Pixels) -> Self {
         self.width = ColumnWidth::Fixed(width);
         self
     }
 
-    /// Let the column flex to share leftover space (the default).
     pub fn flex(mut self) -> Self {
         self.width = ColumnWidth::Flex;
         self
     }
 
-    /// Right-align the column's content.
     pub fn align_end(mut self) -> Self {
         self.align = ColumnAlign::End;
         self
     }
 
-    /// Mark the column as sortable (header becomes clickable, shows a caret).
     pub fn sortable(mut self) -> Self {
         self.sortable = true;
         self
     }
 }
 
-/// Apply a column's width + alignment to a cell `div`.
 fn cell_layout<E: Styled>(el: E, column: &Column, align: ColumnAlign) -> E {
     let el = match column.width {
         ColumnWidth::Fixed(w) => el.w(w).flex_shrink_0(),
@@ -110,25 +78,18 @@ fn cell_layout<E: Styled>(el: E, column: &Column, align: ColumnAlign) -> E {
     }
 }
 
-/// A handler invoked with a row or column index.
 type IndexHandler = Box<dyn Fn(usize, &mut Window, &mut App) + 'static>;
-/// A row-click handler that also receives the originating click (for modifiers).
+/// Row-click handler; also receives the click, for modifier-aware selection.
 type RowClickHandler = Box<dyn Fn(usize, &ClickEvent, &mut Window, &mut App) + 'static>;
-/// A row secondary-click handler, receiving the row index and the cursor
-/// position (so the caller can anchor a context menu there).
+/// Receives the row index and cursor position, to anchor a context menu.
 type RowSecondaryHandler = Box<dyn Fn(usize, Point<Pixels>, &mut Window, &mut App) + 'static>;
-/// Builds the cells (one [`AnyElement`] per column) for a given row.
+/// Builds one cell [`AnyElement`] per column for a row.
 type RowRenderer = Rc<dyn Fn(usize, &mut Window, &mut App) -> Vec<gpui::AnyElement> + 'static>;
-/// Builds the sort caret element for the active column. Generic (returns an
-/// [`AnyElement`]) so the library stays domain- and icon-set-free; the caller
-/// supplies its own glyph (plan M6 D9).
+/// Builds the sort caret. Returns an [`AnyElement`] so the library stays
+/// domain- and icon-set-free.
 type CaretBuilder = Rc<dyn Fn() -> gpui::AnyElement + 'static>;
-/// A handler invoked when external files are dropped onto a row, with the row
-/// index and the dropped paths. Generic: `ExternalPaths` is a `gpui` type, not a
-/// domain type, so the table stays Flint-safe.
 type RowDropHandler = Rc<dyn Fn(usize, &ExternalPaths, &mut Window, &mut App) + 'static>;
 
-/// A virtualized, fixed-row-height data table.
 #[derive(IntoElement)]
 pub struct Table {
     id: SharedString,
@@ -150,7 +111,6 @@ pub struct Table {
 }
 
 impl Table {
-    /// Create a table with a stable `id` and column definitions.
     pub fn new(id: impl Into<SharedString>, columns: Vec<Column>) -> Self {
         Self {
             id: id.into(),
@@ -172,41 +132,35 @@ impl Table {
         }
     }
 
-    /// Set the number of rows.
     pub fn row_count(mut self, row_count: usize) -> Self {
         self.row_count = row_count;
         self
     }
 
-    /// Override the row height (defaults to the theme's `row_height`).
+    /// Defaults to the theme's `row_height`.
     pub fn row_height(mut self, height: Pixels) -> Self {
         self.row_height = Some(height);
         self
     }
 
-    /// Mark the currently selected row.
     pub fn selected(mut self, selected: Option<usize>) -> Self {
         self.selected = selected;
         self
     }
 
-    /// Mark a set of selected rows (multi-selection). A row is highlighted when
-    /// it is in this set *or* equals [`selected`](Self::selected). The two APIs
-    /// compose so single- and multi-selection callers share one component.
+    /// Multi-selection: a row highlights when in this set *or* equal to
+    /// [`selected`](Self::selected), so both APIs compose.
     pub fn selected_set(mut self, selected: HashSet<usize>) -> Self {
         self.selected_set = Some(Rc::new(selected));
         self
     }
 
-    /// Set the active sort as `(column_index, ascending)`, to draw the caret.
+    /// `(column_index, ascending)`, to draw the caret.
     pub fn sort(mut self, sort: Option<(usize, bool)>) -> Self {
         self.sort = sort;
         self
     }
 
-    /// Handler invoked when a row is single-clicked, with the row index and the
-    /// originating [`ClickEvent`] (so the owner can read modifiers for
-    /// cmd/ctrl-click multi-selection).
     pub fn on_select(
         mut self,
         handler: impl Fn(usize, &ClickEvent, &mut Window, &mut App) + 'static,
@@ -215,10 +169,6 @@ impl Table {
         self
     }
 
-    /// Handler invoked when a row is **secondary-clicked** (right mouse button),
-    /// with the row index and the cursor position — so the owner can open a
-    /// context menu anchored at the cursor. Stays generic: index + position only,
-    /// no domain types.
     pub fn on_secondary(
         mut self,
         handler: impl Fn(usize, Point<Pixels>, &mut Window, &mut App) + 'static,
@@ -227,26 +177,19 @@ impl Table {
         self
     }
 
-    /// Handler invoked with the index of a double-clicked (activated) row —
-    /// e.g. opening a directory. A double-click does not also fire
-    /// [`on_select`](Self::on_select).
+    /// Double-click; does not also fire [`on_select`](Self::on_select).
     pub fn on_activate(mut self, handler: impl Fn(usize, &mut Window, &mut App) + 'static) -> Self {
         self.on_activate = Some(Rc::new(Box::new(handler)));
         self
     }
 
-    /// Handler invoked with the index of a clicked sortable column header.
     pub fn on_sort(mut self, handler: impl Fn(usize, &mut Window, &mut App) + 'static) -> Self {
         self.on_sort = Some(Rc::new(Box::new(handler)));
         self
     }
 
-    /// Supply the caret elements drawn next to the active sort column's title:
-    /// `asc` when the sort is ascending, `desc` when descending. Each is a
-    /// closure returning an [`AnyElement`](gpui::AnyElement), so the caller picks
-    /// the glyph (e.g. an app icon) without leaking domain or icon-set types into
-    /// the library. When unset, the table falls back to its built-in Unicode
-    /// triangles (plan M6 D9).
+    /// Caret glyphs for the active sort column. Unset falls back to built-in
+    /// Unicode triangles.
     pub fn sort_carets(
         mut self,
         asc: impl Fn() -> gpui::AnyElement + 'static,
@@ -257,16 +200,13 @@ impl Table {
         self
     }
 
-    /// Mark which rows accept an external file drop: only these rows highlight
-    /// while files are dragged over them and dispatch [`on_row_drop`](Self::on_row_drop).
-    /// (The owner knows which rows are directories; the table stays domain-free.)
+    /// Only these rows highlight on drag-over and dispatch
+    /// [`on_row_drop`](Self::on_row_drop) (the owner knows which are directories).
     pub fn droppable_rows(mut self, rows: HashSet<usize>) -> Self {
         self.droppable_rows = Some(Rc::new(rows));
         self
     }
 
-    /// Handler invoked when external files are dropped onto a [droppable](Self::droppable_rows)
-    /// row, with the row index and the dropped paths.
     pub fn on_row_drop(
         mut self,
         handler: impl Fn(usize, &ExternalPaths, &mut Window, &mut App) + 'static,
@@ -275,7 +215,6 @@ impl Table {
         self
     }
 
-    /// Supply the per-row cell renderer (one element per column).
     pub fn render_row(
         mut self,
         renderer: impl Fn(usize, &mut Window, &mut App) -> Vec<gpui::AnyElement> + 'static,
@@ -292,14 +231,12 @@ impl RenderOnce for Table {
         let columns = self.columns.clone();
         let sort = self.sort;
 
-        // --- Header ---
         let on_sort = self.on_sort.clone();
         let caret_asc = self.sort_caret_asc.clone();
         let caret_desc = self.sort_caret_desc.clone();
         let header_cells = columns.iter().enumerate().map(|(ix, column)| {
             let sorted = sort.map(|(c, _)| c == ix).unwrap_or(false);
-            // The caret for the active column: a caller-supplied glyph if set,
-            // else the built-in Unicode triangle (plan M6 D9).
+            // Caller-supplied caret glyph if set, else the built-in triangle.
             let caret: Option<gpui::AnyElement> = match sort {
                 Some((c, asc)) if c == ix => Some(if asc {
                     caret_asc
@@ -355,7 +292,6 @@ impl RenderOnce for Table {
             .text_xs()
             .children(header_cells);
 
-        // --- Body (virtualized) ---
         let columns_for_rows = columns.clone();
         let render_row = self.render_row.clone();
         let on_select = self.on_select.clone();
@@ -410,9 +346,8 @@ impl RenderOnce for Table {
                         .id(ix)
                         .flex()
                         .items_center()
-                        // `uniform_list` lays each row out as a layout root, so a
-                        // bare flex row sizes to its content; `w_full` makes it
-                        // fill the list width so flex columns align with the header.
+                        // `uniform_list` lays each row out as a layout root; `w_full`
+                        // makes it fill the width so flex columns align with the header.
                         .w_full()
                         .h(row_height)
                         .text_color(text)
@@ -439,8 +374,6 @@ impl RenderOnce for Table {
                                 on_secondary(ix, event.position, window, cx);
                             })
                         })
-                        // A droppable row (e.g. a directory) highlights while an
-                        // external file drag is over it and uploads on drop.
                         .when(is_droppable, |this| {
                             let this = this
                                 .drag_over::<ExternalPaths>(move |s, _, _, _| s.bg(drop_highlight));

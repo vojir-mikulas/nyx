@@ -1,12 +1,9 @@
-//! [`AppState`] — the single source of truth for the M1 app shell.
+//! [`AppState`] — the single source of truth for the app shell.
 //!
 //! One root `Entity<AppState>` holds all mutable state plus the interaction
 //! logic (navigation, sort, filter, selection, dock). Views are `RenderOnce`
 //! helpers that read a `&AppState` and emit elements; only the filter
-//! [`TextInput`] is its own entity (it needs focus/IME state). Derived getters
-//! ([`visible_entries`](AppState::visible_entries), [`dock_rows`](AppState::dock_rows))
-//! compute from the live state with no cached duplicate, so the source can be a
-//! real backend event with no logic change.
+//! [`TextInput`] is its own entity (it needs focus/IME state).
 
 pub mod models;
 
@@ -51,11 +48,8 @@ pub struct ToastMsg {
     pub id: u64,
 }
 
-/// The password prompt shown before a connection is attempted (M2).
-///
-/// M3 replaces this with a keyring lookup that only prompts on a miss; the
-/// password is read straight out of the masked input into the `Connect` command
-/// and never stored on `AppState`.
+/// The password prompt shown on a keychain miss. The password is read straight
+/// from the masked input into the `Connect` command, never stored on `AppState`.
 pub struct PasswordPrompt {
     /// The profile being connected to.
     pub profile_id: String,
@@ -131,9 +125,8 @@ pub struct DeleteConfirm {
     pub profile_name: SharedString,
 }
 
-/// A pending right-click context menu on a browser file row (Download / Rename /
-/// Delete / Copy path). Delete/Download operate on the whole selection; Rename /
-/// Copy path target the clicked row (plan M4 D7).
+/// A pending right-click context menu on a browser file row. Delete/Download
+/// operate on the whole selection; Rename / Copy path target the clicked row.
 pub struct FileMenu {
     /// The clicked row's name (the single-target ops act on this).
     pub name: SharedString,
@@ -188,7 +181,6 @@ pub struct AppState {
     /// The connection shown as connected (fake: equals `active_id`).
     pub online_id: Option<String>,
 
-    // --- browser ---
     /// Current path segments, e.g. `["var", "www"]`.
     pub cwd: Vec<SharedString>,
     /// Back/forward navigation stack.
@@ -204,7 +196,6 @@ pub struct AppState {
     /// Selected entry names.
     pub selected: HashSet<SharedString>,
 
-    // --- transfer dock ---
     /// Whether the dock body is expanded.
     pub dock_open: bool,
     /// Active dock filter tab.
@@ -212,14 +203,12 @@ pub struct AppState {
     /// All transfers.
     pub transfers: Vec<TransferVm>,
 
-    // --- chrome / tweaks ---
     /// Whether the sidebar is shown.
     pub sidebar_open: bool,
-    /// Whether the sidebar's **Recent** group is collapsed (session-only; not
-    /// persisted to the profile store for MVP — plan M6 D6).
+    /// Whether the sidebar's **Recent** group is collapsed (session-only).
     pub recent_collapsed: bool,
-    /// Focus handle for the file browser table, so the `"Browser"` key context
-    /// (Enter / Backspace / F2 / Delete) has somewhere to dispatch (plan M6 D11).
+    /// Focus target for the file browser's `"Browser"` key context
+    /// (Enter / Backspace / F2 / Delete).
     pub browser_focus: FocusHandle,
     /// Whether the tweaks modal is open.
     pub tweaks_open: bool,
@@ -234,7 +223,6 @@ pub struct AppState {
     /// Monotonic toast id source.
     next_toast_id: u64,
 
-    // --- persistence (M3) ---
     /// On-disk profile store (the source of `connections`).
     store: FileProfileStore,
     /// On-disk store for UI preferences (theme, density, permissions column).
@@ -242,16 +230,15 @@ pub struct AppState {
     /// OS keychain for connection passwords (addressed by profile id).
     keyring: OsKeyring,
     /// A startup error to surface once the backend is `Ready` (e.g. a malformed
-    /// `profiles.toml`); kept so construction can't push a toast.
+    /// `profiles.toml`); kept because construction can't push a toast.
     startup_error: Option<SharedString>,
 
-    // --- backend bridge (M2) ---
     /// Handle to the backend thread (dropped on app exit → graceful shutdown).
     service: ServiceHandle,
     /// The profile id of an in-flight connection attempt, if any.
     pub connecting_id: Option<String>,
     /// The profile id whose connect used a *stored* password — set so an auth
-    /// failure can re-open the prompt to correct a stale keychain entry (D5.3).
+    /// failure can re-open the prompt to correct a stale keychain entry.
     used_stored_password: Option<String>,
     /// A pending password prompt (shown before connecting).
     pub password_prompt: Option<PasswordPrompt>,
@@ -263,11 +250,11 @@ pub struct AppState {
     pub row_menu: Option<RowMenu>,
     /// A pending delete confirmation, if open.
     pub delete_confirm: Option<DeleteConfirm>,
-    /// A pending browser file-row context menu, if open (M4).
+    /// A pending browser file-row context menu, if open.
     pub file_menu: Option<FileMenu>,
-    /// A pending New-folder / Rename input modal, if open (M4).
+    /// A pending New-folder / Rename input modal, if open.
     pub input_prompt: Option<InputPrompt>,
-    /// A pending file-delete confirmation, if open (M4).
+    /// A pending file-delete confirmation, if open.
     pub file_delete: Option<FileDeleteConfirm>,
     /// Whether a directory listing is in flight (drives the loading hint).
     pub listing_loading: bool,
@@ -287,14 +274,12 @@ impl AppState {
     /// Build the initial state: welcome screen, connections loaded, nothing open.
     pub fn new(cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| TextInput::new(cx).with_placeholder("Filter this folder…"));
-        // Re-render whenever the filter text changes.
         cx.observe(&filter, |_, _, cx| cx.notify()).detach();
         let browser_focus = cx.focus_handle();
 
         // Spawn the backend thread and drain its events into this entity. The
         // drain runs on the GPUI foreground executor: `next().await` yields, so it
-        // never blocks the UI. This is the single Tokio↔GPUI bridge (M2); later
-        // milestones only add event variants, never another bridge.
+        // never blocks the UI. This is the single Tokio↔GPUI bridge.
         let (service, mut events) = nyx_service::spawn();
         cx.spawn(async move |this, cx| {
             while let Some(event) = events.next().await {
@@ -308,10 +293,8 @@ impl AppState {
         })
         .detach();
 
-        // Open the on-disk store and load the saved connections. A missing file
-        // is an empty list (first run); a malformed one is surfaced as a toast
-        // once the backend is `Ready` (construction can't toast yet) — and the
-        // store is *not* overwritten, so the user can fix the file.
+        // Missing file → empty list (first run); malformed → surfaced as a toast
+        // once `Ready`, and the store is not overwritten so the user can fix it.
         let store = FileProfileStore::open_default()
             .unwrap_or_else(|_| FileProfileStore::with_path("profiles.toml"));
         let (connections, startup_error) = match store.list() {
@@ -325,9 +308,7 @@ impl AppState {
             Err(err) => (Vec::new(), Some(SharedString::from(err.to_string()))),
         };
 
-        // Load persisted UI preferences and apply the theme global immediately
-        // (a missing/malformed file is silently the default — see
-        // `FileSettingsStore::load`).
+        // A missing/malformed settings file is silently the default.
         let settings_store = FileSettingsStore::open_default()
             .unwrap_or_else(|_| FileSettingsStore::with_path("settings.toml"));
         let settings = settings_store.load();
@@ -378,11 +359,8 @@ impl AppState {
         }
     }
 
-    // --- settings ---------------------------------------------------------
-
-    /// Persist the current UI preferences (theme, density, permissions column)
-    /// to disk. Best-effort: a write failure is logged, not surfaced — losing a
-    /// preference is harmless, and a toast on every tweak would be noise.
+    /// Persist the current UI preferences to disk. Best-effort: a write failure
+    /// is logged, not surfaced.
     pub fn save_settings(&self, cx: &App) {
         let settings = Settings {
             theme: cx.theme().name.to_string(),
@@ -393,8 +371,6 @@ impl AppState {
             tracing::warn!("failed to persist settings: {err}");
         }
     }
-
-    // --- connections ------------------------------------------------------
 
     /// All connections (the "Saved" group).
     pub fn connections_all(&self) -> Vec<&ConnectionVm> {
@@ -430,10 +406,8 @@ impl AppState {
 
     /// Begin opening a connection: look the password up in the keychain
     /// off-thread, then either connect straight through (hit) or prompt (miss).
-    ///
     /// `connecting_id` is set up-front so the UI shows progress while the
-    /// (potentially dialog-popping) keychain lookup runs on a background thread —
-    /// the GPUI thread never blocks on it (plan M3 D3/D5).
+    /// (potentially dialog-popping) keychain lookup runs off the GPUI thread.
     pub fn open_connection(&mut self, id: &str, cx: &mut Context<Self>) {
         let Some(conn) = self.connections.iter().find(|c| c.profile.id == id) else {
             return;
@@ -584,13 +558,9 @@ impl AppState {
         }
     }
 
-    // --- text-input submit/cancel wiring (D3) ----------------------------
-
     /// Subscribe to a modal field's [`TextInputEvent`]s so Enter submits and Esc
-    /// dismisses the modal it belongs to — without a mouse. The field can't know
-    /// what "submit" means, so the dispatch is routed by *which* modal is open
-    /// (they're mutually exclusive in practice). The filter box is deliberately
-    /// **not** wired (plan M6 D3).
+    /// dismisses the modal it belongs to. Dispatch is routed by *which* modal is
+    /// open (mutually exclusive). The filter box is deliberately not wired.
     fn wire_input(&self, input: &Entity<TextInput>, cx: &mut Context<Self>) {
         cx.subscribe(input, |this, _input, event, cx| {
             match event {
@@ -624,12 +594,10 @@ impl AppState {
         }
     }
 
-    /// Toggle the sidebar **Recent** group's collapsed state (plan M6 D6).
+    /// Toggle the sidebar **Recent** group's collapsed state.
     pub fn toggle_recent_collapsed(&mut self) {
         self.recent_collapsed = !self.recent_collapsed;
     }
-
-    // --- connection editor + CRUD ----------------------------------------
 
     /// Open the editor in **Create** mode (a fresh id, blank form).
     pub fn open_editor_create(&mut self, cx: &mut Context<Self>) {
@@ -685,8 +653,7 @@ impl AppState {
         self.wire_editor_inputs(cx);
     }
 
-    /// Wire every editor field's submit/cancel events (Enter saves, Esc closes)
-    /// after the editor has been constructed (plan M6 D3).
+    /// Wire every editor field's submit/cancel events (Enter saves, Esc closes).
     fn wire_editor_inputs(&self, cx: &mut Context<Self>) {
         let Some(editor) = self.editor.as_ref() else {
             return;
@@ -971,7 +938,7 @@ impl AppState {
             self.push_toast(err.to_string(), ToastVariant::Error, cx);
             return;
         }
-        // Best-effort, idempotent keychain cleanup off-thread.
+        // Best-effort, idempotent keychain cleanup.
         let keyring = self.keyring;
         let id_for_keyring = id.clone();
         cx.background_executor()
@@ -990,8 +957,6 @@ impl AppState {
         );
     }
 
-    // --- browser file operations (M4) ------------------------------------
-
     /// The absolute remote path of an entry `name` in the current directory.
     fn remote_path_of(&self, name: &str) -> String {
         let cwd = self.current_path();
@@ -1002,9 +967,8 @@ impl AppState {
         }
     }
 
-    /// Open the file-row context menu, applying file-manager selection semantics:
-    /// a right-click on an unselected row replaces the selection with just it; a
-    /// right-click inside the selection keeps the multi-selection (plan D7).
+    /// Open the file-row context menu. Right-click on an unselected row replaces
+    /// the selection with just it; right-click inside the selection keeps it.
     pub fn open_file_menu(&mut self, name: SharedString, is_dir: bool, position: Point<Pixels>) {
         if !self.selected.contains(&name) {
             self.selected.clear();
@@ -1048,7 +1012,7 @@ impl AppState {
     }
 
     /// Open the **Rename** modal for the current single-row selection — the
-    /// keyboard (F2) entry point that has no context menu to read (plan M6 D11).
+    /// keyboard (F2) entry point that has no context menu to read.
     pub fn rename_selection(&mut self, cx: &mut Context<Self>) {
         if self.selected.len() != 1 {
             return;
@@ -1073,9 +1037,8 @@ impl AppState {
         });
     }
 
-    /// Activate the current selection (the browser's Enter key, plan M6 D11): a
-    /// single selected directory is opened; otherwise the selection is downloaded
-    /// (files only — folders are skipped with a toast by `download_selection`).
+    /// Activate the current selection (the browser's Enter key): a single
+    /// selected directory is opened, otherwise the selection is downloaded.
     pub fn activate_selection(&mut self, cx: &mut Context<Self>) {
         if self.selected.len() == 1 {
             if let Some(name) = self.selected.iter().next().cloned() {
@@ -1099,7 +1062,7 @@ impl AppState {
     }
 
     /// Validate and submit the input modal → `Mkdir` / `Rename`. Rejects an empty
-    /// name or one containing `/`; an unchanged rename is a no-op (plan D8).
+    /// name or one containing `/`; an unchanged rename is a no-op.
     pub fn submit_input(&mut self, cx: &mut Context<Self>) {
         let Some(prompt) = self.input_prompt.as_ref() else {
             return;
@@ -1137,7 +1100,6 @@ impl AppState {
     /// Open the file-delete confirmation for the current selection.
     pub fn start_delete(&mut self, _cx: &mut Context<Self>) {
         self.close_file_menu();
-        // Snapshot each selected entry with its is_dir flag (for recursive delete).
         let entries: Vec<(SharedString, bool)> = self
             .selected
             .iter()
@@ -1159,7 +1121,7 @@ impl AppState {
         self.file_delete = None;
     }
 
-    /// Issue one `Remove` per confirmed entry (file or recursive folder, D8).
+    /// Issue one `Remove` per confirmed entry (file or recursive folder).
     pub fn confirm_file_delete(&mut self, cx: &mut Context<Self>) {
         let Some(confirm) = self.file_delete.take() else {
             return;
@@ -1179,8 +1141,7 @@ impl AppState {
         }
     }
 
-    /// Copy the clicked entry's absolute remote path to the clipboard (plan D10:
-    /// no service round-trip).
+    /// Copy the clicked entry's absolute remote path to the clipboard.
     pub fn copy_path(&mut self, cx: &mut Context<Self>) {
         let Some(menu) = self.file_menu.take() else {
             return;
@@ -1191,8 +1152,8 @@ impl AppState {
     }
 
     /// Download the current selection. A single file opens a save-as dialog;
-    /// several files open a folder picker (one `Download` per file). Folders in
-    /// the selection are skipped with a toast (directory download is post-MVP, D5).
+    /// several files open a folder picker (one `Download` per file). Folders are
+    /// skipped with a toast (directory download is not yet supported).
     pub fn download_selection(&mut self, cx: &mut Context<Self>) {
         self.close_file_menu();
         let mut files: Vec<(String, String)> = Vec::new();
@@ -1267,7 +1228,7 @@ impl AppState {
         }
     }
 
-    /// Upload one or more chosen local files into the current directory (plan D5).
+    /// Upload one or more chosen local files into the current directory.
     pub fn upload(&mut self, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -1288,10 +1249,9 @@ impl AppState {
         .detach();
     }
 
-    /// Upload already-known local files (from a drag-and-drop, plan post-MVP
-    /// drag-in). `subdir`, when set, is a directory *in the current folder* the
-    /// files were dropped onto; otherwise they land in the current folder.
-    /// Folders are skipped (recursive upload is post-MVP) with a toast.
+    /// Upload already-known local files (from a drag-and-drop). `subdir`, when
+    /// set, is a directory *in the current folder* the files were dropped onto;
+    /// otherwise they land in the current folder. Folders are skipped with a toast.
     pub fn upload_paths(
         &mut self,
         paths: Vec<std::path::PathBuf>,
@@ -1368,8 +1328,8 @@ impl AppState {
         self.listing_loading = false;
     }
 
-    /// Cancel a queued or running transfer (the dock's `x` button, M5 D7). The
-    /// row updates reactively when the matching [`Event::TransferDone`] arrives.
+    /// Cancel a queued or running transfer (the dock's `x` button). The row
+    /// updates reactively when the matching [`Event::TransferDone`] arrives.
     pub fn cancel_transfer(&mut self, id: TransferId) {
         self.service.send(Command::CancelTransfer { id });
     }
@@ -1413,8 +1373,7 @@ impl AppState {
             Event::Connected { profile_id, home } => {
                 self.host_key_prompt = None;
                 self.used_stored_password = None;
-                // Stamp the successful connect and persist it, so "Recent"
-                // ordering survives a restart (plan M3 D6).
+                // Persist the connect time so "Recent" ordering survives a restart.
                 self.stamp_last_connected(&profile_id, cx);
                 self.enter_browser(profile_id, home, cx);
             }
@@ -1441,16 +1400,14 @@ impl AppState {
                 }
             }
             Event::FileOpDone { op, message } => {
-                // Always toast the success line; refresh the listing only for the
-                // mutating ops. Transfers (Download/Upload) no longer arrive here
-                // — they feed the dock and refresh via `TransferDone` (M5 D5/D10).
+                // Refresh the listing only for the mutating ops; transfers feed
+                // the dock and refresh via `TransferDone` instead.
                 self.push_toast(message, ToastVariant::Success, cx);
                 if !matches!(op, FileOp::Download) {
                     self.selected.clear();
                     self.reload_listing(cx);
                 }
             }
-            // A new transfer entered the queue: add a Queued dock row (M5 D10).
             Event::TransferQueued {
                 id,
                 direction,
@@ -1471,15 +1428,14 @@ impl AppState {
                     error: None,
                 });
             }
-            // A transfer left the queue and is running: set Running + total.
             Event::TransferStarted { id, total } => {
                 if let Some(vm) = self.transfers.iter_mut().find(|t| t.transfer.id == id) {
                     vm.transfer.status = TransferStatus::Running;
                     vm.transfer.total_bytes = total;
                 }
             }
-            // A throttled progress sample. Ignore it for a row that is no longer
-            // Running (a late tick can arrive after TransferDone, M5 D10/Risks).
+            // Ignore a progress sample for a row no longer Running: a late tick
+            // can arrive after TransferDone.
             Event::TransferProgress {
                 id,
                 transferred,
@@ -1492,10 +1448,8 @@ impl AppState {
                     }
                 }
             }
-            // A transfer reached a terminal state. Keep the row so the
-            // Completed/Failed tabs populate; on a completed upload into the
-            // current directory, refresh the listing (the refresh that used to
-            // live on the FileOpDone path, M5 D5/D10).
+            // Terminal state: keep the row so the Completed/Failed tabs populate;
+            // on a completed upload into the current directory, refresh the listing.
             Event::TransferDone {
                 id,
                 status,
@@ -1532,7 +1486,7 @@ impl AppState {
                 self.listing_loading = false;
                 self.push_toast(message.clone(), ToastVariant::Error, cx);
                 // A stored password that fails auth is likely stale — re-open the
-                // prompt so the user can correct (and overwrite) it (plan D5.3).
+                // prompt so the user can correct (and overwrite) it.
                 if message.contains("authentication failed") {
                     if let Some(id) = stale {
                         if let Some(conn) = self.connections.iter().find(|c| c.profile.id == id) {
@@ -1548,7 +1502,6 @@ impl AppState {
                     self.push_toast(err, ToastVariant::Error, cx);
                 }
             }
-            // Lifecycle pings (and any future variants) need no UI change.
             Event::Stopped => {}
             _ => {}
         }
@@ -1593,12 +1546,9 @@ impl AppState {
         self.filter
             .update(cx, |input, cx| input.set_content("", cx));
         self.dock_open = true;
-        // The dock is fed by real transfer events (M5); it starts empty.
         self.transfers = Vec::new();
         self.reload_listing(cx);
     }
-
-    // --- navigation -------------------------------------------------------
 
     /// The current working directory as an absolute remote path (`"/"` at root).
     fn current_path(&self) -> String {
@@ -1664,12 +1614,10 @@ impl AppState {
         self.go_to_path(segs, true, cx);
     }
 
-    /// Whether back navigation is available.
     pub fn can_back(&self) -> bool {
         self.history_ix > 0
     }
 
-    /// Whether forward navigation is available.
     pub fn can_forward(&self) -> bool {
         self.history_ix + 1 < self.history.len()
     }
@@ -1698,8 +1646,6 @@ impl AppState {
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         self.reload_listing(cx);
     }
-
-    // --- sort / filter / selection ---------------------------------------
 
     /// Cycle the sort for a clicked column header.
     pub fn toggle_sort(&mut self, column: usize) {
@@ -1775,8 +1721,6 @@ impl AppState {
         self.listing.len()
     }
 
-    // --- transfer dock ----------------------------------------------------
-
     /// The transfers visible under the active dock tab.
     pub fn dock_rows(&self) -> Vec<&TransferVm> {
         self.transfers
@@ -1819,8 +1763,6 @@ impl AppState {
             )
         });
     }
-
-    // --- toasts -----------------------------------------------------------
 
     /// Show a toast that auto-dismisses after a short delay.
     pub fn push_toast(

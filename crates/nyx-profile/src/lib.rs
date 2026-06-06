@@ -38,8 +38,8 @@ pub struct Profile {
     /// The accent color shown for this connection (presentation, persisted).
     ///
     /// Stored here — not on `nyx-core` — because it is config that travels with
-    /// the saved connection, not a protocol invariant (see plan M3 D6). Mapped
-    /// to a UI accent in the app.
+    /// the saved connection, not a protocol invariant. Mapped to a UI accent in
+    /// the app.
     #[serde(default)]
     pub color: ProfileColor,
     /// When this profile was last successfully connected to, if ever.
@@ -54,7 +54,7 @@ impl Profile {
     /// Generate a fresh, collision-free profile id (UUID v4 as a string).
     ///
     /// The id is the store key *and* the keychain account; it is generated once
-    /// on create and never reused or mutated (see plan M3 D2).
+    /// on create and never reused or mutated.
     pub fn new_id() -> String {
         uuid::Uuid::new_v4().to_string()
     }
@@ -99,7 +99,7 @@ struct ProfilesFile {
 ///
 /// The whole file is read on each read and rewritten atomically (temp file +
 /// rename) on each mutation. N is tiny, so one file keeps the store simple to
-/// inspect and impossible to half-write (see plan M3 D1).
+/// inspect and impossible to half-write.
 #[derive(Debug, Clone)]
 pub struct FileProfileStore {
     path: PathBuf,

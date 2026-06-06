@@ -1,8 +1,7 @@
-//! The connection editor modal — create or edit a profile (M3).
+//! The connection editor modal — create or edit a profile.
 //!
-//! A domain-free [`Modal`] wrapping the `nyx-ui` form kit (`TextInput`,
-//! `Segmented`, `Button`). All mutation goes back through [`AppState`] methods;
-//! this file only reads `state.editor` and emits elements.
+//! A [`Modal`] wrapping the `nyx-ui` form kit. All mutation goes back through
+//! [`AppState`] methods; this file only reads `state.editor` and emits elements.
 
 use gpui::{div, prelude::*, px, Context, FontWeight};
 use nyx_core::Protocol;
@@ -96,7 +95,6 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                         }),
                     cx,
                 ))
-                // Host (wide) + port (narrow) on one row.
                 .child(
                     div()
                         .flex()
@@ -148,7 +146,6 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                             cx.notify();
                         })),
                 )
-                // Push the primary actions to the right.
                 .child(div().flex_1())
                 .when(!is_new, |this| {
                     this.child(

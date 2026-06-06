@@ -1,22 +1,12 @@
-//! `Toggle` — a binary on/off switch (settings, feature flags).
-//!
-//! Stateless: the caller owns the boolean and is told about flips via
-//! [`on_change`](Toggle::on_change). The track fills with `accent` when on and
-//! shows a neutral surface when off; the knob slides between the two ends.
-//!
-//! ```ignore
-//! Toggle::new("show-perms", self.show_perms)
-//!     .on_change(cx.listener(|this, on: &bool, _, cx| { this.show_perms = *on; cx.notify(); }))
-//! ```
+//! `Toggle` — a binary on/off switch. Stateless: the caller owns the boolean,
+//! reacting via [`on_change`](Toggle::on_change).
 
 use gpui::{div, prelude::*, App, ElementId, Window};
 
 use crate::theme::ActiveTheme;
 
-/// A handler invoked with the new on/off value when the switch is clicked.
 type ChangeHandler = Box<dyn Fn(&bool, &mut Window, &mut App) + 'static>;
 
-/// A binary on/off switch.
 #[derive(IntoElement)]
 pub struct Toggle {
     id: ElementId,
@@ -26,7 +16,6 @@ pub struct Toggle {
 }
 
 impl Toggle {
-    /// Create a switch with a stable `id` and its current `checked` state.
     pub fn new(id: impl Into<ElementId>, checked: bool) -> Self {
         Self {
             id: id.into(),
@@ -36,13 +25,12 @@ impl Toggle {
         }
     }
 
-    /// Mark the switch disabled (dimmed, no hover, no click).
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
     }
 
-    /// Attach a handler called with the toggled-to value.
+    /// Called with the toggled-to value.
     pub fn on_change(mut self, handler: impl Fn(&bool, &mut Window, &mut App) + 'static) -> Self {
         self.on_change = Some(Box::new(handler));
         self
@@ -69,8 +57,6 @@ impl RenderOnce for Toggle {
                 theme.text_muted
             });
 
-        // Flex layout keeps the knob vertically centered regardless of the
-        // track's border; horizontal position is just justify start/end.
         let base = div()
             .id(self.id)
             .flex()

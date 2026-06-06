@@ -1,14 +1,10 @@
-//! `StyledExt` — the "@apply" layer: reusable, theme-aware style recipes on top
-//! of GPUI's [`Styled`] builder.
-//!
-//! These compose common token combinations so views read declaratively
-//! (`div().panel(cx)`) instead of repeating `bg`/`border` token lookups.
+//! `StyledExt` — the "@apply" layer: theme-aware style recipes that compose
+//! common token combinations, so views read `div().panel(cx)`.
 
 use gpui::{px, App, BoxShadow, Styled};
 
 use crate::theme::ActiveTheme;
 
-/// Theme-aware style recipes, available on every [`Styled`] element.
 pub trait StyledExt: Styled + Sized {
     /// Panel surface: panel background + a default border.
     fn panel(self, cx: &App) -> Self {
@@ -29,8 +25,7 @@ pub trait StyledExt: Styled + Sized {
         self.h(cx.theme().row_height)
     }
 
-    /// Accent focus ring: accent border + a soft 2px accent-ghost glow,
-    /// mirroring the design's `box-shadow: 0 0 0 2px var(--accent-ghost)`.
+    /// Accent focus ring: accent border + a soft 2px accent-ghost glow.
     fn focus_ring(self, cx: &App) -> Self {
         self.border_color(cx.theme().accent).shadow(vec![BoxShadow {
             color: cx.theme().accent_ghost,

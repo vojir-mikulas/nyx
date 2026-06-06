@@ -1,39 +1,22 @@
-//! `Badge` — a small, colored label chip (status, protocol tags, counts).
-//!
-//! Variants are **semantic** ([`BadgeVariant`]), not app-specific: the app maps
-//! its own concepts (e.g. an SFTP protocol) onto a generic variant. Each colored
-//! variant renders as the design's translucent-fill / solid-text chip; the fill
-//! is derived from the text color at low opacity, so it tracks the active theme.
+//! `Badge` — a small colored label chip. Variants are semantic; the fill is the
+//! text color at low opacity, so it tracks the active theme.
 
 use gpui::{div, prelude::*, App, Hsla, SharedString, Window};
 
 use crate::theme::ActiveTheme;
 
-/// Semantic color of a [`Badge`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum BadgeVariant {
-    /// Neutral grey (default).
     #[default]
     Neutral,
-    /// Accent-colored.
     Accent,
-    /// Success / positive (green).
     Success,
-    /// Danger / error (red).
     Danger,
-    /// Informational (blue).
     Info,
-    /// Warning (yellow).
     Warning,
-    /// Distinct / special (purple).
     Special,
 }
 
-/// A small colored label chip.
-///
-/// ```ignore
-/// Badge::new("SFTP").variant(BadgeVariant::Special);
-/// ```
 #[derive(IntoElement)]
 pub struct Badge {
     label: SharedString,
@@ -41,7 +24,6 @@ pub struct Badge {
 }
 
 impl Badge {
-    /// Create a badge with the given `label`.
     pub fn new(label: impl Into<SharedString>) -> Self {
         Self {
             label: label.into(),
@@ -49,14 +31,12 @@ impl Badge {
         }
     }
 
-    /// Set the color variant.
     pub fn variant(mut self, variant: BadgeVariant) -> Self {
         self.variant = variant;
         self
     }
 }
 
-/// Resolve `(foreground, background)` for a variant against the active theme.
 fn variant_colors(variant: BadgeVariant, theme: &crate::Theme) -> (Hsla, Hsla) {
     let tinted = |c: Hsla| (c, c.opacity(0.13));
     match variant {

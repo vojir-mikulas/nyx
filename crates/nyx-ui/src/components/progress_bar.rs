@@ -1,13 +1,5 @@
-//! `ProgressBar` — a thin determinate / indeterminate progress track.
-//!
-//! Mirrors the design's `.xbar` (transfer dock): a recessed track with an
-//! accent fill. Determinate fills to a `0.0..=1.0` fraction; indeterminate
-//! animates a sweeping segment for unknown-duration work.
-//!
-//! ```ignore
-//! ProgressBar::new("upload", 0.62);          // 62%
-//! ProgressBar::new("scan", 0.0).indeterminate(true);
-//! ```
+//! `ProgressBar` — a thin determinate (`0.0..=1.0`) / indeterminate (animated
+//! sweep) progress track.
 
 use std::time::Duration;
 
@@ -17,7 +9,6 @@ use gpui::{
 
 use crate::theme::ActiveTheme;
 
-/// A thin progress track with an accent fill.
 #[derive(IntoElement)]
 pub struct ProgressBar {
     id: ElementId,
@@ -26,7 +17,7 @@ pub struct ProgressBar {
 }
 
 impl ProgressBar {
-    /// Create a determinate bar filled to `fraction` (clamped to `0.0..=1.0`).
+    /// `fraction` is clamped to `0.0..=1.0`.
     pub fn new(id: impl Into<ElementId>, fraction: f32) -> Self {
         Self {
             id: id.into(),
@@ -35,7 +26,6 @@ impl ProgressBar {
         }
     }
 
-    /// Switch to an indeterminate (animated sweep) bar.
     pub fn indeterminate(mut self, indeterminate: bool) -> Self {
         self.indeterminate = indeterminate;
         self

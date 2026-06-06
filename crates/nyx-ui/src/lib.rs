@@ -1,24 +1,8 @@
 //! `nyx-ui` — an in-house GPUI component library and semantic theme layer.
 //!
-//! Built shadcn-style: we own the source, build on GPUI's `div`/styling
-//! primitives, and expose a small set of themed components with a variant API.
-//!
-//! # Extraction rule
-//!
-//! This crate **must never depend on any `nyx-*` crate** or domain type. It is a
-//! generic component library that happens to live in the Nyx repo today;
-//! keeping it decoupled makes the future extraction into the standalone
-//! **Flint** crate a near-trivial rename. See `docs/plans/plan-02-nyx-ui-flint.md`.
-//!
-//! # Usage
-//!
-//! ```ignore
-//! use nyx_ui::prelude::*;
-//! // install a theme once:
-//! cx.set_global(Theme::one_dark());
-//! // then read tokens in render:
-//! div().bg(cx.theme().bg_app)
-//! ```
+//! Hard rule: this crate **must never depend on any `nyx-*` crate** or domain
+//! type, so the future extraction into the standalone **Flint** crate stays a
+//! near-trivial rename. See `docs/plans/plan-02-nyx-ui-flint.md`.
 
 pub mod components;
 pub mod styled_ext;

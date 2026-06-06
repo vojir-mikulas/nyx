@@ -138,8 +138,6 @@ fn transfer_row(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
         _ => "—".to_string(),
     };
 
-    // Status shows as a small colored dot + label (matching the design's
-    // `.xstatus`), not an oval badge.
     let (status_color, status_label) = match status {
         TransferStatus::Running => (theme.blue, format!("{pct}%")),
         TransferStatus::Queued => (theme.text_faint, "Queued".to_string()),
@@ -176,7 +174,6 @@ fn transfer_row(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
                 .child(icon(dir_icon, 15., dir_color)),
         )
         .child(
-            // Main: name + path/error + optional progress bar.
             div()
                 .flex_1()
                 .min_w_0()

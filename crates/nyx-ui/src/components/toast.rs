@@ -1,30 +1,18 @@
-//! `Toast` — a small, transient notification surface.
-//!
-//! The component renders a single toast (elevated pill with a status dot and a
-//! message). Stacking, positioning (bottom-right in our design) and auto-dismiss
-//! timing are the caller's concern — `Toast` is just the visual.
-//!
-//! ```ignore
-//! Toast::new("Uploaded 3 files").variant(ToastVariant::Success)
-//! ```
+//! `Toast` — a single notification pill. Stacking, positioning and auto-dismiss
+//! are the caller's concern; this is just the visual.
 
 use gpui::{div, prelude::*, App, Hsla, SharedString, Window};
 
 use crate::theme::ActiveTheme;
 
-/// Semantic kind of a [`Toast`], driving the status-dot color.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum ToastVariant {
-    /// Neutral / informational accent (default).
     #[default]
     Info,
-    /// Success (green).
     Success,
-    /// Error (red).
     Error,
 }
 
-/// A small notification surface.
 #[derive(IntoElement)]
 pub struct Toast {
     message: SharedString,
@@ -32,7 +20,6 @@ pub struct Toast {
 }
 
 impl Toast {
-    /// Create a toast with the given `message`.
     pub fn new(message: impl Into<SharedString>) -> Self {
         Self {
             message: message.into(),
@@ -40,7 +27,6 @@ impl Toast {
         }
     }
 
-    /// Set the variant (status color).
     pub fn variant(mut self, variant: ToastVariant) -> Self {
         self.variant = variant;
         self

@@ -73,9 +73,8 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
 
 fn logo(cx: &Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
-    // GPUI's `svg()` ignores the file's own fills and tints the whole glyph with
-    // `text_color`, so the mark inherits the current accent (the ring keeps its
-    // baked-in 0.45 opacity as alpha in the mask).
+    // GPUI's `svg()` ignores the file's fills and tints the whole glyph with
+    // `text_color`, so the mark inherits the current accent.
     svg()
         .path("nyx_black.svg")
         .size(px(40.))
@@ -98,7 +97,6 @@ fn section_label(label: &'static str, cx: &Context<AppState>) -> impl IntoElemen
                 .text_color(theme.text_dim)
                 .child(label),
         )
-        // Divider line (M1 gap G4: composed app-locally with a token, no hex).
         .child(div().flex_1().h(px(1.)).bg(theme.border_soft))
 }
 
@@ -111,8 +109,7 @@ fn card(conn: &ConnectionVm, cx: &mut Context<AppState>) -> impl IntoElement {
     } else {
         "globe"
     };
-    // Subtitle: `user@host:port`, plus `· path` only when a remote path is set —
-    // no dangling separator when it's unset (plan M6 D8).
+    // `user@host:port`, plus `· path` only when a remote path is set.
     let subtitle = match conn.profile.remote_path.as_deref() {
         Some(path) if !path.trim().is_empty() => {
             format!("{}  ·  {}", conn.user_host_port(), path)
@@ -122,8 +119,6 @@ fn card(conn: &ConnectionVm, cx: &mut Context<AppState>) -> impl IntoElement {
 
     let name: gpui::SharedString = conn.profile.name.clone().into();
     let group = gpui::SharedString::from(format!("wm-card-{id}"));
-    // Edit / Remove (and the right-click menu) call the existing CRUD handlers —
-    // no new logic, just discoverable affordances on the card (plan M6 D7).
     let open_id = id.clone();
     let menu_id = id.clone();
     let menu_name = name.clone();
@@ -184,8 +179,8 @@ fn card(conn: &ConnectionVm, cx: &mut Context<AppState>) -> impl IntoElement {
                         .child(subtitle),
                 ),
         )
-        // Trailing slot: the chevron by default, swapped for Edit / Remove on
-        // hover (the buttons stop propagation so they don't open the connection).
+        // Chevron by default, swapped for Edit / Remove on hover (the buttons
+        // stop propagation so they don't open the connection).
         .child(
             div()
                 .relative()

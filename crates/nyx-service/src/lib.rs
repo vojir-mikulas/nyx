@@ -11,17 +11,12 @@
 //!   GPUI **foreground** executor can `await` it as a `Stream` inside `cx.spawn`
 //!   (a blocking `std` recv there would freeze the UI).
 //!
-//! M2 wires the connect + list vertical slice: [`Command::Connect`] /
-//! [`Command::ListDir`] / [`Command::Disconnect`], host-key trust-on-first-use via
-//! [`Command::HostKeyDecision`], and the matching events. A single connection is
-//! supported (the active session); multi-session is out of scope until later.
-//!
-//! M3 adds exactly one command/event pair — [`Command::TestConnection`] /
-//! [`Event::TestResult`] — for the connection editor's "Test" button. The probe
-//! spins up a *transient* client that never touches the stored session. A
-//! single-flight guard makes this safe: at most one connect-like op (Connect or
-//! TestConnection) is in flight at a time, so there is never more than one
-//! pending host-key decision.
+//! A single connection is supported (the active session); multi-session is out
+//! of scope. [`Command::TestConnection`] / [`Event::TestResult`] back the
+//! connection editor's "Test" button: the probe spins up a *transient* client
+//! that never touches the stored session. A single-flight guard makes this safe:
+//! at most one connect-like op (Connect or TestConnection) is in flight at a
+//! time, so there is never more than one pending host-key decision.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -46,13 +41,13 @@ use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
 /// The global concurrency cap: at most this many transfers run at once;
-/// submissions past it wait in the queue (plan M5, D2). Per-profile / settings
-/// caps are post-MVP.
+/// submissions past it wait in the queue. Per-profile / settings caps are
+/// post-MVP.
 const MAX_CONCURRENT_TRANSFERS: usize = 3;
 
 /// How often the dispatcher samples running transfers' byte counters to emit a
-/// throttled [`Event::TransferProgress`] (plan M5, D12). The fixed interval also
-/// serves as the speed denominator, so no `Instant` is needed.
+/// throttled [`Event::TransferProgress`]. The fixed interval also serves as the
+/// speed denominator, so no `Instant` is needed.
 const PROGRESS_TICK: Duration = Duration::from_millis(150);
 
 /// The per-OS path to the trust-on-first-use `known_hosts` store
@@ -166,7 +161,7 @@ pub enum Command {
         /// The login password (redacted in `Debug`).
         password: Secret,
     },
-    /// Cancel a queued or running transfer by id (plan M5, D7).
+    /// Cancel a queued or running transfer by id.
     ///
     /// A queued transfer is dropped before it starts; a running one is stopped
     /// mid-flight between chunks. Either way the UI receives a terminal
@@ -240,8 +235,8 @@ pub enum Event {
         /// A credential-free, human-readable success message.
         message: String,
     },
-    /// A transfer was accepted into the queue (plan M5, D5). The UI creates a
-    /// `Queued` dock row; paths are not secrets, so they are safe to carry.
+    /// A transfer was accepted into the queue. The UI creates a `Queued` dock
+    /// row; paths are not secrets, so they are safe to carry.
     TransferQueued {
         /// The assigned transfer id.
         id: TransferId,
@@ -402,8 +397,7 @@ enum TaskOutcome {
 async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Event>) {
     // `Arc`-shared so slow ops (download/upload/remove) can clone a handle into a
     // detached task and run concurrently against the one session, without
-    // blocking the command loop (plan M4 D1). M5 swaps the bare spawn for the
-    // transfer queue, keeping this shared-session shape.
+    // blocking the command loop.
     let mut client: Option<Arc<SftpClient>> = None;
     // The responder for an in-flight host-key prompt. With the single-flight
     // guard there is at most one connect-like op, hence at most one slot user.
@@ -411,8 +405,8 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
     // Whether a connect-like op (Connect or TestConnection) is in flight.
     let mut in_flight = false;
 
-    // The transfer scheduler (sans-IO policy, plan M5 D1/D9) and the per-id
-    // byte counters from the previous progress tick (for the speed delta, D12).
+    // The transfer scheduler (sans-IO policy) and the per-id byte counters from
+    // the previous progress tick (for the speed delta).
     let mut queue = TransferQueue::new(MAX_CONCURRENT_TRANSFERS);
     let mut last_bytes: HashMap<TransferId, u64> = HashMap::new();
 
@@ -531,7 +525,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                         Some(session) => {
                             let message = format!("Deleted “{}”", base_name(&path));
                             spawn_file_op(FileOp::Remove, message, events.clone(), async move {
-                                let _ = is_dir; // protocol re-stats; kept for M5 queue
+                                let _ = is_dir; // protocol re-stats
                                 session.remove(&path).await
                             });
                         }
@@ -539,7 +533,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                     },
                     // Transfers go through the queue: submit → announce → try to
                     // start (subject to the cap). The dock row is the feedback —
-                    // no `FileOpDone` toast for transfers anymore (plan M5 D5/D6).
+                    // no `FileOpDone` toast for transfers.
                     Command::Download { remote, local } => {
                         if client.is_none() {
                             not_connected(&events);
@@ -600,7 +594,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                         // Cancel everything: flag the running transfers (their
                         // tasks wind down and report Cancelled via `xfer_done`)
                         // and drain the queued ones (no task ran, so emit their
-                        // terminal Cancelled here) — then drop the session (M5 D11).
+                        // terminal Cancelled here) — then drop the session.
                         for id in queue.cancel_all() {
                             last_bytes.remove(&id);
                             let _ = events.unbounded_send(Event::TransferDone {
@@ -654,7 +648,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
             }
             _ = progress_tick.tick() => {
                 // Sample every running transfer's byte counter and emit a
-                // throttled progress event with an instantaneous speed (D12).
+                // throttled progress event with an instantaneous speed.
                 let samples: Vec<(TransferId, u64)> = queue.running_progress().collect();
                 for (id, transferred) in samples {
                     let last = last_bytes.get(&id).copied().unwrap_or(0);
@@ -701,7 +695,7 @@ fn try_start(
 
 /// Spawn the copy task for a just-started transfer: stat the size, announce the
 /// start, run the protocol copy, clean up any partial file on cancel/fail, and
-/// report the terminal outcome back to the dispatcher (plan M5 D6/D8).
+/// report the terminal outcome back to the dispatcher.
 fn spawn_transfer(
     client: Arc<SftpClient>,
     started: Started,
@@ -742,7 +736,7 @@ fn spawn_transfer(
 }
 
 /// Best-effort removal of the half-written file left by a cancelled/failed
-/// transfer (plan M5 D8): the local destination for a download, the remote
+/// transfer: the local destination for a download, the remote
 /// destination for an upload. Errors are logged at `debug` and never surfaced —
 /// the terminal `TransferDone` already tells the user the real story.
 async fn cleanup_partial(client: &SftpClient, spec: &TransferSpec) {
@@ -778,7 +772,6 @@ fn base_name(path: &str) -> &str {
 ///
 /// The op never touches the dispatcher's session slot or single-flight guard, so
 /// several can run concurrently (`russh-sftp` multiplexes over the one channel).
-/// M5 replaces this bare spawn with the `nyx-transfer` scheduler (plan D1).
 fn spawn_file_op<F>(op: FileOp, message: String, events: FuturesSender<Event>, fut: F)
 where
     F: Future<Output = nyx_core::Result<()>> + Send + 'static,

@@ -1,31 +1,7 @@
-//! `Select` — a single-select dropdown (a trigger showing the current value that
-//! opens a floating list of options).
-//!
-//! Stateless, like [`Segmented`](crate::Segmented): the caller owns both the
-//! selected index *and* the open/closed flag, and is told about interaction via
-//! [`on_toggle`](Select::on_toggle) (trigger clicked / dismissed) and
-//! [`on_select`](Select::on_select) (an option chosen). Generic — options carry
-//! plain labels, no domain types.
-//!
-//! The open list is rendered through [`gpui::deferred`] + [`gpui::anchored`], so
-//! it floats above clipping/scroll containers (e.g. a modal body) and pins just
-//! below the trigger. Dismissal on an outside click is handled internally via
-//! `on_mouse_down_out`, which calls `on_toggle`; the trigger only opens (it has
-//! no click handler while open), so an outside click can't immediately reopen.
-//!
-//! ```ignore
-//! Select::new("theme")
-//!     .option("One Dark")
-//!     .option("GitHub Dark")
-//!     .selected(self.theme_ix)
-//!     .open(self.theme_open)
-//!     .on_toggle(cx.listener(|this, _, _, cx| { this.theme_open = !this.theme_open; cx.notify(); }))
-//!     .on_select(cx.listener(|this, ix: &usize, _, cx| {
-//!         this.theme_ix = *ix;
-//!         this.theme_open = false;
-//!         cx.notify();
-//!     }))
-//! ```
+//! A single-select dropdown. Stateless: the caller owns both the selected index
+//! and the open flag, reacting via [`on_toggle`](Select::on_toggle) and
+//! [`on_select`](Select::on_select). The list is deferred+anchored so it floats
+//! above clipping containers.
 
 use std::rc::Rc;
 
@@ -33,12 +9,9 @@ use gpui::{anchored, deferred, div, point, prelude::*, px, Anchor, App, SharedSt
 
 use crate::theme::ActiveTheme;
 
-/// A handler invoked when the trigger is clicked or the open list is dismissed.
 type ToggleHandler = Box<dyn Fn(&mut Window, &mut App) + 'static>;
-/// A handler invoked with the chosen option index.
 type SelectHandler = Box<dyn Fn(usize, &mut Window, &mut App) + 'static>;
 
-/// A single-select dropdown.
 #[derive(IntoElement)]
 pub struct Select {
     id: SharedString,
@@ -51,7 +24,6 @@ pub struct Select {
 }
 
 impl Select {
-    /// Create an empty dropdown with a stable `id`.
     pub fn new(id: impl Into<SharedString>) -> Self {
         Self {
             id: id.into(),
@@ -64,39 +36,33 @@ impl Select {
         }
     }
 
-    /// Append an option with the given `label`.
     pub fn option(mut self, label: impl Into<SharedString>) -> Self {
         self.options.push(label.into());
         self
     }
 
-    /// Set the selected option index.
     pub fn selected(mut self, index: usize) -> Self {
         self.selected = index;
         self
     }
 
-    /// Whether the option list is open.
     pub fn open(mut self, open: bool) -> Self {
         self.open = open;
         self
     }
 
-    /// Text shown on the trigger when `selected` is out of range (no selection).
+    /// Shown when `selected` is out of range (no selection).
     pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
         self.placeholder = placeholder.into();
         self
     }
 
-    /// Handler invoked when the trigger is clicked or the open list is dismissed
-    /// by an outside click. The caller flips its open flag.
+    /// Trigger clicked, or the open list dismissed by an outside click.
     pub fn on_toggle(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
         self.on_toggle = Some(Box::new(handler));
         self
     }
 
-    /// Handler invoked with the index of a chosen option. The caller typically
-    /// records the value *and* closes the list.
     pub fn on_select(mut self, handler: impl Fn(usize, &mut Window, &mut App) + 'static) -> Self {
         self.on_select = Some(Box::new(handler));
         self
@@ -117,9 +83,8 @@ impl RenderOnce for Select {
             .cloned()
             .unwrap_or_else(|| self.placeholder.clone());
 
-        // The trigger box. It only opens the list on click: while open, dismissal
-        // is owned by the list's `on_mouse_down_out`, so the trigger carries no
-        // click handler (which would otherwise immediately reopen it).
+        // While open, the trigger carries no click handler: dismissal is owned by
+        // the list's `on_mouse_down_out`, which would otherwise immediately reopen.
         let trigger = div()
             .id(self.id.clone())
             .flex()

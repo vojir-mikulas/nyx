@@ -26,9 +26,9 @@ actions!(
     ]
 );
 
-/// Register the browser's keyboard bindings (scoped to the `"Browser"` key
-/// context, so they only fire when the file table — not an input — has focus).
-/// Call once at startup, alongside [`nyx_ui::TextInput::bind_keys`] (plan M6 D11).
+/// Register the browser's keyboard bindings, scoped to the `"Browser"` key
+/// context so they only fire when the file table (not an input) has focus.
+/// Call once at startup.
 pub fn bind_keys(cx: &mut App) {
     let ctx = Some("Browser");
     cx.bind_keys([
@@ -59,8 +59,6 @@ fn tab_strip(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
         .map(|c| (c.profile.name.clone(), c.color.color(&theme)))
         .unwrap_or_else(|| ("—".into(), theme.text_faint));
     let dock_open = state.dock_open;
-    // When the sidebar is hidden this strip is at the window's top-left, so it
-    // must clear the macOS traffic lights itself.
     let sidebar_open = state.sidebar_open;
 
     titlebar_drag(
@@ -73,12 +71,9 @@ fn tab_strip(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
             .bg(theme.bg_bar)
             .border_b_1()
             .border_color(theme.border_soft)
-            // When the sidebar is hidden, leave a comfortable gap between the
-            // traffic lights and the first tab (plan M6 D4).
+            // When the sidebar is hidden, left padding clears the macOS traffic lights.
             .when(!sidebar_open, |this| this.pl(px(80.)))
             .child(
-                // Active connection tab. The selected tab is distinguished by
-                // `bg_app` + the right divider; no top accent line (plan M6 D4).
                 div()
                     .flex()
                     .items_center()
@@ -352,9 +347,6 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
 
     let muted = theme.text_muted;
     let faint = theme.text_faint;
-    // The sort caret matches the design's chevron (an app icon), passed into the
-    // domain-free `Table` via its generic caret slot: up for ascending, down for
-    // descending (plan M6 D9).
     let caret_color = theme.text_muted;
     // Drop-zone tint shown while external files are dragged over the browser.
     let drop_zone = theme.accent_ghost;
@@ -467,7 +459,6 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
             .render_row(move |ix, _window, _cx| {
                 let row = &rows_for_render[ix];
                 let mut cells = vec![
-                    // Name: colored icon + name.
                     div()
                         .flex()
                         .items_center()
@@ -521,10 +512,9 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
         .min_h_0()
         .bg(theme.bg_app)
         .text_sm()
-        // The `"Browser"` key context (Enter / Backspace / F2 / Delete). It only
-        // wraps the table — not the toolbar's filter box — so its keys never
-        // fight `TextInput` while the filter is focused (plan M6 D11). A click
-        // anywhere in the table focuses it so the keys dispatch.
+        // The `"Browser"` key context wraps only the table, not the filter box,
+        // so its keys never fight `TextInput` while the filter is focused. A
+        // click in the table focuses it so the keys dispatch.
         .key_context("Browser")
         .track_focus(&state.browser_focus)
         .on_mouse_down(
@@ -549,9 +539,8 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
             this.start_delete(cx);
             cx.notify();
         }))
-        // Drag external files anywhere into the browser → upload to the current
-        // directory (dropping onto a folder row instead targets that folder,
-        // handled by the table's row-drop above). A faint tint marks the zone.
+        // Drag external files into the browser → upload to the current directory
+        // (a folder row instead targets that folder, via the row-drop above).
         .drag_over::<ExternalPaths>(move |s, _, _, _| s.bg(drop_zone))
         .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
             this.upload_paths(paths.paths().to_vec(), None, cx);

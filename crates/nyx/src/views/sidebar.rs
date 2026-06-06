@@ -34,7 +34,7 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
         .bg(theme.bg_panel)
         .child(
             // Header doubles as the left titlebar; left padding clears the
-            // macOS traffic lights, and the strip is the native drag region.
+            // macOS traffic lights.
             titlebar_drag(
                 div()
                     .id("titlebar-left")
@@ -53,7 +53,6 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
             ),
         )
         .child(
-            // Scrollable connection groups.
             div()
                 .id("sidebar-scroll")
                 .flex_1()
@@ -70,8 +69,6 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                 )),
         )
         .child(
-            // Footer: just the "New" button — the single settings entry point
-            // now lives in the status bar (plan M6 D5).
             div()
                 .flex()
                 .gap_1()
@@ -89,9 +86,8 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
         )
 }
 
-/// Render a connection group. When `collapsed` is `Some`, the header becomes a
-/// collapse toggle (a chevron that rotates) and the rows are hidden while
-/// collapsed; `None` renders a plain, always-expanded group (plan M6 D6).
+/// Render a connection group. When `collapsed` is `Some`, the header is a
+/// collapse toggle; `None` renders a plain, always-expanded group.
 fn group(
     state: &AppState,
     label: &'static str,
@@ -117,8 +113,7 @@ fn group(
         .pr_3()
         .text_color(theme.text_dim);
     if collapsed.is_some() {
-        // A disclosure chevron: down when expanded, rotated to point right when
-        // collapsed. Only Recent is collapsible today, so the toggle is fixed.
+        // Disclosure chevron: down when expanded, right when collapsed.
         let rotation = if is_collapsed {
             -std::f32::consts::FRAC_PI_2
         } else {

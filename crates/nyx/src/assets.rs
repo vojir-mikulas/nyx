@@ -1,10 +1,9 @@
-//! Embedded application assets — the vendored fonts and icon set — and the
+//! Embedded application assets (vendored fonts and icon set) and the
 //! [`gpui::AssetSource`] that serves them.
 //!
-//! Everything under the workspace `assets/` directory is baked into the binary
-//! at compile time via [`rust_embed`], so the shipped app needs no sidecar
-//! files. The icon SVGs are reached by `nyx`'s [`crate::icon`] helper through
-//! `gpui::svg().path("icons/<name>.svg")`, which routes back here.
+//! Everything under the workspace `assets/` dir is baked into the binary at
+//! compile time via [`rust_embed`], so the shipped app needs no sidecar files.
+//! Icon SVGs are reached via `gpui::svg().path("icons/<name>.svg")`.
 
 use std::borrow::Cow;
 

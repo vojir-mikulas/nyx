@@ -1,10 +1,8 @@
 //! View-models and presentation helpers.
 //!
-//! Per the M1 decision (see the plan), `nyx-core` domain types are **not**
-//! extended with UI fields. Instead the app wraps them in thin view-models that
-//! carry presentation-only state (accent color, "recent" flag, synthetic
-//! speed/error). The derived display strings (size, date, type label) are
-//! computed here from the domain type, never stored on it.
+//! `nyx-core` domain types are not extended with UI fields; the app wraps them
+//! in thin view-models carrying presentation-only state (accent color, "recent"
+//! flag, speed/error). Display strings are computed here, never stored.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -17,11 +15,8 @@ use time::OffsetDateTime;
 /// A profile counts as "recent" if it was last connected within this many days.
 const RECENT_DAYS: i64 = 30;
 
-/// A connection profile plus its UI-only presentation state.
-///
-/// All three presentation fields are *derived* from the persisted profile (color
-/// from [`Profile::color`], the rest from [`Profile::last_connected`]); none live
-/// only in memory, so they survive a restart (see plan M3 D6).
+/// A connection profile plus its UI-only presentation state, all derived from
+/// the persisted profile so they survive a restart.
 pub struct ConnectionVm {
     /// The real domain profile.
     pub profile: Profile,
@@ -137,11 +132,8 @@ impl EntryRow {
 /// to/from the persisted [`ProfileColor`] (the app's color picker uses these).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AccentKind {
-    /// Blue.
     Blue,
-    /// Purple.
     Purple,
-    /// Green.
     Green,
 }
 
@@ -198,13 +190,9 @@ pub fn protocol_badge(protocol: Protocol) -> (BadgeVariant, &'static str) {
 /// A sortable file-table column.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SortKey {
-    /// Name (folders first).
     Name,
-    /// Size in bytes.
     Size,
-    /// Modified time.
     Modified,
-    /// Type label.
     Kind,
 }
 
@@ -234,13 +222,10 @@ impl SortKey {
 /// The transfer-dock filter tabs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DockTab {
-    /// All transfers.
     All,
     /// Running + queued.
     Active,
-    /// Completed.
     Completed,
-    /// Failed.
     Failed,
 }
 
@@ -314,8 +299,6 @@ impl Density {
         }
     }
 }
-
-// --- formatting helpers ---------------------------------------------------
 
 /// Human-readable byte size (`"—"` for zero, matching the design).
 pub fn fmt_size(bytes: u64) -> String {

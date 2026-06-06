@@ -1,22 +1,11 @@
 //! `Tabs` — a horizontal strip of selectable tabs with an optional count pill.
-//!
-//! Stateless: the caller owns the selected index and is told about clicks via
-//! [`on_select`](Tabs::on_select). Built for the transfer dock (Active / Done /
-//! Failed), but generic — tabs carry plain labels and counts, no domain types.
-//!
-//! ```ignore
-//! Tabs::new("dock")
-//!     .tab("Active", Some(3))
-//!     .tab("Completed", Some(12))
-//!     .selected(self.tab)
-//!     .on_select(cx.listener(|this, ix: &usize, _, cx| { this.tab = *ix; cx.notify(); }))
-//! ```
+//! Stateless: the caller owns the selected index, reacting via
+//! [`on_select`](Tabs::on_select).
 
 use gpui::{div, prelude::*, App, SharedString, Window};
 
 use crate::theme::ActiveTheme;
 
-/// A handler invoked with the clicked tab index.
 type SelectHandler = Box<dyn Fn(usize, &mut Window, &mut App) + 'static>;
 
 struct TabItem {
@@ -24,7 +13,6 @@ struct TabItem {
     count: Option<usize>,
 }
 
-/// A horizontal strip of selectable tabs.
 #[derive(IntoElement)]
 pub struct Tabs {
     id: SharedString,
@@ -34,7 +22,6 @@ pub struct Tabs {
 }
 
 impl Tabs {
-    /// Create an empty tab strip with a stable `id`.
     pub fn new(id: impl Into<SharedString>) -> Self {
         Self {
             id: id.into(),
@@ -44,7 +31,6 @@ impl Tabs {
         }
     }
 
-    /// Append a tab with a `label` and an optional `count` pill.
     pub fn tab(mut self, label: impl Into<SharedString>, count: Option<usize>) -> Self {
         self.items.push(TabItem {
             label: label.into(),
@@ -53,13 +39,11 @@ impl Tabs {
         self
     }
 
-    /// Set the selected tab index.
     pub fn selected(mut self, index: usize) -> Self {
         self.selected = index;
         self
     }
 
-    /// Handler invoked with the index of a clicked tab.
     pub fn on_select(mut self, handler: impl Fn(usize, &mut Window, &mut App) + 'static) -> Self {
         self.on_select = Some(Box::new(handler));
         self

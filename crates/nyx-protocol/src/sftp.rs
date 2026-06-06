@@ -1,8 +1,6 @@
 //! SFTP implementation of [`RemoteClient`] over `russh` / `russh-sftp`.
 //!
-//! M2 implements `connect` (password auth + host-key verification) and
-//! `list_dir`; the remaining file operations land in M4. The client owns one
-//! russh session and one SFTP subsystem channel.
+//! The client owns one russh session and one SFTP subsystem channel.
 //!
 //! **Credential discipline:** the password is held only until [`connect`] uses it
 //! and is *never* written to a log or embedded in an error. Auth failures map to
@@ -82,8 +80,8 @@ impl SftpClient {
     }
 
     /// Best-effort size of a remote file, for showing a transfer's total up
-    /// front (M5, D6). `None` if the stat fails or the size is unknown — the
-    /// transfer still runs, just without a `%`/total.
+    /// front. `None` if the stat fails or the size is unknown — the transfer
+    /// still runs, just without a `%`/total.
     pub async fn remote_size(&self, path: &str) -> Option<u64> {
         self.sftp().ok()?.metadata(path).await.ok()?.size
     }
@@ -232,7 +230,7 @@ impl RemoteClient for SftpClient {
     }
 }
 
-/// The russh client handler — its only job in M2 is host-key verification.
+/// The russh client handler — its only job is host-key verification.
 struct ClientHandler {
     host: String,
     known_hosts: KnownHosts,

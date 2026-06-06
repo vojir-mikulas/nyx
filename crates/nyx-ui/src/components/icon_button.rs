@@ -1,32 +1,18 @@
-//! `IconButton` — a compact, square, icon-only button (toolbars, row actions).
-//!
-//! It stays domain-free by taking its glyph as a generic `impl IntoElement`
-//! child rather than any icon enum: the app supplies the icon element (an
-//! `svg()`, a styled `div`, a character), and `IconButton` provides the themed
-//! hit-target, hover, active and disabled states.
-//!
-//! ```ignore
-//! IconButton::new("refresh", svg().path("icons/refresh.svg"))
-//!     .size(IconButtonSize::Md)
-//!     .on_click(|_, _, _| { /* … */ });
-//! ```
+//! `IconButton` — a compact square icon-only button. Takes its glyph as a
+//! generic `impl IntoElement` child (never an icon enum), staying domain-free.
 
 use gpui::{div, prelude::*, AnyElement, App, ClickEvent, ElementId, Window};
 
 use crate::theme::ActiveTheme;
 
-/// A boxed click handler in GPUI's `(event, window, app)` shape.
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
-/// Size of an [`IconButton`] (the square edge length, in pixels).
+/// Square edge length, in pixels.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum IconButtonSize {
-    /// 22px — dense row actions.
     Xs,
-    /// 24px — toolbars (the default).
     #[default]
     Sm,
-    /// 28px — prominent affordances.
     Md,
 }
 
@@ -40,7 +26,6 @@ impl IconButtonSize {
     }
 }
 
-/// A themed, square, icon-only button.
 #[derive(IntoElement)]
 pub struct IconButton {
     id: ElementId,
@@ -52,7 +37,6 @@ pub struct IconButton {
 }
 
 impl IconButton {
-    /// Create a button with a stable `id` and an `icon` element.
     pub fn new(id: impl Into<ElementId>, icon: impl IntoElement) -> Self {
         Self {
             id: id.into(),
@@ -64,25 +48,22 @@ impl IconButton {
         }
     }
 
-    /// Set the size.
     pub fn size(mut self, size: IconButtonSize) -> Self {
         self.size = size;
         self
     }
 
-    /// Mark the button as active (toggled-on, persistent highlight).
+    /// Toggled-on, persistent highlight.
     pub fn active(mut self, active: bool) -> Self {
         self.active = active;
         self
     }
 
-    /// Mark the button disabled (no hover, no click, dimmed).
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
     }
 
-    /// Attach a click handler.
     pub fn on_click(
         mut self,
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,

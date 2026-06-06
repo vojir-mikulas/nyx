@@ -1,21 +1,8 @@
-//! `TextInput` — a single-line, themed text field built **in-house** on GPUI's
-//! text/element primitives (no external widget crate).
-//!
-//! It is the hardest widget in the library: it owns cursor movement, selection,
-//! clipboard, and IME/marked-text handling. The mechanics are ported from
-//! GPUI's `input` example and themed via [`ActiveTheme`]; our design only needs
-//! single-line fields, so this stays far smaller than a full editor.
-//!
-//! Because it is stateful, it is a [`Render`] view held in an `Entity`:
-//!
-//! ```ignore
-//! // once, at startup:
-//! TextInput::bind_keys(cx);
-//! // then create one:
-//! let input = cx.new(|cx| TextInput::new(cx).with_placeholder("Host"));
-//! // read its value:
-//! let value = input.read(cx).content();
-//! ```
+//! `TextInput` — a single-line, themed text field built in-house on GPUI's
+//! text/element primitives. Owns cursor movement, selection, clipboard and
+//! IME/marked-text. Stateful: a [`Render`] view held in an `Entity`; mechanics
+//! ported from GPUI's `input` example. Call [`TextInput::bind_keys`] once at
+//! startup.
 
 use std::ops::Range;
 
@@ -62,22 +49,16 @@ actions!(
     ]
 );
 
-/// Events a [`TextInput`] emits so its owning view can react without a callback
-/// baked into the field (the field can't know whether "submit" means *create
-/// folder* or *save profile*). Owners `cx.subscribe` and route these to the same
-/// handlers their primary / cancel buttons call (plan M6 D3).
+/// Emitted so the owner can react via `cx.subscribe` — the field can't know
+/// whether submit means *create folder* or *save profile*.
 #[derive(Clone, Copy, Debug)]
 pub enum TextInputEvent {
-    /// The user pressed Enter — treat as confirming the field's form.
+    /// Enter — confirm the field's form.
     Submit,
-    /// The user pressed Escape — treat as dismissing the field's form.
+    /// Escape — dismiss the field's form.
     Cancel,
 }
 
-/// A single-line, themed text field.
-///
-/// Stateful — construct inside `cx.new(|cx| TextInput::new(cx))`. Call
-/// [`TextInput::bind_keys`] once at app startup so editing keys are dispatched.
 pub struct TextInput {
     focus_handle: FocusHandle,
     content: SharedString,
@@ -96,13 +77,9 @@ pub struct TextInput {
 const OBSCURE_GLYPH: &str = "•";
 
 impl TextInput {
-    /// Create an empty input. Use [`with_placeholder`](Self::with_placeholder)
-    /// to set placeholder text.
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
-            // A tab stop so `window.focus_next/prev` (Tab / Shift-Tab) can walk
-            // between fields in a form — the only configuration the built-in
-            // tab-stop ring needs (plan M6 D1).
+            // Tab stop so `window.focus_next/prev` can walk between form fields.
             focus_handle: cx.focus_handle().tab_stop(true),
             content: SharedString::default(),
             placeholder: SharedString::default(),
@@ -116,33 +93,28 @@ impl TextInput {
         }
     }
 
-    /// Builder: set the placeholder shown while empty.
     pub fn with_placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
         self.placeholder = placeholder.into();
         self
     }
 
-    /// Builder: obscure the field, rendering each character as a bullet (for
-    /// password entry). The real value is still returned by [`content`](Self::content);
-    /// only the on-screen glyphs are masked.
+    /// Mask glyphs as bullets (password entry); [`content`](Self::content) still
+    /// returns the real value.
     pub fn obscured(mut self) -> Self {
         self.obscured = true;
         self
     }
 
-    /// Builder: set the initial content, cursor at the end.
     pub fn with_content(mut self, content: impl Into<SharedString>) -> Self {
         self.content = content.into();
         self.selected_range = self.content.len()..self.content.len();
         self
     }
 
-    /// The current text value.
     pub fn content(&self) -> SharedString {
         self.content.clone()
     }
 
-    /// Replace the content, moving the cursor to the end and clearing selection.
     pub fn set_content(&mut self, content: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.content = content.into();
         let end = self.content.len();
@@ -152,8 +124,6 @@ impl TextInput {
         cx.notify();
     }
 
-    /// Register the default editing key bindings (scoped to this widget).
-    ///
     /// Call once at startup. Bindings are scoped to the `"TextInput"` key
     /// context, so they never leak into the rest of the app.
     pub fn bind_keys(cx: &mut App) {
@@ -161,12 +131,10 @@ impl TextInput {
         cx.bind_keys([
             KeyBinding::new("backspace", Backspace, ctx),
             KeyBinding::new("delete", Delete, ctx),
-            // Word delete (macOS: alt-backspace / alt-delete).
             KeyBinding::new("alt-backspace", DeleteWordLeft, ctx),
             KeyBinding::new("alt-delete", DeleteWordRight, ctx),
             KeyBinding::new("left", Left, ctx),
             KeyBinding::new("right", Right, ctx),
-            // Word movement (macOS: alt-left / alt-right and selecting variants).
             KeyBinding::new("alt-left", WordLeft, ctx),
             KeyBinding::new("alt-right", WordRight, ctx),
             KeyBinding::new("alt-shift-left", SelectWordLeft, ctx),
@@ -179,18 +147,16 @@ impl TextInput {
             KeyBinding::new("cmd-x", Cut, ctx),
             KeyBinding::new("home", Home, ctx),
             KeyBinding::new("end", End, ctx),
-            // Line movement (macOS: cmd-left / cmd-right alias home / end).
             KeyBinding::new("cmd-left", Home, ctx),
             KeyBinding::new("cmd-right", End, ctx),
             KeyBinding::new("cmd-shift-left", SelectHome, ctx),
             KeyBinding::new("cmd-shift-right", SelectEnd, ctx),
             KeyBinding::new("shift-home", SelectHome, ctx),
             KeyBinding::new("shift-end", SelectEnd, ctx),
-            // Tab traversal between fields (no default `tab` binding exists, so
-            // we add our own — plan M6 D1).
+            // Tab traversal between fields (GPUI has no default `tab` binding).
             KeyBinding::new("tab", FocusNext, ctx),
             KeyBinding::new("shift-tab", FocusPrev, ctx),
-            // Submit / dismiss, surfaced to the owner as `TextInputEvent` (D3).
+            // Surfaced to the owner as `TextInputEvent`.
             KeyBinding::new("enter", Submit, ctx),
             KeyBinding::new("escape", Cancel, ctx),
             KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, ctx),
@@ -482,8 +448,8 @@ impl TextInput {
             .unwrap_or(self.content.len())
     }
 
-    /// The start of the nearest word *before* `offset` (macOS alt-left). Words
-    /// are Unicode word segments, so leading whitespace/punctuation is skipped.
+    /// Start of the word before `offset`. Unicode word segments, so leading
+    /// whitespace/punctuation is skipped.
     fn previous_word_boundary(&self, offset: usize) -> usize {
         self.content
             .unicode_word_indices()

@@ -18,14 +18,12 @@ use crate::views;
 actions!(
     nyx_app,
     [
-        /// Open the connection editor in Create mode (the ⌘N shortcut shown on
-        /// the welcome screen).
+        /// Open the connection editor in Create mode (⌘N).
         NewConnection,
     ]
 );
 
-/// Register the app-wide keyboard shortcuts (global, no key context). Call once
-/// at startup.
+/// Register the app-wide keyboard shortcuts. Call once at startup.
 pub fn bind_keys(cx: &mut gpui::App) {
     cx.bind_keys([gpui::KeyBinding::new("cmd-n", NewConnection, None)]);
 }
@@ -68,12 +66,9 @@ impl Render for AppState {
             .text_color(theme.text)
             .text_sm()
             // Blur on click-away: GPUI keeps focus until another focusable
-            // element takes it, so a click on empty chrome would otherwise leave
-            // an input focused. This runs in the capture phase (root first), so a
-            // click that lands on a field still focuses it on the way down — but a
-            // click that hits nothing focusable drops focus (plan M6 D1).
+            // element takes it. Capture phase (root first) so a click landing on
+            // a field still focuses it on the way down.
             .capture_any_mouse_down(|_, window, _| window.blur())
-            // ⌘N opens the connection editor (the welcome screen advertises it).
             .on_action(cx.listener(|this, _: &NewConnection, _, cx| {
                 this.open_editor_create(cx);
                 cx.notify();
@@ -91,8 +86,7 @@ impl Render for AppState {
                 let modal = tweaks_modal(self, cx);
                 this.child(modal)
             })
-            // Backend-driven overlays (M2): the connecting indicator sits under
-            // the prompts, which are mutually exclusive in practice.
+            // The connecting indicator sits under the prompts (mutually exclusive).
             .when(
                 self.connecting_id.is_some()
                     && self.host_key_prompt.is_none()
@@ -138,12 +132,10 @@ impl Render for AppState {
     }
 }
 
-/// The password prompt shown before a connection is attempted (M2). M3 replaces
-/// this with a keyring lookup that only prompts on a miss.
+/// The password prompt shown before a connection is attempted.
 fn password_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
     let view = cx.entity();
-    // Caller guards `password_prompt.is_some()`.
     let prompt = state.password_prompt.as_ref().expect("password prompt set");
 
     Modal::new("password")
@@ -288,8 +280,7 @@ fn host_key_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElem
         )
 }
 
-/// The "remove connection?" confirmation (deletes the profile + its keychain
-/// entry). The reusable confirm-destructive pattern M4 will share for file ops.
+/// The "remove connection?" confirmation (deletes the profile + its keychain entry).
 fn delete_confirm_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
     let view = cx.entity();
@@ -390,13 +381,12 @@ fn row_context_menu(state: &AppState, cx: &mut Context<AppState>) -> impl IntoEl
         ))
 }
 
-/// The browser file-row right-click menu (Download / Rename / Delete / Copy
-/// path), anchored at the cursor — modeled on [`row_context_menu`]. Download and
-/// Delete act on the whole selection; Rename and Copy path on the clicked row.
+/// The browser file-row right-click menu. Download and Delete act on the whole
+/// selection; Rename and Copy path on the clicked row.
 fn file_context_menu(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let menu = state.file_menu.as_ref().expect("file menu set");
     let position = menu.position;
-    // Directory download is post-MVP (D5): disable Download on a folder row.
+    // Directory download is not yet supported: disable Download on a folder row.
     let download_disabled = menu.is_dir;
 
     let surface = ContextMenu::new("file-ctx")
@@ -458,8 +448,7 @@ fn file_context_menu(state: &AppState, cx: &mut Context<AppState>) -> impl IntoE
         ))
 }
 
-/// The reusable single-field input modal (New folder / Rename), modeled on
-/// [`password_modal`]. Submitting validates non-empty + no `/` in the state.
+/// The reusable single-field input modal (New folder / Rename).
 fn input_prompt_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
     let view = cx.entity();
@@ -519,9 +508,7 @@ fn input_prompt_modal(state: &AppState, cx: &mut Context<AppState>) -> impl Into
         )
 }
 
-/// The file-delete confirmation (one or many entries), modeled on
-/// [`delete_confirm_modal`] — danger button, copy that names the count and warns
-/// the delete is recursive for folders and can't be undone (plan D8).
+/// The file-delete confirmation (one or many entries).
 fn file_delete_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
     let view = cx.entity();
@@ -585,7 +572,7 @@ fn file_delete_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoE
         )
 }
 
-/// A lightweight "connecting…" overlay (full spinner polish is M6).
+/// A lightweight "connecting…" overlay.
 fn connecting_overlay(state: &AppState, cx: &Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
     let name = state

@@ -1,28 +1,13 @@
-//! `Modal` — a centered, elevated dialog over a dimming scrim.
-//!
-//! The component renders an `absolute inset-0` scrim with a centered panel
-//! (title bar + scrollable body + optional footer). It is domain-free: the body
-//! and footer are arbitrary `impl IntoElement` content supplied by the caller.
-//!
-//! Place it as the last child of a relatively/absolutely-positioned container
-//! (or behind a [`gpui::deferred`] layer) so it paints above the rest of the UI:
-//!
-//! ```ignore
-//! Modal::new("edit-conn")
-//!     .title("Edit connection")
-//!     .on_close(|_, cx| { /* close */ })
-//!     .child(/* form fields */)
-//!     .footer(Button::new("save", "Save"))
-//! ```
+//! `Modal` — a centered dialog over a dimming scrim. Body and footer are
+//! arbitrary `impl IntoElement`. Place it last in a positioned container (or
+//! behind a [`gpui::deferred`] layer) so it paints above the rest of the UI.
 
 use gpui::{div, prelude::*, AnyElement, App, ElementId, MouseButton, SharedString, Window};
 
 use crate::theme::ActiveTheme;
 
-/// A handler invoked when the modal requests to close (× button or scrim click).
 type CloseHandler = Box<dyn Fn(&mut Window, &mut App) + 'static>;
 
-/// A centered dialog over a dimming scrim.
 #[derive(IntoElement)]
 pub struct Modal {
     id: ElementId,
@@ -34,7 +19,6 @@ pub struct Modal {
 }
 
 impl Modal {
-    /// Create a modal with a stable `id`.
     pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
@@ -46,25 +30,23 @@ impl Modal {
         }
     }
 
-    /// Set the title shown in the header. Without one, the header is omitted.
+    /// Without a title the header is omitted.
     pub fn title(mut self, title: impl Into<SharedString>) -> Self {
         self.title = Some(title.into());
         self
     }
 
-    /// Override the panel width (default 540px).
     pub fn width(mut self, width: gpui::Pixels) -> Self {
         self.width = width;
         self
     }
 
-    /// Set the footer content (typically a row of buttons).
     pub fn footer(mut self, footer: impl IntoElement) -> Self {
         self.footer = Some(footer.into_any_element());
         self
     }
 
-    /// Handler for the close affordances (× button and clicking the scrim).
+    /// Invoked by the × button and a scrim click.
     pub fn on_close(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
         self.on_close = Some(Box::new(handler));
         self
