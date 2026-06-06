@@ -15,12 +15,16 @@ back here.
 
 ## Plans
 
-Sequenced implementation plans live in [`plans/`](plans/):
+Sequenced implementation plans live in [`plans/`](plans/); completed ones move
+to [`plans/done/`](plans/done/).
 
-- [`plans/plan-01-project-init.md`](plans/plan-01-project-init.md) — workspace
-  skeleton, GPUI pin, "hello window", crate contracts, CI, AI-dev setup.
-- [`plans/plan-02-nyx-ui-flint.md`](plans/plan-02-nyx-ui-flint.md) — the
-  `nyx-ui` component library, built to be extracted as **Flint**. Includes
+- [`plans/plan-03-mvp.md`](plans/plan-03-mvp.md) — **active.** The MVP (SFTP V1):
+  app shell → connect+list → profiles/keyring → file ops → live transfer queue →
+  polish.
+- [`plans/done/plan-01-project-init.md`](plans/done/plan-01-project-init.md) —
+  ✅ workspace skeleton, GPUI pin, "hello window", crate contracts, CI, AI-dev setup.
+- [`plans/done/plan-02-nyx-ui-flint.md`](plans/done/plan-02-nyx-ui-flint.md) —
+  ✅ the `nyx-ui` component library, built to be extracted as **Flint**. Includes
   **theming v2**: file-authored, hot-reloadable, runtime-switchable themes and a
   forward path to data-only theme plugins.
 
