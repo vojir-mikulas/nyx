@@ -5,7 +5,7 @@
 
 use gpui::{div, prelude::*, px, Context, FontWeight};
 use nyx_core::Protocol;
-use nyx_ui::{ActiveTheme, Badge, ToastVariant};
+use nyx_ui::{ActiveTheme, Badge};
 
 use crate::icon::icon;
 use crate::state::models::{protocol_badge, ConnectionVm};
@@ -21,15 +21,14 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
         .map(|conn| card(conn, cx))
         .collect::<Vec<_>>();
     let recents = state
-        .connections
-        .iter()
-        .filter(|c| c.is_recent)
+        .recent_connections()
+        .into_iter()
         .take(3)
         .map(|conn| recent_row(conn, cx))
         .collect::<Vec<_>>();
 
     let new_conn = cx.listener(|this, _, _, cx| {
-        this.push_toast("New connection — coming in M3", ToastVariant::Info, cx);
+        this.open_editor_create(cx);
         cx.notify();
     });
 

@@ -3,98 +3,15 @@
 
 //! In-memory fake data.
 //!
-//! M2 wired the file browser to real `DirListing` events, so the directory
-//! fixture is gone — connections and transfers stay synthetic until M3
-//! (profiles) and M5 (live transfer queue) respectively. The shapes still match
-//! what the service emits, so the derived getters need no change when the source
-//! swaps.
+//! M2 wired the file browser to real `DirListing` events and M3 swapped the
+//! connection list for the real `FileProfileStore`, so only the transfer dock
+//! stays synthetic — until the live transfer queue lands in M5. The shapes still
+//! match what the service emits, so the derived getters need no change when the
+//! source swaps.
 
-use nyx_core::{Protocol, Transfer, TransferDirection, TransferId, TransferStatus};
-use nyx_profile::Profile;
+use nyx_core::{Transfer, TransferDirection, TransferId, TransferStatus};
 
-use super::models::{AccentKind, ConnectionVm, TransferVm};
-
-/// The saved + recent connection profiles shown in the sidebar and welcome.
-pub fn fake_connections() -> Vec<ConnectionVm> {
-    fn profile(
-        id: &str,
-        name: &str,
-        protocol: Protocol,
-        host: &str,
-        port: u16,
-        username: &str,
-        path: &str,
-    ) -> Profile {
-        Profile {
-            id: id.to_string(),
-            name: name.to_string(),
-            protocol,
-            host: host.to_string(),
-            port,
-            username: username.to_string(),
-            remote_path: Some(path.to_string()),
-        }
-    }
-
-    vec![
-        ConnectionVm {
-            profile: profile(
-                "prod",
-                "prod-web-01",
-                Protocol::Sftp,
-                "188.34.201.44",
-                22,
-                "deploy",
-                "/var/www/nyx-app/current",
-            ),
-            color: AccentKind::Purple,
-            last_used: Some("4m ago".into()),
-            is_recent: true,
-        },
-        ConnectionVm {
-            profile: profile(
-                "staging",
-                "staging",
-                Protocol::Sftp,
-                "staging.nyx.dev",
-                22,
-                "deploy",
-                "/var/www",
-            ),
-            color: AccentKind::Purple,
-            last_used: Some("2h ago".into()),
-            is_recent: true,
-        },
-        ConnectionVm {
-            profile: profile(
-                "cdn",
-                "media-cdn",
-                Protocol::Ftps,
-                "cdn.nyx.dev",
-                990,
-                "ftp_cdn",
-                "/assets",
-            ),
-            color: AccentKind::Green,
-            last_used: Some("1d ago".into()),
-            is_recent: true,
-        },
-        ConnectionVm {
-            profile: profile(
-                "backup",
-                "legacy-backup",
-                Protocol::Ftp,
-                "backup.internal.net",
-                21,
-                "backup",
-                "/daily",
-            ),
-            color: AccentKind::Blue,
-            last_used: Some("5d ago".into()),
-            is_recent: false,
-        },
-    ]
-}
+use super::models::TransferVm;
 
 /// The seed transfers shown in the dock — a spread across every status and both
 /// directions, with synthetic speed/error.

@@ -6,6 +6,7 @@
 //! handlers that call back into [`crate::state::AppState`].
 
 pub mod browser;
+pub mod connection_editor;
 pub mod sidebar;
 pub mod status_bar;
 pub mod transfer_dock;

@@ -18,10 +18,16 @@
 //! [`Command::ListDir`] / [`Command::Disconnect`], host-key trust-on-first-use via
 //! [`Command::HostKeyDecision`], and the matching events. A single connection is
 //! supported (the active session); multi-session is out of scope until later.
-
-mod host_key_path;
+//!
+//! M3 adds exactly one command/event pair — [`Command::TestConnection`] /
+//! [`Event::TestResult`] — for the connection editor's "Test" button. The probe
+//! spins up a *transient* client that never touches the stored session. A
+//! single-flight guard makes this safe: at most one connect-like op (Connect or
+//! TestConnection) is in flight at a time, so there is never more than one
+//! pending host-key decision.
 
 use std::fmt;
+use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
 
 use futures::channel::mpsc::{
@@ -37,7 +43,20 @@ use tokio::sync::mpsc::{
 use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
-use crate::host_key_path::known_hosts;
+/// The per-OS path to the trust-on-first-use `known_hosts` store
+/// (`<data_dir>/known_hosts`, resolved via the `directories` crate).
+///
+/// Falls back to `./known_hosts` only if the OS data dir can't be resolved
+/// (never expected in practice).
+fn known_hosts() -> PathBuf {
+    match directories::ProjectDirs::from("dev", "nyx", "Nyx") {
+        Some(dirs) => dirs.data_dir().join("known_hosts"),
+        None => {
+            warn!("could not resolve the OS data directory; using ./known_hosts");
+            PathBuf::from("known_hosts")
+        }
+    }
+}
 
 /// A password that never reveals itself in `Debug`/logs.
 ///
@@ -88,6 +107,17 @@ pub enum Command {
         /// Absolute remote path to list.
         path: String,
     },
+    /// Validate a profile's credentials without opening a browser session.
+    ///
+    /// Spins up a throwaway client (its own connect + drop), entirely separate
+    /// from the stored session, and reports back via [`Event::TestResult`]. The
+    /// password is wrapped in [`Secret`] so it can never reach a log.
+    TestConnection {
+        /// The profile to probe.
+        profile: Profile,
+        /// The login password (redacted in `Debug`).
+        password: Secret,
+    },
     /// Close the active connection.
     Disconnect,
     /// Shut the runtime down and exit the thread.
@@ -127,6 +157,18 @@ pub enum Event {
         path: String,
         /// The entries in that directory.
         entries: Vec<RemoteEntry>,
+    },
+    /// The outcome of a [`Command::TestConnection`] probe, matched by `profile_id`.
+    ///
+    /// The `message` is human-readable and credential-free (e.g. `"Connection
+    /// OK"` or an error detail).
+    TestResult {
+        /// The probed profile's id (so the editor can match its inline status).
+        profile_id: String,
+        /// Whether the probe succeeded.
+        ok: bool,
+        /// A credential-free status / error message.
+        message: String,
     },
     /// An operation failed. The message is human-readable and credential-free.
     Error {
@@ -195,29 +237,50 @@ fn run(commands: TokioReceiver<Command>, events: FuturesSender<Event>) {
     let _ = events.unbounded_send(Event::Stopped);
 }
 
-/// The result of a connect task, handed back to the dispatcher.
-enum ConnectDone {
-    /// Connected — the dispatcher takes ownership of the live session.
+/// Whether a connect-like task is a live connect or a throwaway test probe.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TaskKind {
+    /// A live `Connect` — its session is kept on success.
+    Connect,
+    /// A `TestConnection` probe — the client is dropped after reporting.
+    Test,
+}
+
+/// The result of a connect-like task, handed back to the dispatcher.
+enum TaskOutcome {
+    /// A live connect succeeded — the dispatcher takes ownership of the session.
     Connected {
         profile_id: String,
         client: Box<SftpClient>,
     },
-    /// Connect failed with a credential-free message.
-    Failed { message: String },
+    /// A live connect failed with a credential-free message.
+    ConnectFailed { message: String },
+    /// A test probe finished (success or failure).
+    TestResult {
+        profile_id: String,
+        ok: bool,
+        message: String,
+    },
 }
 
 /// The single command dispatcher. Owns the active session and the host-key
-/// decision slot; connect runs as a spawned task so the loop stays responsive to
-/// [`Command::HostKeyDecision`] while a handshake awaits the user.
+/// decision slot; connect-like ops run as spawned tasks so the loop stays
+/// responsive to [`Command::HostKeyDecision`] while a handshake awaits the user.
+///
+/// A single-flight guard (`in_flight`) covers both `Connect` and
+/// `TestConnection`: while one is running, a second connect-like command is
+/// rejected outright, so the single host-key slot can never be contended.
 async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Event>) {
     let mut client: Option<Box<SftpClient>> = None;
-    // The responder for an in-flight host-key prompt (at most one connect at a
-    // time in M2). The connect task registers it here before showing the prompt.
+    // The responder for an in-flight host-key prompt. With the single-flight
+    // guard there is at most one connect-like op, hence at most one slot user.
     let mut pending_host_key: Option<oneshot::Sender<bool>> = None;
+    // Whether a connect-like op (Connect or TestConnection) is in flight.
+    let mut in_flight = false;
 
-    // Internal channels: connect task → dispatcher.
+    // Internal channels: connect-like task → dispatcher.
     let (register_tx, mut register_rx) = unbounded_channel::<oneshot::Sender<bool>>();
-    let (done_tx, mut done_rx) = unbounded_channel::<ConnectDone>();
+    let (done_tx, mut done_rx) = unbounded_channel::<TaskOutcome>();
 
     loop {
         tokio::select! {
@@ -226,9 +289,36 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                 match command {
                     Command::Shutdown => break,
                     Command::Connect { profile, password } => {
+                        if in_flight {
+                            let _ = events.unbounded_send(Event::Error {
+                                message: "a connection is already in progress".into(),
+                            });
+                            continue;
+                        }
                         // Replace any existing session.
                         client = None;
-                        tokio::spawn(run_connect(
+                        in_flight = true;
+                        tokio::spawn(run_task(
+                            TaskKind::Connect,
+                            profile,
+                            password,
+                            events.clone(),
+                            register_tx.clone(),
+                            done_tx.clone(),
+                        ));
+                    }
+                    Command::TestConnection { profile, password } => {
+                        if in_flight {
+                            let _ = events.unbounded_send(Event::TestResult {
+                                profile_id: profile.id,
+                                ok: false,
+                                message: "a connection is already in progress".into(),
+                            });
+                            continue;
+                        }
+                        in_flight = true;
+                        tokio::spawn(run_task(
+                            TaskKind::Test,
                             profile,
                             password,
                             events.clone(),
@@ -264,6 +354,8 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                         }
                     }
                     Command::Disconnect => {
+                        // A disconnect also clears the single-flight slot.
+                        in_flight = false;
                         if let Some(mut session) = client.take() {
                             let _ = session.disconnect().await;
                             info!("disconnected");
@@ -275,14 +367,19 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                 pending_host_key = Some(responder);
             }
             Some(done) = done_rx.recv() => {
+                // Any terminal outcome clears the single-flight slot.
+                in_flight = false;
                 match done {
-                    ConnectDone::Connected { profile_id, client: session } => {
+                    TaskOutcome::Connected { profile_id, client: session } => {
                         client = Some(session);
                         info!(%profile_id, "connected");
                         let _ = events.unbounded_send(Event::Connected { profile_id });
                     }
-                    ConnectDone::Failed { message } => {
+                    TaskOutcome::ConnectFailed { message } => {
                         let _ = events.unbounded_send(Event::Error { message });
+                    }
+                    TaskOutcome::TestResult { profile_id, ok, message } => {
+                        let _ = events.unbounded_send(Event::TestResult { profile_id, ok, message });
                     }
                 }
             }
@@ -290,19 +387,27 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
     }
 }
 
-/// Run a single connection attempt and report the outcome to the dispatcher.
-async fn run_connect(
+/// Run a single connect-like attempt and report the outcome to the dispatcher.
+///
+/// For [`TaskKind::Connect`] a success hands the live session back; for
+/// [`TaskKind::Test`] the client is dropped and only a credential-free
+/// [`TaskOutcome::TestResult`] is reported (no `Connecting` event, so the test
+/// never disturbs the UI's connection state).
+async fn run_task(
+    kind: TaskKind,
     profile: Profile,
     password: Secret,
     events: FuturesSender<Event>,
     register: TokioSender<oneshot::Sender<bool>>,
-    done: TokioSender<ConnectDone>,
+    done: TokioSender<TaskOutcome>,
 ) {
     let profile_id = profile.id.clone();
-    info!(host = %profile.host, port = profile.port, "connecting");
-    let _ = events.unbounded_send(Event::Connecting {
-        profile_id: profile_id.clone(),
-    });
+    info!(host = %profile.host, port = profile.port, test = kind == TaskKind::Test, "connecting");
+    if kind == TaskKind::Connect {
+        let _ = events.unbounded_send(Event::Connecting {
+            profile_id: profile_id.clone(),
+        });
+    }
 
     let prompt = std::sync::Arc::new(host_key::PromptBridge {
         events: events.clone(),
@@ -317,12 +422,27 @@ async fn run_connect(
         prompt,
     );
 
-    let outcome = match client.connect().await {
-        Ok(()) => ConnectDone::Connected {
+    let outcome = match (kind, client.connect().await) {
+        (TaskKind::Connect, Ok(())) => TaskOutcome::Connected {
             profile_id,
             client: Box::new(client),
         },
-        Err(err) => ConnectDone::Failed {
+        (TaskKind::Connect, Err(err)) => TaskOutcome::ConnectFailed {
+            message: err.to_string(),
+        },
+        (TaskKind::Test, Ok(())) => {
+            // The transient client is dropped here (its `Drop` closes the
+            // connection), never touching the stored session.
+            let _ = client.disconnect().await;
+            TaskOutcome::TestResult {
+                profile_id,
+                ok: true,
+                message: "Connection OK".into(),
+            }
+        }
+        (TaskKind::Test, Err(err)) => TaskOutcome::TestResult {
+            profile_id,
+            ok: false,
             message: err.to_string(),
         },
     };

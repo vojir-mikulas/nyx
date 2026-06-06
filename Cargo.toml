@@ -33,6 +33,20 @@ russh-sftp = "2.3"
 
 # --- Serialization ---
 serde = { version = "1", features = ["derive"] }
+# Profile store on-disk format (a single `profiles.toml` table-array).
+toml = "0.8"
+
+# --- Persistence / paths / ids ---
+# OS keychain for secrets (passwords); the platform-native backend feature is
+# enabled per-crate (`apple-native` on macOS). Sync, blocking API — call sites
+# run it off the GPUI thread.
+keyring = "3"
+# Per-OS config/data directories (profiles.toml, known_hosts).
+directories = "6"
+# Stable profile ids (uuid v4).
+uuid = { version = "1", features = ["v4"] }
+# `last_connected` timestamps with RFC3339 serde support.
+time = { version = "0.3", features = ["serde-well-known", "macros"] }
 
 # --- Errors ---
 anyhow = "1"

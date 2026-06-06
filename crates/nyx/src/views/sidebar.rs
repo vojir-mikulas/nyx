@@ -4,7 +4,7 @@
 //! The left sidebar: header, saved connections, footer.
 
 use gpui::{div, prelude::*, px, Context, FontWeight, MouseButton};
-use nyx_ui::{ActiveTheme, Badge, Button, ButtonSize, ButtonVariant, IconButton, ToastVariant};
+use nyx_ui::{ActiveTheme, Badge, Button, ButtonSize, ButtonVariant, IconButton};
 
 use crate::icon::icon;
 use crate::state::models::{protocol_badge, ConnectionVm};
@@ -16,14 +16,15 @@ use super::{status_dot, titlebar_drag};
 pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
     let saved = state.connections.len();
+    let recents = state.recent_connections();
 
     // `cx.listener` results aren't `Clone`, so each call site gets its own.
     let header_new = cx.listener(|this, _, _, cx| {
-        this.push_toast("New connection — coming in M3", ToastVariant::Info, cx);
+        this.open_editor_create(cx);
         cx.notify();
     });
     let footer_new = cx.listener(|this, _, _, cx| {
-        this.push_toast("New connection — coming in M3", ToastVariant::Info, cx);
+        this.open_editor_create(cx);
         cx.notify();
     });
     let open_settings = cx.listener(|this, _, _, cx| {
@@ -65,6 +66,9 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                 .min_h_0()
                 .overflow_y_scroll()
                 .pb_2()
+                .when(!recents.is_empty(), |this| {
+                    this.child(group(state, "Recent", recents.len(), &recents, cx))
+                })
                 .child(group(state, "Saved", saved, &state.connections_all(), cx)),
         )
         .child(
@@ -98,6 +102,9 @@ fn group(
     cx: &mut Context<AppState>,
 ) -> impl IntoElement {
     let theme = cx.theme().clone();
+    // Row ids are namespaced by group so a profile appearing in both Recent and
+    // Saved doesn't collide on a duplicate element id.
+    let prefix = label;
     div()
         .flex()
         .flex_col()
@@ -122,12 +129,17 @@ fn group(
         .children(
             conns
                 .iter()
-                .map(|conn| conn_row(state, conn, cx))
+                .map(|conn| conn_row(state, conn, prefix, cx))
                 .collect::<Vec<_>>(),
         )
 }
 
-fn conn_row(state: &AppState, conn: &ConnectionVm, cx: &mut Context<AppState>) -> impl IntoElement {
+fn conn_row(
+    state: &AppState,
+    conn: &ConnectionVm,
+    prefix: &str,
+    cx: &mut Context<AppState>,
+) -> impl IntoElement {
     let theme = cx.theme().clone();
     let id = conn.profile.id.clone();
     let is_active = state.active_id.as_deref() == Some(id.as_str());
@@ -142,10 +154,11 @@ fn conn_row(state: &AppState, conn: &ConnectionVm, cx: &mut Context<AppState>) -
     let ring = is_online.then(|| theme.green.opacity(0.16));
 
     let open_id = id.clone();
-    let ctx_name = conn.profile.name.clone();
+    let menu_id = id.clone();
+    let menu_name = gpui::SharedString::from(conn.profile.name.clone());
 
     div()
-        .id(gpui::SharedString::from(format!("conn-{id}")))
+        .id(gpui::SharedString::from(format!("{prefix}-conn-{id}")))
         .relative()
         .flex()
         .items_center()
@@ -195,12 +208,8 @@ fn conn_row(state: &AppState, conn: &ConnectionVm, cx: &mut Context<AppState>) -
         }))
         .on_mouse_down(
             MouseButton::Right,
-            cx.listener(move |this, _, _, cx| {
-                this.push_toast(
-                    format!("Edit / Remove “{ctx_name}” — coming in M3"),
-                    ToastVariant::Info,
-                    cx,
-                );
+            cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                this.open_row_menu(menu_id.clone(), menu_name.clone(), event.position);
                 cx.notify();
             }),
         )

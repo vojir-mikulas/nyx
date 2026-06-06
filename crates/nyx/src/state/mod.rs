@@ -18,12 +18,18 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use futures::StreamExt;
-use gpui::{prelude::*, App, Context, Entity, SharedString};
-use nyx_core::TransferStatus;
+use gpui::{prelude::*, App, Context, Entity, Pixels, Point, SharedString};
+use nyx_core::{Protocol, TransferStatus};
+use nyx_keyring::{CredentialStore, OsKeyring};
+use nyx_profile::{FileProfileStore, Profile, ProfileColor, ProfileStore};
 use nyx_service::{Command, Event, Secret, ServiceHandle};
 use nyx_ui::{TextInput, ToastVariant};
+use time::OffsetDateTime;
 
-use models::{ConnectionVm, Density, DockTab, EntryRow, SortKey, TransferVm};
+use models::{AccentKind, ConnectionVm, Density, DockTab, EntryRow, SortKey, TransferVm};
+
+/// The keychain service name (every password is addressed `("nyx", profile.id)`).
+const KEYCHAIN_SERVICE: &str = "nyx";
 
 /// Which top-level screen the main column shows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -58,6 +64,8 @@ pub struct PasswordPrompt {
     pub host_label: SharedString,
     /// The masked password field.
     pub input: Entity<TextInput>,
+    /// Whether to write the entered password to the keychain on connect.
+    pub save_to_keychain: bool,
 }
 
 /// A pending host-key trust-on-first-use prompt (an unknown key was presented).
@@ -66,6 +74,60 @@ pub struct HostKeyPrompt {
     pub host: SharedString,
     /// The SHA-256 fingerprint, e.g. `SHA256:…`.
     pub fingerprint: SharedString,
+}
+
+/// The inline result of an editor "Test connection" probe.
+pub struct TestStatus {
+    /// Whether the probe succeeded.
+    pub ok: bool,
+    /// The credential-free status / error message.
+    pub message: SharedString,
+}
+
+/// The connection editor modal's mutable state (create or edit a profile).
+pub struct ConnectionEditor {
+    /// The profile id — freshly generated on create, preserved on edit.
+    pub id: String,
+    /// `true` when creating (vs. editing an existing profile).
+    pub is_new: bool,
+    /// Display-name field.
+    pub name: Entity<TextInput>,
+    /// Host field.
+    pub host: Entity<TextInput>,
+    /// Port field (numeric; default from the protocol when blank).
+    pub port: Entity<TextInput>,
+    /// Username field.
+    pub username: Entity<TextInput>,
+    /// Optional remote-path field.
+    pub remote_path: Entity<TextInput>,
+    /// Password field (obscured). On edit, blank means "keep the stored secret".
+    pub password: Entity<TextInput>,
+    /// Selected protocol.
+    pub protocol: Protocol,
+    /// Selected accent color.
+    pub color: AccentKind,
+    /// Inline test-connection status, if a probe has reported.
+    pub test_status: Option<TestStatus>,
+    /// Whether a test probe is currently in flight.
+    pub testing: bool,
+}
+
+/// A pending right-click context menu on a sidebar connection row.
+pub struct RowMenu {
+    /// The profile the menu acts on.
+    pub profile_id: String,
+    /// The display name (for the confirm copy).
+    pub profile_name: SharedString,
+    /// Where the menu is anchored (the cursor position).
+    pub position: Point<Pixels>,
+}
+
+/// A pending "remove connection?" confirmation.
+pub struct DeleteConfirm {
+    /// The profile to delete.
+    pub profile_id: String,
+    /// The display name shown in the prompt.
+    pub profile_name: SharedString,
 }
 
 /// The whole application's mutable state.
@@ -117,15 +179,33 @@ pub struct AppState {
     /// Monotonic toast id source.
     next_toast_id: u64,
 
+    // --- persistence (M3) ---
+    /// On-disk profile store (the source of `connections`).
+    store: FileProfileStore,
+    /// OS keychain for connection passwords (addressed by profile id).
+    keyring: OsKeyring,
+    /// A startup error to surface once the backend is `Ready` (e.g. a malformed
+    /// `profiles.toml`); kept so construction can't push a toast.
+    startup_error: Option<SharedString>,
+
     // --- backend bridge (M2) ---
     /// Handle to the backend thread (dropped on app exit → graceful shutdown).
     service: ServiceHandle,
     /// The profile id of an in-flight connection attempt, if any.
     pub connecting_id: Option<String>,
+    /// The profile id whose connect used a *stored* password — set so an auth
+    /// failure can re-open the prompt to correct a stale keychain entry (D5.3).
+    used_stored_password: Option<String>,
     /// A pending password prompt (shown before connecting).
     pub password_prompt: Option<PasswordPrompt>,
     /// A pending host-key trust prompt (unknown key).
     pub host_key_prompt: Option<HostKeyPrompt>,
+    /// The connection editor modal, if open.
+    pub editor: Option<ConnectionEditor>,
+    /// A pending sidebar row context menu, if open.
+    pub row_menu: Option<RowMenu>,
+    /// A pending delete confirmation, if open.
+    pub delete_confirm: Option<DeleteConfirm>,
     /// Whether a directory listing is in flight (drives the loading hint).
     pub listing_loading: bool,
 }
@@ -154,9 +234,26 @@ impl AppState {
         })
         .detach();
 
+        // Open the on-disk store and load the saved connections. A missing file
+        // is an empty list (first run); a malformed one is surfaced as a toast
+        // once the backend is `Ready` (construction can't toast yet) — and the
+        // store is *not* overwritten, so the user can fix the file.
+        let store = FileProfileStore::open_default()
+            .unwrap_or_else(|_| FileProfileStore::with_path("profiles.toml"));
+        let (connections, startup_error) = match store.list() {
+            Ok(profiles) => (
+                profiles
+                    .into_iter()
+                    .map(ConnectionVm::from_profile)
+                    .collect(),
+                None,
+            ),
+            Err(err) => (Vec::new(), Some(SharedString::from(err.to_string()))),
+        };
+
         Self {
             view: View::Welcome,
-            connections: fixtures::fake_connections(),
+            connections,
             active_id: None,
             online_id: None,
             cwd: Vec::new(),
@@ -175,10 +272,17 @@ impl AppState {
             show_perms: true,
             toast: None,
             next_toast_id: 0,
+            store,
+            keyring: OsKeyring::new(),
+            startup_error,
             service,
             connecting_id: None,
+            used_stored_password: None,
             password_prompt: None,
             host_key_prompt: None,
+            editor: None,
+            row_menu: None,
+            delete_confirm: None,
             listing_loading: false,
         }
     }
@@ -196,26 +300,112 @@ impl AppState {
         self.connections.iter().find(|c| c.profile.id == id)
     }
 
-    /// Begin opening a connection: show the password prompt.
+    /// Reload `connections` from the on-disk store (after a save/delete/stamp).
+    fn reload_connections(&mut self, cx: &mut Context<Self>) {
+        match self.store.list() {
+            Ok(profiles) => {
+                self.connections = profiles
+                    .into_iter()
+                    .map(ConnectionVm::from_profile)
+                    .collect();
+            }
+            Err(err) => self.push_toast(err.to_string(), ToastVariant::Error, cx),
+        }
+    }
+
+    /// Connections that count as "Recent", newest first.
+    pub fn recent_connections(&self) -> Vec<&ConnectionVm> {
+        let mut recents: Vec<&ConnectionVm> =
+            self.connections.iter().filter(|c| c.is_recent).collect();
+        recents.sort_by_key(|c| std::cmp::Reverse(c.profile.last_connected));
+        recents
+    }
+
+    /// Begin opening a connection: look the password up in the keychain
+    /// off-thread, then either connect straight through (hit) or prompt (miss).
     ///
-    /// The actual `Connect` command is sent from [`confirm_password`](Self::confirm_password)
-    /// once the user supplies a secret. M3 swaps the prompt for a keyring lookup.
+    /// `connecting_id` is set up-front so the UI shows progress while the
+    /// (potentially dialog-popping) keychain lookup runs on a background thread —
+    /// the GPUI thread never blocks on it (plan M3 D3/D5).
     pub fn open_connection(&mut self, id: &str, cx: &mut Context<Self>) {
         let Some(conn) = self.connections.iter().find(|c| c.profile.id == id) else {
             return;
         };
-        let profile_name = conn.profile.name.clone();
-        let host_label = conn.user_host_port();
+        let profile = conn.profile.clone();
+        self.connecting_id = Some(id.to_string());
+
+        let keyring = self.keyring;
+        let lookup_id = id.to_string();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { keyring.get_password(KEYCHAIN_SERVICE, &lookup_id) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.on_password_lookup(profile, result, cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Apply the result of the keychain lookup started by [`open_connection`].
+    fn on_password_lookup(
+        &mut self,
+        profile: Profile,
+        result: nyx_core::Result<Option<String>>,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok(Some(password)) => self.send_connect(profile, password, true, cx),
+            Ok(None) => self.show_password_prompt(profile, cx),
+            Err(err) => {
+                self.connecting_id = None;
+                self.push_toast(format!("Keychain error: {err}"), ToastVariant::Error, cx);
+            }
+        }
+    }
+
+    /// Show the password prompt for `profile` (a keychain miss, or a stale-secret
+    /// re-prompt). The "Save to keychain" toggle defaults on.
+    fn show_password_prompt(&mut self, profile: Profile, cx: &mut Context<Self>) {
+        let host_label = format!("{}@{}:{}", profile.username, profile.host, profile.port);
         let input = cx.new(|cx| TextInput::new(cx).with_placeholder("Password").obscured());
         self.password_prompt = Some(PasswordPrompt {
-            profile_id: id.to_string(),
-            profile_name: profile_name.into(),
+            profile_id: profile.id.clone(),
+            profile_name: profile.name.clone().into(),
             host_label: host_label.into(),
             input,
+            save_to_keychain: true,
         });
     }
 
-    /// Submit the password prompt: send a `Connect` command to the backend.
+    /// Send a `Connect` command, tracking whether a *stored* password was used.
+    fn send_connect(
+        &mut self,
+        profile: Profile,
+        password: String,
+        from_keychain: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let id = profile.id.clone();
+        self.connecting_id = Some(id.clone());
+        self.used_stored_password = from_keychain.then_some(id);
+        let sent = self.service.send(Command::Connect {
+            profile,
+            password: Secret::new(password),
+        });
+        if !sent {
+            self.connecting_id = None;
+            self.used_stored_password = None;
+            self.push_toast("Backend unavailable", ToastVariant::Error, cx);
+        }
+    }
+
+    /// Submit the password prompt: optionally save the secret to the keychain
+    /// (off-thread, *before* connecting so it persists even if connect fails),
+    /// then send `Connect`.
     pub fn confirm_password(&mut self, cx: &mut Context<Self>) {
         let Some(prompt) = self.password_prompt.take() else {
             return;
@@ -229,20 +419,401 @@ impl AppState {
             return;
         };
         let profile = conn.profile.clone();
-        self.connecting_id = Some(prompt.profile_id.clone());
-        let sent = self.service.send(Command::Connect {
-            profile,
-            password: Secret::new(password),
-        });
-        if !sent {
-            self.connecting_id = None;
-            self.push_toast("Backend unavailable", ToastVariant::Error, cx);
+
+        if prompt.save_to_keychain && !password.is_empty() {
+            self.save_password_then_connect(profile, password, cx);
+        } else {
+            self.send_connect(profile, password, false, cx);
         }
+    }
+
+    /// Save a password to the keychain off-thread, then send `Connect` once the
+    /// write completes (a failed save is a non-fatal toast — we still connect).
+    fn save_password_then_connect(
+        &mut self,
+        profile: Profile,
+        password: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.connecting_id = Some(profile.id.clone());
+        let keyring = self.keyring;
+        let id = profile.id.clone();
+        let pw_for_save = password.clone();
+        cx.spawn(async move |this, cx| {
+            let saved = cx
+                .background_executor()
+                .spawn(async move { keyring.set_password(KEYCHAIN_SERVICE, &id, &pw_for_save) })
+                .await;
+            this.update(cx, |this, cx| {
+                if saved.is_err() {
+                    this.push_toast(
+                        "Couldn't save password to keychain",
+                        ToastVariant::Error,
+                        cx,
+                    );
+                }
+                // A freshly-typed password isn't a "stored" one for the
+                // auth-retry heuristic, even though we just saved it.
+                this.send_connect(profile, password, false, cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Dismiss the password prompt without connecting.
     pub fn cancel_password(&mut self) {
         self.password_prompt = None;
+        self.connecting_id = None;
+        self.used_stored_password = None;
+    }
+
+    /// Toggle the password prompt's "Save to keychain" switch.
+    pub fn set_password_save(&mut self, on: bool) {
+        if let Some(prompt) = self.password_prompt.as_mut() {
+            prompt.save_to_keychain = on;
+        }
+    }
+
+    // --- connection editor + CRUD ----------------------------------------
+
+    /// Open the editor in **Create** mode (a fresh id, blank form).
+    pub fn open_editor_create(&mut self, cx: &mut Context<Self>) {
+        self.row_menu = None;
+        self.editor = Some(ConnectionEditor {
+            id: Profile::new_id(),
+            is_new: true,
+            name: cx.new(|cx| TextInput::new(cx).with_placeholder("My server")),
+            host: cx.new(|cx| TextInput::new(cx).with_placeholder("example.com")),
+            port: cx.new(|cx| TextInput::new(cx).with_placeholder("22").with_content("22")),
+            username: cx.new(|cx| TextInput::new(cx).with_placeholder("user")),
+            remote_path: cx.new(|cx| TextInput::new(cx).with_placeholder("/var/www  (optional)")),
+            password: cx.new(|cx| TextInput::new(cx).with_placeholder("Password").obscured()),
+            protocol: Protocol::Sftp,
+            color: AccentKind::Purple,
+            test_status: None,
+            testing: false,
+        });
+    }
+
+    /// Open the editor in **Edit** mode, prefilled from an existing profile. The
+    /// password field stays blank (we never read the secret back out of the
+    /// keychain to display it; blank on save means "keep the stored secret").
+    pub fn open_editor_edit(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.row_menu = None;
+        let Some(conn) = self.connections.iter().find(|c| c.profile.id == id) else {
+            return;
+        };
+        let p = conn.profile.clone();
+        self.editor = Some(ConnectionEditor {
+            id: p.id.clone(),
+            is_new: false,
+            name: cx.new(|cx| TextInput::new(cx).with_content(p.name.clone())),
+            host: cx.new(|cx| TextInput::new(cx).with_content(p.host.clone())),
+            port: cx.new(|cx| TextInput::new(cx).with_content(p.port.to_string())),
+            username: cx.new(|cx| TextInput::new(cx).with_content(p.username.clone())),
+            remote_path: cx.new(|cx| {
+                TextInput::new(cx)
+                    .with_placeholder("/var/www  (optional)")
+                    .with_content(p.remote_path.clone().unwrap_or_default())
+            }),
+            password: cx.new(|cx| {
+                TextInput::new(cx)
+                    .with_placeholder("Leave blank to keep current")
+                    .obscured()
+            }),
+            protocol: p.protocol,
+            color: AccentKind::from_profile_color(p.color),
+            test_status: None,
+            testing: false,
+        });
+    }
+
+    /// Close the editor without saving.
+    pub fn close_editor(&mut self) {
+        self.editor = None;
+    }
+
+    /// Change the editor's protocol, applying the new default port when the port
+    /// field is blank or still holds the previous protocol's default.
+    pub fn set_editor_protocol(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let new = match ix {
+            1 => Protocol::Ftp,
+            2 => Protocol::Ftps,
+            _ => Protocol::Sftp,
+        };
+        let Some(editor) = self.editor.as_mut() else {
+            return;
+        };
+        let old = editor.protocol;
+        editor.protocol = new;
+        let port_input = editor.port.clone();
+        let port_text = port_input.read(cx).content().to_string();
+        let port_trim = port_text.trim();
+        let holds_old_default = port_trim.parse::<u16>().ok() == Some(old.default_port());
+        if port_trim.is_empty() || holds_old_default {
+            port_input.update(cx, |input, cx| {
+                input.set_content(new.default_port().to_string(), cx)
+            });
+        }
+    }
+
+    /// Change the editor's accent color by picker index.
+    pub fn set_editor_color(&mut self, ix: usize) {
+        if let Some(editor) = self.editor.as_mut() {
+            editor.color = AccentKind::ALL.get(ix).copied().unwrap_or(AccentKind::Blue);
+        }
+    }
+
+    /// Validate and save the editor's profile (and its password, if entered).
+    pub fn save_editor(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.editor.as_ref() else {
+            return;
+        };
+        let name = editor.name.read(cx).content().trim().to_string();
+        let host = editor.host.read(cx).content().trim().to_string();
+        let port_text = editor.port.read(cx).content().trim().to_string();
+        let username = editor.username.read(cx).content().trim().to_string();
+        let remote_path = editor.remote_path.read(cx).content().trim().to_string();
+        let password = editor.password.read(cx).content().to_string();
+        let protocol = editor.protocol;
+        let color = editor.color;
+        let id = editor.id.clone();
+        let is_new = editor.is_new;
+
+        if name.is_empty() || host.is_empty() || username.is_empty() {
+            self.push_toast(
+                "Name, host and username are required",
+                ToastVariant::Error,
+                cx,
+            );
+            return;
+        }
+        let port = if port_text.is_empty() {
+            protocol.default_port()
+        } else {
+            match port_text.parse::<u16>() {
+                Ok(port) => port,
+                Err(_) => {
+                    self.push_toast("Port must be a number (1–65535)", ToastVariant::Error, cx);
+                    return;
+                }
+            }
+        };
+
+        // Preserve the existing last_connected across an edit.
+        let last_connected = self
+            .store
+            .get(&id)
+            .ok()
+            .flatten()
+            .and_then(|p| p.last_connected);
+        let profile = Profile {
+            id: id.clone(),
+            name,
+            protocol,
+            host,
+            port,
+            username,
+            remote_path: (!remote_path.is_empty()).then_some(remote_path),
+            color: color.to_profile_color(),
+            last_connected,
+        };
+        if let Err(err) = self.store.save(&profile) {
+            self.push_toast(err.to_string(), ToastVariant::Error, cx);
+            return;
+        }
+        if !password.is_empty() {
+            self.keyring_set_async(id, password, cx);
+        }
+        self.reload_connections(cx);
+        self.editor = None;
+        self.push_toast(
+            if is_new {
+                "Connection created"
+            } else {
+                "Connection saved"
+            },
+            ToastVariant::Success,
+            cx,
+        );
+    }
+
+    /// Write a password to the keychain off-thread, toasting on failure.
+    fn keyring_set_async(&self, id: String, password: String, cx: &mut Context<Self>) {
+        let keyring = self.keyring;
+        cx.spawn(async move |this, cx| {
+            let res = cx
+                .background_executor()
+                .spawn(async move { keyring.set_password(KEYCHAIN_SERVICE, &id, &password) })
+                .await;
+            if res.is_err() {
+                this.update(cx, |this, cx| {
+                    this.push_toast(
+                        "Couldn't save password to keychain",
+                        ToastVariant::Error,
+                        cx,
+                    );
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Send a throwaway `TestConnection` probe for the editor's current form. On
+    /// edit with a blank password field, the stored secret is fetched first.
+    pub fn test_editor_connection(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.editor.as_ref() else {
+            return;
+        };
+        let name = editor.name.read(cx).content().trim().to_string();
+        let host = editor.host.read(cx).content().trim().to_string();
+        let port_text = editor.port.read(cx).content().trim().to_string();
+        let username = editor.username.read(cx).content().trim().to_string();
+        let remote_path = editor.remote_path.read(cx).content().trim().to_string();
+        let password = editor.password.read(cx).content().to_string();
+        let protocol = editor.protocol;
+        let id = editor.id.clone();
+        let is_new = editor.is_new;
+
+        if host.is_empty() || username.is_empty() {
+            self.set_test_status(false, "Host and username are required");
+            return;
+        }
+        let port = if port_text.is_empty() {
+            protocol.default_port()
+        } else {
+            match port_text.parse::<u16>() {
+                Ok(port) => port,
+                Err(_) => {
+                    self.set_test_status(false, "Port must be a number");
+                    return;
+                }
+            }
+        };
+        let profile = Profile {
+            id: id.clone(),
+            name: if name.is_empty() { "test".into() } else { name },
+            protocol,
+            host,
+            port,
+            username,
+            remote_path: (!remote_path.is_empty()).then_some(remote_path),
+            color: ProfileColor::default(),
+            last_connected: None,
+        };
+        if let Some(editor) = self.editor.as_mut() {
+            editor.testing = true;
+            editor.test_status = None;
+        }
+
+        if password.is_empty() && !is_new {
+            // Editing with a blank field — probe with the stored secret.
+            let keyring = self.keyring;
+            let lookup_id = id;
+            cx.spawn(async move |this, cx| {
+                let res = cx
+                    .background_executor()
+                    .spawn(async move { keyring.get_password(KEYCHAIN_SERVICE, &lookup_id) })
+                    .await;
+                this.update(cx, |this, cx| {
+                    let pw = res.ok().flatten().unwrap_or_default();
+                    this.dispatch_test(profile, pw);
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        } else {
+            self.dispatch_test(profile, password);
+        }
+        cx.notify();
+    }
+
+    /// Set the editor's inline test status (if the editor is still open).
+    fn set_test_status(&mut self, ok: bool, message: impl Into<SharedString>) {
+        if let Some(editor) = self.editor.as_mut() {
+            editor.testing = false;
+            editor.test_status = Some(TestStatus {
+                ok,
+                message: message.into(),
+            });
+        }
+    }
+
+    /// Send the `TestConnection` command, reflecting a send failure inline.
+    fn dispatch_test(&mut self, profile: Profile, password: String) {
+        let sent = self.service.send(Command::TestConnection {
+            profile,
+            password: Secret::new(password),
+        });
+        if !sent {
+            self.set_test_status(false, "Backend unavailable");
+        }
+    }
+
+    /// Open the sidebar row context menu (Edit / Remove) at a cursor position.
+    pub fn open_row_menu(
+        &mut self,
+        profile_id: String,
+        profile_name: SharedString,
+        position: Point<Pixels>,
+    ) {
+        self.row_menu = Some(RowMenu {
+            profile_id,
+            profile_name,
+            position,
+        });
+    }
+
+    /// Dismiss the row context menu.
+    pub fn close_row_menu(&mut self) {
+        self.row_menu = None;
+    }
+
+    /// Open the "remove connection?" confirmation for a profile.
+    pub fn open_delete_confirm(&mut self, profile_id: String, profile_name: SharedString) {
+        self.row_menu = None;
+        self.delete_confirm = Some(DeleteConfirm {
+            profile_id,
+            profile_name,
+        });
+    }
+
+    /// Dismiss the delete confirmation without deleting.
+    pub fn cancel_delete(&mut self) {
+        self.delete_confirm = None;
+    }
+
+    /// Delete the confirmed profile from the store and its keychain entry.
+    pub fn confirm_delete(&mut self, cx: &mut Context<Self>) {
+        let Some(confirm) = self.delete_confirm.take() else {
+            return;
+        };
+        let id = confirm.profile_id;
+        if let Err(err) = self.store.delete(&id) {
+            self.push_toast(err.to_string(), ToastVariant::Error, cx);
+            return;
+        }
+        // Best-effort, idempotent keychain cleanup off-thread.
+        let keyring = self.keyring;
+        let id_for_keyring = id.clone();
+        cx.background_executor()
+            .spawn(async move {
+                let _ = keyring.delete_password(KEYCHAIN_SERVICE, &id_for_keyring);
+            })
+            .detach();
+        if self.editor.as_ref().is_some_and(|e| e.id == id) {
+            self.editor = None;
+        }
+        self.reload_connections(cx);
+        self.push_toast(
+            format!("Removed “{}”", confirm.profile_name),
+            ToastVariant::Success,
+            cx,
+        );
     }
 
     /// Trust the pending host key and continue connecting.
@@ -286,6 +857,10 @@ impl AppState {
             }
             Event::Connected { profile_id } => {
                 self.host_key_prompt = None;
+                self.used_stored_password = None;
+                // Stamp the successful connect and persist it, so "Recent"
+                // ordering survives a restart (plan M3 D6).
+                self.stamp_last_connected(&profile_id, cx);
                 self.enter_browser(profile_id, cx);
             }
             Event::DirListing { path, entries } => {
@@ -295,17 +870,62 @@ impl AppState {
                     self.listing_loading = false;
                 }
             }
+            Event::TestResult {
+                profile_id,
+                ok,
+                message,
+            } => {
+                if let Some(editor) = self.editor.as_mut() {
+                    if editor.id == profile_id {
+                        editor.testing = false;
+                        editor.test_status = Some(TestStatus {
+                            ok,
+                            message: message.into(),
+                        });
+                    }
+                }
+            }
             Event::Error { message } => {
+                let stale = self.used_stored_password.take();
                 self.host_key_prompt = None;
                 self.connecting_id = None;
                 self.listing_loading = false;
-                self.push_toast(message, ToastVariant::Error, cx);
+                self.push_toast(message.clone(), ToastVariant::Error, cx);
+                // A stored password that fails auth is likely stale — re-open the
+                // prompt so the user can correct (and overwrite) it (plan D5.3).
+                if message.contains("authentication failed") {
+                    if let Some(id) = stale {
+                        if let Some(conn) = self.connections.iter().find(|c| c.profile.id == id) {
+                            let profile = conn.profile.clone();
+                            self.show_password_prompt(profile, cx);
+                        }
+                    }
+                }
+            }
+            // Surface a deferred startup error (e.g. malformed profiles.toml).
+            Event::Ready => {
+                if let Some(err) = self.startup_error.take() {
+                    self.push_toast(err, ToastVariant::Error, cx);
+                }
             }
             // Lifecycle pings (and any future variants) need no UI change.
-            Event::Ready | Event::Stopped => {}
+            Event::Stopped => {}
             _ => {}
         }
         cx.notify();
+    }
+
+    /// Stamp a profile's `last_connected` to now and persist it, then refresh the
+    /// in-memory connection list (for the "Recent" labels/ordering).
+    fn stamp_last_connected(&mut self, profile_id: &str, cx: &mut Context<Self>) {
+        if let Ok(Some(mut profile)) = self.store.get(profile_id) {
+            profile.last_connected = Some(OffsetDateTime::now_utc());
+            if let Err(err) = self.store.save(&profile) {
+                self.push_toast(err.to_string(), ToastVariant::Error, cx);
+                return;
+            }
+            self.reload_connections(cx);
+        }
     }
 
     /// Enter the browser for a freshly-connected profile and list its root.

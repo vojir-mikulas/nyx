@@ -101,6 +101,8 @@ backend.
 
 ## M3 — Profiles + keyring + connection editor
 
+> **Detailed breakdown:** [`mvp-m3-profiles-keyring-editor.md`](./mvp-m3-profiles-keyring-editor.md).
+
 Make connections persistent and credentials secure.
 
 - [ ] `nyx-profile`: implement `FileProfileStore` over TOML in the per-OS config

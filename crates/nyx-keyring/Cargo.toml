@@ -10,3 +10,6 @@ authors.workspace = true
 
 [dependencies]
 nyx-core.workspace = true
+# Platform-native keychain backend. macOS uses `apple-native`; a Linux build
+# later swaps this for `sync-secret-service` (a one-line change, see plan D3).
+keyring = { workspace = true, features = ["apple-native"] }

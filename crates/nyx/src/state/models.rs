@@ -13,22 +13,49 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{Hsla, SharedString};
 use nyx_core::{Protocol, RemoteEntry, Transfer, TransferStatus};
-use nyx_profile::Profile;
+use nyx_profile::{Profile, ProfileColor};
 use nyx_ui::{BadgeVariant, Theme};
+use time::OffsetDateTime;
+
+/// A profile counts as "recent" if it was last connected within this many days.
+const RECENT_DAYS: i64 = 30;
 
 /// A connection profile plus its UI-only presentation state.
+///
+/// All three presentation fields are *derived* from the persisted profile (color
+/// from [`Profile::color`], the rest from [`Profile::last_connected`]); none live
+/// only in memory, so they survive a restart (see plan M3 D6).
 pub struct ConnectionVm {
     /// The real domain profile.
     pub profile: Profile,
     /// Accent color shown on the connection's icon / dot.
     pub color: AccentKind,
-    /// Human "last used" label (e.g. `"4m ago"`); `None` if never.
+    /// Human "last used" label (e.g. `"4m ago"`); `None` if never connected.
     pub last_used: Option<SharedString>,
     /// Whether this profile appears in the "Recent" group.
     pub is_recent: bool,
 }
 
 impl ConnectionVm {
+    /// Build a view-model from a stored profile, deriving the presentation
+    /// fields (accent color, relative "last used" label, recency).
+    pub fn from_profile(profile: Profile) -> Self {
+        let color = AccentKind::from_profile_color(profile.color);
+        let (last_used, is_recent) = match profile.last_connected {
+            Some(ts) => {
+                let recent = (OffsetDateTime::now_utc() - ts).whole_days() <= RECENT_DAYS;
+                (Some(fmt_relative(ts).into()), recent)
+            }
+            None => (None, false),
+        };
+        Self {
+            profile,
+            color,
+            last_used,
+            is_recent,
+        }
+    }
+
     /// `user@host` — the faint mono subtitle in the sidebar.
     pub fn user_host(&self) -> String {
         format!("{}@{}", self.profile.username, self.profile.host)
@@ -40,6 +67,20 @@ impl ConnectionVm {
             "{}@{}:{}",
             self.profile.username, self.profile.host, self.profile.port
         )
+    }
+}
+
+/// A coarse "x ago" label for a past timestamp (sidebar / welcome "Recent").
+fn fmt_relative(ts: OffsetDateTime) -> String {
+    let secs = (OffsetDateTime::now_utc() - ts).whole_seconds().max(0);
+    if secs < 60 {
+        "just now".to_string()
+    } else if secs < 3_600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h ago", secs / 3_600)
+    } else {
+        format!("{}d ago", secs / 86_400)
     }
 }
 
@@ -95,25 +136,55 @@ impl EntryRow {
     }
 }
 
-/// Connection accent colors (UI-only). Mapped to theme tokens at render time.
-/// The palette expands (amber/rose) when accent picking lands in the M3 tweaks.
+/// Connection accent colors (UI-only). Mapped to theme tokens at render time and
+/// to/from the persisted [`ProfileColor`] (the app's color picker uses these).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AccentKind {
-    /// Blue (plain FTP).
+    /// Blue.
     Blue,
-    /// Purple (SFTP).
+    /// Purple.
     Purple,
-    /// Green (FTPS).
+    /// Green.
     Green,
 }
 
 impl AccentKind {
+    /// The accent kinds the color picker offers, in display order.
+    pub const ALL: [AccentKind; 3] = [AccentKind::Blue, AccentKind::Purple, AccentKind::Green];
+
     /// Resolve to a concrete color against the active theme.
     pub fn color(self, theme: &Theme) -> Hsla {
         match self {
             AccentKind::Blue => theme.blue,
             AccentKind::Purple => theme.purple,
             AccentKind::Green => theme.green,
+        }
+    }
+
+    /// Map a persisted [`ProfileColor`] to its UI accent.
+    pub fn from_profile_color(color: ProfileColor) -> Self {
+        match color {
+            ProfileColor::Blue => AccentKind::Blue,
+            ProfileColor::Purple => AccentKind::Purple,
+            ProfileColor::Green => AccentKind::Green,
+        }
+    }
+
+    /// Map back to the persisted [`ProfileColor`].
+    pub fn to_profile_color(self) -> ProfileColor {
+        match self {
+            AccentKind::Blue => ProfileColor::Blue,
+            AccentKind::Purple => ProfileColor::Purple,
+            AccentKind::Green => ProfileColor::Green,
+        }
+    }
+
+    /// The picker index for this accent.
+    pub fn index(self) -> usize {
+        match self {
+            AccentKind::Blue => 0,
+            AccentKind::Purple => 1,
+            AccentKind::Green => 2,
         }
     }
 }

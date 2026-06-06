@@ -5,8 +5,11 @@
 //! (tweaks modal + toasts). [`AppState`] is the single root entity; this file
 //! is its `Render` impl.
 
-use gpui::{div, prelude::*, px, Context, FontWeight, Window};
-use nyx_ui::{ActiveTheme, Button, ButtonVariant, Modal, Segmented, Theme, Toast, Toggle};
+use gpui::{anchored, deferred, div, prelude::*, px, Context, FontWeight, MouseButton, Window};
+use nyx_ui::{
+    ActiveTheme, Button, ButtonVariant, ContextMenu, ContextMenuItem, Modal, Segmented, Theme,
+    Toast, Toggle,
+};
 
 use crate::assets::{FONT_MONO, FONT_UI};
 use crate::icon::icon;
@@ -72,11 +75,20 @@ impl Render for AppState {
                     && self.password_prompt.is_none(),
                 |this| this.child(connecting_overlay(self, cx)),
             )
+            .when(self.editor.is_some(), |this| {
+                this.child(views::connection_editor::render(self, cx))
+            })
             .when(self.password_prompt.is_some(), |this| {
                 this.child(password_modal(self, cx))
             })
             .when(self.host_key_prompt.is_some(), |this| {
                 this.child(host_key_modal(self, cx))
+            })
+            .when(self.delete_confirm.is_some(), |this| {
+                this.child(delete_confirm_modal(self, cx))
+            })
+            .when(self.row_menu.is_some(), |this| {
+                this.child(row_context_menu(self, cx))
             })
             .when_some(self.toast.as_ref(), |this, toast| {
                 this.child(
@@ -125,7 +137,25 @@ fn password_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElem
                         .text_color(theme.text_faint)
                         .child(prompt.host_label.clone()),
                 )
-                .child(prompt.input.clone()),
+                .child(prompt.input.clone())
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(theme.text_muted)
+                                .child("Save to keychain"),
+                        )
+                        .child(Toggle::new("pw-save", prompt.save_to_keychain).on_change(
+                            cx.listener(|this, on, _window, cx| {
+                                this.set_password_save(*on);
+                                cx.notify();
+                            }),
+                        )),
+                ),
         )
         .footer(
             div()
@@ -223,6 +253,108 @@ fn host_key_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElem
                         })),
                 ),
         )
+}
+
+/// The "remove connection?" confirmation (deletes the profile + its keychain
+/// entry). The reusable confirm-destructive pattern M4 will share for file ops.
+fn delete_confirm_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    let theme = cx.theme().clone();
+    let view = cx.entity();
+    let confirm = state.delete_confirm.as_ref().expect("delete confirm set");
+
+    Modal::new("delete-confirm")
+        .title("Remove connection")
+        .width(px(400.))
+        .on_close({
+            let view = view.clone();
+            move |_window, cx| {
+                view.update(cx, |this, cx| {
+                    this.cancel_delete();
+                    cx.notify();
+                });
+            }
+        })
+        .child(div().text_sm().text_color(theme.text_muted).child(format!(
+            "Remove “{}”? This deletes the saved profile and its keychain password — this can't be undone.",
+            confirm.profile_name
+        )))
+        .footer(
+            div()
+                .flex()
+                .w_full()
+                .justify_end()
+                .gap_2()
+                .child(
+                    Button::new("del-cancel", "Cancel")
+                        .variant(ButtonVariant::Secondary)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.cancel_delete();
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("del-remove", "Remove")
+                        .variant(ButtonVariant::Danger)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.confirm_delete(cx);
+                            cx.notify();
+                        })),
+                ),
+        )
+}
+
+/// The sidebar row right-click menu (Edit / Remove), anchored at the cursor.
+///
+/// A full-screen backdrop dismisses the menu on an outside click; the menu
+/// surface `occlude()`s its own region so a click on an item lands on the item.
+fn row_context_menu(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    let menu = state.row_menu.as_ref().expect("row menu set");
+    let position = menu.position;
+    let edit_id = menu.profile_id.clone();
+    let remove_id = menu.profile_id.clone();
+    let remove_name = menu.profile_name.clone();
+
+    let surface = ContextMenu::new("row-ctx")
+        .item(
+            ContextMenuItem::new("ctx-edit", "Edit").on_click(cx.listener(
+                move |this, _, _, cx| {
+                    this.open_editor_edit(&edit_id, cx);
+                    cx.notify();
+                },
+            )),
+        )
+        .separator()
+        .item(
+            ContextMenuItem::new("ctx-remove", "Remove")
+                .danger()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.open_delete_confirm(remove_id.clone(), remove_name.clone());
+                    cx.notify();
+                })),
+        );
+
+    div()
+        .absolute()
+        .inset_0()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _, _, cx| {
+                this.close_row_menu();
+                cx.notify();
+            }),
+        )
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(|this, _, _, cx| {
+                this.close_row_menu();
+                cx.notify();
+            }),
+        )
+        .child(deferred(
+            anchored()
+                .position(position)
+                .child(div().occlude().child(surface)),
+        ))
 }
 
 /// A lightweight "connecting…" overlay (full spinner polish is M6).

@@ -17,3 +17,4 @@ tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macr
 futures.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
+directories.workspace = true
