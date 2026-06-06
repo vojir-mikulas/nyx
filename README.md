@@ -50,6 +50,30 @@ cargo fmt                                      # format
 > (several minutes). GPUI is pinned to a specific Zed git revision for
 > reproducibility; don't bump it casually.
 
+## Packaging a macOS release
+
+[`scripts/bundle-mac.sh`](scripts/bundle-mac.sh) builds a `Nyx.app` bundle and a
+`.dmg` installer. It needs no extra tooling — only `sips`, `iconutil` and
+`hdiutil`, which ship with macOS. The app icon is generated from
+[`assets/nyx.png`](assets/nyx.png), and the fonts/icons are already embedded in
+the binary (rust-embed), so the bundle is just the executable + `Info.plist` +
+icon.
+
+```sh
+just bundle-mac              # build for the host arch
+just bundle-mac --universal  # universal (arm64 + x86_64) binary, for sharing
+```
+
+Outputs land under `target/macos/` (gitignored): `Nyx.app` and
+`Nyx-<version>.dmg`. The version is read from `[workspace.package]` in
+`Cargo.toml`.
+
+> The bundle is **ad-hoc signed** — it runs on the build machine, but anyone
+> else who downloads the `.dmg` will hit Gatekeeper. Distributing it to others
+> requires Developer ID signing + notarization (`codesign --sign "Developer ID
+> Application: …"`, then `xcrun notarytool submit` + `xcrun stapler staple`),
+> which the script intentionally leaves out.
+
 ## License
 
 [Apache-2.0](LICENSE) © 2026 vojir-mikulas

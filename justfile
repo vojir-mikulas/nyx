@@ -35,3 +35,7 @@ fmt-check:
 
 # The pre-push gate: format, lint, test.
 check: fmt lint test
+
+# Build a macOS .app + .dmg (pass `--universal` for a fat binary).
+bundle-mac *ARGS:
+    scripts/bundle-mac.sh {{ARGS}}
