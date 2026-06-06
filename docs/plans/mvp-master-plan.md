@@ -122,6 +122,8 @@ removes its keychain entry.
 
 ## M4 — File operations
 
+> **Detailed breakdown:** [`mvp-m4-file-operations.md`](./mvp-m4-file-operations.md).
+
 Fill out the rest of the `RemoteClient` trait and the browser actions.
 
 - [ ] `SftpClient`: `download`, `upload`, `rename`, `remove`, `mkdir`.

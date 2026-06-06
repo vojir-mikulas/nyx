@@ -11,6 +11,7 @@
 //! and is *never* written to a log or embedded in an error. Auth failures map to
 //! the opaque [`NyxError::Auth`] with no server detail echoed back.
 
+use std::future::Future;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
@@ -22,6 +23,7 @@ use russh::keys::ssh_key::PublicKey;
 use russh::keys::HashAlg;
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::{FileType, StatusCode};
+use tokio::io::AsyncWriteExt;
 use tracing::warn;
 
 use crate::host_key::HostKeyPrompt;
@@ -151,24 +153,60 @@ impl RemoteClient for SftpClient {
         Ok(entries)
     }
 
-    async fn download(&self, _remote: &str, _local: &Path) -> Result<()> {
-        Err(NyxError::Unsupported)
+    async fn download(&self, remote: &str, local: &Path) -> Result<()> {
+        let sftp = self.sftp()?;
+        // Remote read half maps through `map_sftp_err`; the local write half
+        // (and the byte copy) maps through `map_io_err`.
+        let mut reader = sftp.open(remote).await.map_err(map_sftp_err)?;
+        let mut writer = tokio::fs::File::create(local).await.map_err(map_io_err)?;
+        tokio::io::copy(&mut reader, &mut writer)
+            .await
+            .map_err(map_io_err)?;
+        writer.flush().await.map_err(map_io_err)?;
+        Ok(())
     }
 
-    async fn upload(&self, _local: &Path, _remote: &str) -> Result<()> {
-        Err(NyxError::Unsupported)
+    async fn upload(&self, local: &Path, remote: &str) -> Result<()> {
+        let sftp = self.sftp()?;
+        let mut reader = tokio::fs::File::open(local).await.map_err(map_io_err)?;
+        let mut writer = sftp.create(remote).await.map_err(map_sftp_err)?;
+        tokio::io::copy(&mut reader, &mut writer)
+            .await
+            .map_err(map_io_err)?;
+        // Flush + close the remote handle so all queued writes are acknowledged
+        // before we report success.
+        writer.shutdown().await.map_err(map_io_err)?;
+        Ok(())
     }
 
-    async fn rename(&self, _from: &str, _to: &str) -> Result<()> {
-        Err(NyxError::Unsupported)
+    async fn rename(&self, from: &str, to: &str) -> Result<()> {
+        self.sftp()?.rename(from, to).await.map_err(map_sftp_err)
     }
 
-    async fn remove(&self, _path: &str) -> Result<()> {
-        Err(NyxError::Unsupported)
+    async fn remove(&self, path: &str) -> Result<()> {
+        let sftp = self.sftp()?;
+        // SFTP's `remove_dir` only deletes an *empty* directory, so a directory
+        // target is removed depth-first (children before parent). The traversal
+        // is planned with an explicit work-stack (no boxed async recursion).
+        let is_dir = sftp.metadata(path).await.map_err(map_sftp_err)?.is_dir();
+        let ops = plan_removal(path, is_dir, move |dir| async move {
+            let entries = sftp.read_dir(dir).await.map_err(map_sftp_err)?;
+            Ok(entries
+                .map(|entry| (entry.path(), entry.file_type().is_dir()))
+                .collect())
+        })
+        .await?;
+        for op in ops {
+            match op {
+                RemoveOp::File(p) => sftp.remove_file(p).await.map_err(map_sftp_err)?,
+                RemoveOp::Dir(p) => sftp.remove_dir(p).await.map_err(map_sftp_err)?,
+            }
+        }
+        Ok(())
     }
 
-    async fn mkdir(&self, _path: &str) -> Result<()> {
-        Err(NyxError::Unsupported)
+    async fn mkdir(&self, path: &str) -> Result<()> {
+        self.sftp()?.create_dir(path).await.map_err(map_sftp_err)
     }
 
     async fn disconnect(&mut self) -> Result<()> {
@@ -264,6 +302,67 @@ fn map_russh_err(err: russh::Error) -> NyxError {
     }
 }
 
+/// Map a **local** filesystem / transfer-copy error to [`NyxError`]. Used for
+/// the local half of a download (write) or upload (read); paths aren't secrets,
+/// but the message stays coarse (an OS error string, never a credential).
+fn map_io_err(err: std::io::Error) -> NyxError {
+    NyxError::Io(err.to_string())
+}
+
+/// One step of a recursive removal, in the order it must be performed: a
+/// directory only ever appears **after** all of its descendants.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RemoveOp {
+    /// Delete a file (or symlink) at this absolute path.
+    File(String),
+    /// Delete a now-empty directory at this absolute path.
+    Dir(String),
+}
+
+/// Plan the depth-first removal of `root` without async recursion.
+///
+/// A file target yields a single [`RemoveOp::File`]. A directory target is
+/// walked with an explicit work-stack: each directory is visited twice — once to
+/// list its children (pushing sub-directories back on the stack and emitting its
+/// files), and once (after its children) to emit the directory's own
+/// [`RemoveOp::Dir`]. `list_dir` yields each directory's `(path, is_dir)`
+/// children. The result is post-order, so applying it in sequence removes the
+/// whole tree leaf-first.
+async fn plan_removal<F, Fut>(
+    root: &str,
+    root_is_dir: bool,
+    mut list_dir: F,
+) -> Result<Vec<RemoveOp>>
+where
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = Result<Vec<(String, bool)>>>,
+{
+    if !root_is_dir {
+        return Ok(vec![RemoveOp::File(root.to_string())]);
+    }
+    let mut ops = Vec::new();
+    // (path, expanded): an unexpanded directory still needs listing; an expanded
+    // one has had its children queued and is ready to be removed.
+    let mut stack: Vec<(String, bool)> = vec![(root.to_string(), false)];
+    while let Some((path, expanded)) = stack.pop() {
+        if expanded {
+            ops.push(RemoveOp::Dir(path));
+            continue;
+        }
+        let children = list_dir(path.clone()).await?;
+        // Re-push this directory below its children so it is removed last.
+        stack.push((path, true));
+        for (child, is_dir) in children {
+            if is_dir {
+                stack.push((child, false));
+            } else {
+                ops.push(RemoveOp::File(child));
+            }
+        }
+    }
+    Ok(ops)
+}
+
 /// Map an SFTP protocol error to [`NyxError`]. The SFTP error `Display` carries
 /// only status codes and server messages — no credentials.
 fn map_sftp_err(err: russh_sftp::client::error::Error) -> NyxError {
@@ -295,5 +394,79 @@ mod tests {
     fn auth_error_has_no_detail() {
         // The opaque auth error must never carry server/credential detail.
         assert_eq!(NyxError::Auth.to_string(), "authentication failed");
+    }
+
+    /// Drive an async future to completion on a minimal current-thread runtime
+    /// (the recursive-remove traversal is async but server-free in the test).
+    fn block_on<F: Future>(fut: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(fut)
+    }
+
+    #[test]
+    fn removal_of_a_file_is_a_single_op() {
+        let ops = block_on(plan_removal("/srv/report.pdf", false, |_| async {
+            unreachable!("a file target is never listed")
+        }))
+        .unwrap();
+        assert_eq!(ops, vec![RemoveOp::File("/srv/report.pdf".into())]);
+    }
+
+    #[test]
+    fn removal_of_a_tree_is_post_order() {
+        use std::collections::HashMap;
+
+        // /root
+        //   a.txt
+        //   sub/
+        //     c.txt
+        //     deep/
+        //       d.txt
+        //   b.txt
+        let tree: HashMap<&str, Vec<(&str, bool)>> = HashMap::from([
+            (
+                "/root",
+                vec![
+                    ("/root/a.txt", false),
+                    ("/root/sub", true),
+                    ("/root/b.txt", false),
+                ],
+            ),
+            (
+                "/root/sub",
+                vec![("/root/sub/c.txt", false), ("/root/sub/deep", true)],
+            ),
+            ("/root/sub/deep", vec![("/root/sub/deep/d.txt", false)]),
+        ]);
+
+        let ops = block_on(plan_removal("/root", true, |dir| {
+            let tree = &tree;
+            async move {
+                Ok(tree
+                    .get(dir.as_str())
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(p, is_dir)| (p.to_string(), is_dir))
+                    .collect())
+            }
+        }))
+        .unwrap();
+
+        // Every file before its parent dir; every dir after all its descendants.
+        assert_eq!(
+            ops,
+            vec![
+                RemoveOp::File("/root/a.txt".into()),
+                RemoveOp::File("/root/b.txt".into()),
+                RemoveOp::File("/root/sub/c.txt".into()),
+                RemoveOp::File("/root/sub/deep/d.txt".into()),
+                RemoveOp::Dir("/root/sub/deep".into()),
+                RemoveOp::Dir("/root/sub".into()),
+                RemoveOp::Dir("/root".into()),
+            ]
+        );
     }
 }

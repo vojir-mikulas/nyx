@@ -18,11 +18,13 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use futures::StreamExt;
-use gpui::{prelude::*, App, Context, Entity, Pixels, Point, SharedString};
+use gpui::{
+    prelude::*, App, ClipboardItem, Context, Entity, PathPromptOptions, Pixels, Point, SharedString,
+};
 use nyx_core::{Protocol, TransferStatus};
 use nyx_keyring::{CredentialStore, OsKeyring};
 use nyx_profile::{FileProfileStore, Profile, ProfileColor, ProfileStore};
-use nyx_service::{Command, Event, Secret, ServiceHandle};
+use nyx_service::{Command, Event, FileOp, Secret, ServiceHandle};
 use nyx_ui::{TextInput, ToastVariant};
 use time::OffsetDateTime;
 
@@ -130,6 +132,52 @@ pub struct DeleteConfirm {
     pub profile_name: SharedString,
 }
 
+/// A pending right-click context menu on a browser file row (Download / Rename /
+/// Delete / Copy path). Delete/Download operate on the whole selection; Rename /
+/// Copy path target the clicked row (plan M4 D7).
+pub struct FileMenu {
+    /// The clicked row's name (the single-target ops act on this).
+    pub name: SharedString,
+    /// Whether the clicked row is a directory (Download is unsupported for dirs).
+    pub is_dir: bool,
+    /// Where the menu is anchored (the cursor position).
+    pub position: Point<Pixels>,
+}
+
+/// Which mutating op a submitted [`InputPrompt`] performs.
+#[derive(Clone)]
+pub enum InputAction {
+    /// Create a new folder in the current directory.
+    NewFolder,
+    /// Rename `original` (a name in the current directory) to the entered value.
+    Rename {
+        /// The current name of the entry being renamed.
+        original: SharedString,
+    },
+}
+
+/// A reusable single-field input modal — shared by **New folder** (blank) and
+/// **Rename** (prefilled). Validated on submit (non-empty, no `/`).
+pub struct InputPrompt {
+    /// Modal title.
+    pub title: SharedString,
+    /// The field's label.
+    pub label: SharedString,
+    /// The submit button's label ("Create" / "Rename").
+    pub submit_label: SharedString,
+    /// The text field.
+    pub input: Entity<TextInput>,
+    /// What submitting does.
+    pub action: InputAction,
+}
+
+/// A pending "delete these files?" confirmation. Each entry carries its `is_dir`
+/// flag so the issued `Remove` commands pick file vs. recursive delete.
+pub struct FileDeleteConfirm {
+    /// The selected entries to delete, as `(name, is_dir)`.
+    pub entries: Vec<(SharedString, bool)>,
+}
+
 /// The whole application's mutable state.
 pub struct AppState {
     /// Current top-level screen.
@@ -206,6 +254,12 @@ pub struct AppState {
     pub row_menu: Option<RowMenu>,
     /// A pending delete confirmation, if open.
     pub delete_confirm: Option<DeleteConfirm>,
+    /// A pending browser file-row context menu, if open (M4).
+    pub file_menu: Option<FileMenu>,
+    /// A pending New-folder / Rename input modal, if open (M4).
+    pub input_prompt: Option<InputPrompt>,
+    /// A pending file-delete confirmation, if open (M4).
+    pub file_delete: Option<FileDeleteConfirm>,
     /// Whether a directory listing is in flight (drives the loading hint).
     pub listing_loading: bool,
 }
@@ -283,6 +337,9 @@ impl AppState {
             editor: None,
             row_menu: None,
             delete_confirm: None,
+            file_menu: None,
+            input_prompt: None,
+            file_delete: None,
             listing_loading: false,
         }
     }
@@ -816,6 +873,277 @@ impl AppState {
         );
     }
 
+    // --- browser file operations (M4) ------------------------------------
+
+    /// The absolute remote path of an entry `name` in the current directory.
+    fn remote_path_of(&self, name: &str) -> String {
+        let cwd = self.current_path();
+        if cwd == "/" {
+            format!("/{name}")
+        } else {
+            format!("{cwd}/{name}")
+        }
+    }
+
+    /// Open the file-row context menu, applying file-manager selection semantics:
+    /// a right-click on an unselected row replaces the selection with just it; a
+    /// right-click inside the selection keeps the multi-selection (plan D7).
+    pub fn open_file_menu(&mut self, name: SharedString, is_dir: bool, position: Point<Pixels>) {
+        if !self.selected.contains(&name) {
+            self.selected.clear();
+            self.selected.insert(name.clone());
+        }
+        self.file_menu = Some(FileMenu {
+            name,
+            is_dir,
+            position,
+        });
+    }
+
+    /// Dismiss the file-row context menu.
+    pub fn close_file_menu(&mut self) {
+        self.file_menu = None;
+    }
+
+    /// Open the **New folder** input modal (blank, "Create").
+    pub fn start_new_folder(&mut self, cx: &mut Context<Self>) {
+        self.close_file_menu();
+        let input = cx.new(|cx| TextInput::new(cx).with_placeholder("Folder name"));
+        cx.observe(&input, |_, _, cx| cx.notify()).detach();
+        self.input_prompt = Some(InputPrompt {
+            title: "New folder".into(),
+            label: "Name".into(),
+            submit_label: "Create".into(),
+            input,
+            action: InputAction::NewFolder,
+        });
+    }
+
+    /// Open the **Rename** input modal, prefilled with the clicked row's name.
+    pub fn start_rename(&mut self, cx: &mut Context<Self>) {
+        let Some(menu) = self.file_menu.as_ref() else {
+            return;
+        };
+        let name = menu.name.clone();
+        self.close_file_menu();
+        let input = cx.new(|cx| TextInput::new(cx).with_content(name.clone()));
+        cx.observe(&input, |_, _, cx| cx.notify()).detach();
+        self.input_prompt = Some(InputPrompt {
+            title: "Rename".into(),
+            label: "New name".into(),
+            submit_label: "Rename".into(),
+            input,
+            action: InputAction::Rename { original: name },
+        });
+    }
+
+    /// Dismiss the input modal without acting.
+    pub fn cancel_input(&mut self) {
+        self.input_prompt = None;
+    }
+
+    /// Validate and submit the input modal → `Mkdir` / `Rename`. Rejects an empty
+    /// name or one containing `/`; an unchanged rename is a no-op (plan D8).
+    pub fn submit_input(&mut self, cx: &mut Context<Self>) {
+        let Some(prompt) = self.input_prompt.as_ref() else {
+            return;
+        };
+        let value = prompt.input.read(cx).content().trim().to_string();
+        if value.is_empty() {
+            self.push_toast("Name can't be empty", ToastVariant::Error, cx);
+            return;
+        }
+        if value.contains('/') {
+            self.push_toast("Name can't contain a slash", ToastVariant::Error, cx);
+            return;
+        }
+        let action = prompt.action.clone();
+        self.input_prompt = None;
+        let command = match action {
+            InputAction::NewFolder => Command::Mkdir {
+                path: self.remote_path_of(&value),
+            },
+            InputAction::Rename { original } => {
+                if value == original.as_ref() {
+                    return; // unchanged → nothing to do
+                }
+                Command::Rename {
+                    from: self.remote_path_of(&original),
+                    to: self.remote_path_of(&value),
+                }
+            }
+        };
+        if !self.service.send(command) {
+            self.push_toast("Backend unavailable", ToastVariant::Error, cx);
+        }
+    }
+
+    /// Open the file-delete confirmation for the current selection.
+    pub fn start_delete(&mut self, _cx: &mut Context<Self>) {
+        self.close_file_menu();
+        // Snapshot each selected entry with its is_dir flag (for recursive delete).
+        let entries: Vec<(SharedString, bool)> = self
+            .selected
+            .iter()
+            .filter_map(|name| {
+                self.listing
+                    .iter()
+                    .find(|row| row.entry.name.as_str() == name.as_ref())
+                    .map(|row| (name.clone(), row.entry.is_dir))
+            })
+            .collect();
+        if entries.is_empty() {
+            return;
+        }
+        self.file_delete = Some(FileDeleteConfirm { entries });
+    }
+
+    /// Dismiss the file-delete confirmation without deleting.
+    pub fn cancel_file_delete(&mut self) {
+        self.file_delete = None;
+    }
+
+    /// Issue one `Remove` per confirmed entry (file or recursive folder, D8).
+    pub fn confirm_file_delete(&mut self, cx: &mut Context<Self>) {
+        let Some(confirm) = self.file_delete.take() else {
+            return;
+        };
+        let mut ok = true;
+        for (name, is_dir) in &confirm.entries {
+            let path = self.remote_path_of(name);
+            if !self.service.send(Command::Remove {
+                path,
+                is_dir: *is_dir,
+            }) {
+                ok = false;
+            }
+        }
+        if !ok {
+            self.push_toast("Backend unavailable", ToastVariant::Error, cx);
+        }
+    }
+
+    /// Copy the clicked entry's absolute remote path to the clipboard (plan D10:
+    /// no service round-trip).
+    pub fn copy_path(&mut self, cx: &mut Context<Self>) {
+        let Some(menu) = self.file_menu.take() else {
+            return;
+        };
+        let path = self.remote_path_of(&menu.name);
+        cx.write_to_clipboard(ClipboardItem::new_string(path));
+        self.push_toast("Path copied", ToastVariant::Success, cx);
+    }
+
+    /// Download the current selection. A single file opens a save-as dialog;
+    /// several files open a folder picker (one `Download` per file). Folders in
+    /// the selection are skipped with a toast (directory download is post-MVP, D5).
+    pub fn download_selection(&mut self, cx: &mut Context<Self>) {
+        self.close_file_menu();
+        let mut files: Vec<(String, String)> = Vec::new();
+        let mut skipped_folder = false;
+        for name in &self.selected {
+            let Some(row) = self
+                .listing
+                .iter()
+                .find(|row| row.entry.name.as_str() == name.as_ref())
+            else {
+                continue;
+            };
+            if row.entry.is_dir {
+                skipped_folder = true;
+                continue;
+            }
+            files.push((self.remote_path_of(name), name.to_string()));
+        }
+        if skipped_folder {
+            self.push_toast("Folders can't be downloaded yet", ToastVariant::Info, cx);
+        }
+        if files.is_empty() {
+            return;
+        }
+        let dir = default_download_dir();
+
+        if files.len() == 1 {
+            let (remote, name) = files.into_iter().next().expect("one file");
+            let receiver = cx.prompt_for_new_path(&dir, Some(&name));
+            cx.spawn(async move |this, cx| {
+                if let Ok(Ok(Some(local))) = receiver.await {
+                    this.update(cx, |this, cx| {
+                        if !this.service.send(Command::Download { remote, local }) {
+                            this.push_toast("Backend unavailable", ToastVariant::Error, cx);
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                }
+            })
+            .detach();
+        } else {
+            let receiver = cx.prompt_for_paths(PathPromptOptions {
+                files: false,
+                directories: true,
+                multiple: false,
+                prompt: Some("Download to".into()),
+            });
+            cx.spawn(async move |this, cx| {
+                let Ok(Ok(Some(folder))) = receiver.await else {
+                    return;
+                };
+                let Some(folder) = folder.into_iter().next() else {
+                    return;
+                };
+                this.update(cx, |this, cx| {
+                    let mut ok = true;
+                    for (remote, name) in files {
+                        let local = folder.join(&name);
+                        if !this.service.send(Command::Download { remote, local }) {
+                            ok = false;
+                        }
+                    }
+                    if !ok {
+                        this.push_toast("Backend unavailable", ToastVariant::Error, cx);
+                    }
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        }
+    }
+
+    /// Upload one or more chosen local files into the current directory (plan D5).
+    pub fn upload(&mut self, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Upload".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else {
+                return;
+            };
+            this.update(cx, |this, cx| {
+                let mut ok = true;
+                for local in paths {
+                    let Some(name) = local.file_name().and_then(|n| n.to_str()) else {
+                        continue;
+                    };
+                    let remote = this.remote_path_of(name);
+                    if !this.service.send(Command::Upload { local, remote }) {
+                        ok = false;
+                    }
+                }
+                if !ok {
+                    this.push_toast("Backend unavailable", ToastVariant::Error, cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Trust the pending host key and continue connecting.
     pub fn trust_host_key(&mut self) {
         self.host_key_prompt = None;
@@ -883,6 +1211,15 @@ impl AppState {
                             message: message.into(),
                         });
                     }
+                }
+            }
+            Event::FileOpDone { op, message } => {
+                // Always toast the success line; refresh the listing only for the
+                // mutating ops (a download leaves the remote unchanged, D9).
+                self.push_toast(message, ToastVariant::Success, cx);
+                if !matches!(op, FileOp::Download) {
+                    self.selected.clear();
+                    self.reload_listing(cx);
                 }
             }
             Event::Error { message } => {
@@ -1210,6 +1547,16 @@ impl AppState {
         })
         .detach();
     }
+}
+
+/// The default local directory for a download save-as: the OS Downloads folder,
+/// falling back to the home directory, then the current directory.
+fn default_download_dir() -> std::path::PathBuf {
+    let dirs = directories::UserDirs::new();
+    dirs.as_ref()
+        .and_then(|u| u.download_dir().map(|p| p.to_path_buf()))
+        .or_else(|| dirs.as_ref().map(|u| u.home_dir().to_path_buf()))
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
 /// Split a remote path into non-empty segments.

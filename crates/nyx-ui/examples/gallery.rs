@@ -8,8 +8,8 @@
 //! GitHub Dark so theming is verifiable at a glance.
 
 use gpui::{
-    div, prelude::*, App, Bounds, Context, Entity, SharedString, Window, WindowBounds,
-    WindowOptions,
+    anchored, deferred, div, prelude::*, App, Bounds, Context, Entity, MouseButton, Pixels, Point,
+    SharedString, Window, WindowBounds, WindowOptions,
 };
 use gpui_platform::application;
 use nyx_ui::prelude::*;
@@ -34,6 +34,8 @@ struct Gallery {
     sort: Option<(usize, bool)>,
     toggle_on: bool,
     segment: usize,
+    /// The right-clicked row + cursor position for the secondary-click table demo.
+    row_menu: Option<(usize, Point<Pixels>)>,
 }
 
 impl Gallery {
@@ -48,6 +50,7 @@ impl Gallery {
             sort: Some((0, true)),
             toggle_on: true,
             segment: 1,
+            row_menu: None,
         }
     }
 
@@ -298,6 +301,82 @@ impl Gallery {
             )
     }
 
+    /// A table whose **right-click** opens a `ContextMenu` anchored at the cursor
+    /// — exercising `Table::on_secondary` (index + position, no domain types).
+    fn secondary_table(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity();
+        let theme = cx.theme();
+        let dir_color = theme.blue;
+        let muted = theme.text_muted;
+
+        let table = div()
+            .h(gpui::px(180.))
+            .w_full()
+            .panel(cx)
+            .rounded(theme.radius)
+            .overflow_hidden()
+            .child(
+                Table::new(
+                    "secondary-files",
+                    vec![
+                        Column::new("Name").flex(),
+                        Column::new("Size").width(gpui::px(90.)).align_end(),
+                    ],
+                )
+                .row_count(ROWS.len())
+                .on_secondary({
+                    let view = view.clone();
+                    move |ix, pos, _window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.row_menu = Some((ix, pos));
+                            cx.notify();
+                        });
+                    }
+                })
+                .render_row(move |ix, _window, _cx| {
+                    let (name, size, _) = ROWS[ix];
+                    let is_dir = size == "—";
+                    vec![
+                        div()
+                            .text_color(if is_dir { dir_color } else { muted })
+                            .child(name)
+                            .into_any_element(),
+                        div().text_color(muted).child(size).into_any_element(),
+                    ]
+                }),
+            );
+
+        div()
+            .relative()
+            .child(table)
+            .when_some(self.row_menu, |this, (ix, pos)| {
+                let name = ROWS[ix].0;
+                let menu = ContextMenu::new("secondary-ctx")
+                    .item(ContextMenuItem::new(
+                        "s-download",
+                        format!("Download {name}"),
+                    ))
+                    .item(ContextMenuItem::new("s-rename", "Rename"))
+                    .separator()
+                    .item(ContextMenuItem::new("s-delete", "Delete").danger());
+                let dismiss_view = view.clone();
+                this.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            dismiss_view.update(cx, |this, cx| {
+                                this.row_menu = None;
+                                cx.notify();
+                            });
+                        })
+                        .child(deferred(
+                            anchored().position(pos).child(div().occlude().child(menu)),
+                        )),
+                )
+            })
+    }
+
     fn modal(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let close_view = cx.entity();
         let save_view = cx.entity();
@@ -383,6 +462,7 @@ impl Render for Gallery {
         let toasts = self.toasts();
         let tooltip = self.tooltip_demo();
         let table = self.table(cx);
+        let secondary_table = self.secondary_table(cx);
 
         let body = div()
             .id("scroll")
@@ -412,7 +492,8 @@ impl Render for Gallery {
                     cx,
                 ),
             )
-            .child(self.section("Table", table, cx));
+            .child(self.section("Table", table, cx))
+            .child(self.section("Table — right-click menu", secondary_table, cx));
 
         div()
             .size_full()

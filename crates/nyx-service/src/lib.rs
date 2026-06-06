@@ -27,7 +27,9 @@
 //! pending host-key decision.
 
 use std::fmt;
+use std::future::Future;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
 use futures::channel::mpsc::{
@@ -107,6 +109,42 @@ pub enum Command {
         /// Absolute remote path to list.
         path: String,
     },
+    /// Create a remote directory on the active connection.
+    Mkdir {
+        /// Absolute remote path of the new directory.
+        path: String,
+    },
+    /// Rename / move a remote entry on the active connection.
+    Rename {
+        /// Current absolute remote path.
+        from: String,
+        /// New absolute remote path.
+        to: String,
+    },
+    /// Delete a remote entry on the active connection.
+    ///
+    /// `is_dir` lets the protocol pick a file delete vs. a recursive directory
+    /// delete without an extra stat round-trip on the UI's behalf.
+    Remove {
+        /// Absolute remote path to delete.
+        path: String,
+        /// Whether the target is a directory (recursive delete).
+        is_dir: bool,
+    },
+    /// Download a remote file to a chosen local path.
+    Download {
+        /// Absolute remote path to read.
+        remote: String,
+        /// Local destination chosen by the user.
+        local: PathBuf,
+    },
+    /// Upload a local file to a remote path in the active connection's cwd.
+    Upload {
+        /// Local source path chosen by the user.
+        local: PathBuf,
+        /// Absolute remote destination path.
+        remote: String,
+    },
     /// Validate a profile's credentials without opening a browser session.
     ///
     /// Spins up a throwaway client (its own connect + drop), entirely separate
@@ -170,11 +208,39 @@ pub enum Event {
         /// A credential-free status / error message.
         message: String,
     },
+    /// A file operation completed successfully on the active connection.
+    ///
+    /// `op` tells the UI whether to refresh the current listing (mutating ops do,
+    /// a download does not); `message` is a ready-to-toast success line.
+    FileOpDone {
+        /// Which operation completed (drives the refresh decision).
+        op: FileOp,
+        /// A credential-free, human-readable success message.
+        message: String,
+    },
     /// An operation failed. The message is human-readable and credential-free.
     Error {
         /// The error detail (a `NyxError` display; never contains a secret).
         message: String,
     },
+}
+
+/// Which file operation a [`Event::FileOpDone`] refers to.
+///
+/// The UI's only per-op divergence is whether to refresh the current listing:
+/// the mutating ops do; `Download` leaves the remote unchanged and only toasts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileOp {
+    /// A directory was created.
+    Mkdir,
+    /// An entry was renamed / moved.
+    Rename,
+    /// An entry (file or recursive directory) was deleted.
+    Remove,
+    /// A local file was uploaded to the remote.
+    Upload,
+    /// A remote file was downloaded to disk.
+    Download,
 }
 
 /// Handle to the running backend thread.
@@ -271,7 +337,11 @@ enum TaskOutcome {
 /// `TestConnection`: while one is running, a second connect-like command is
 /// rejected outright, so the single host-key slot can never be contended.
 async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Event>) {
-    let mut client: Option<Box<SftpClient>> = None;
+    // `Arc`-shared so slow ops (download/upload/remove) can clone a handle into a
+    // detached task and run concurrently against the one session, without
+    // blocking the command loop (plan M4 D1). M5 swaps the bare spawn for the
+    // transfer queue, keeping this shared-session shape.
+    let mut client: Option<Arc<SftpClient>> = None;
     // The responder for an in-flight host-key prompt. With the single-flight
     // guard there is at most one connect-like op, hence at most one slot user.
     let mut pending_host_key: Option<oneshot::Sender<bool>> = None;
@@ -353,11 +423,88 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                             }
                         }
                     }
+                    // Quick metadata ops: one SFTP round-trip, awaited inline.
+                    Command::Mkdir { path } => match client.as_deref() {
+                        Some(session) => {
+                            let event = match session.mkdir(&path).await {
+                                Ok(()) => Event::FileOpDone {
+                                    op: FileOp::Mkdir,
+                                    message: format!("Created “{}”", base_name(&path)),
+                                },
+                                Err(err) => Event::Error { message: err.to_string() },
+                            };
+                            let _ = events.unbounded_send(event);
+                        }
+                        None => not_connected(&events),
+                    },
+                    Command::Rename { from, to } => match client.as_deref() {
+                        Some(session) => {
+                            let event = match session.rename(&from, &to).await {
+                                Ok(()) => Event::FileOpDone {
+                                    op: FileOp::Rename,
+                                    message: format!("Renamed to “{}”", base_name(&to)),
+                                },
+                                Err(err) => Event::Error { message: err.to_string() },
+                            };
+                            let _ = events.unbounded_send(event);
+                        }
+                        None => not_connected(&events),
+                    },
+                    // Slow ops: spawned against a cloned `Arc` so the loop stays
+                    // responsive (and several can run at once); each emits its own
+                    // terminal event. A missing session is reported immediately.
+                    Command::Remove { path, is_dir } => match client.clone() {
+                        Some(session) => {
+                            let message = format!("Deleted “{}”", base_name(&path));
+                            spawn_file_op(FileOp::Remove, message, events.clone(), async move {
+                                let _ = is_dir; // protocol re-stats; kept for M5 queue
+                                session.remove(&path).await
+                            });
+                        }
+                        None => not_connected(&events),
+                    },
+                    Command::Download { remote, local } => match client.clone() {
+                        Some(session) => {
+                            let name = base_name(&remote).to_string();
+                            let dest = local
+                                .parent()
+                                .map(|p| p.display().to_string())
+                                .unwrap_or_default();
+                            let message = if dest.is_empty() {
+                                format!("Saved “{name}”")
+                            } else {
+                                format!("Saved “{name}” to {dest}")
+                            };
+                            spawn_file_op(
+                                FileOp::Download,
+                                message,
+                                events.clone(),
+                                async move { session.download(&remote, &local).await },
+                            );
+                        }
+                        None => not_connected(&events),
+                    },
+                    Command::Upload { local, remote } => match client.clone() {
+                        Some(session) => {
+                            let message = format!("Uploaded “{}”", base_name(&remote));
+                            spawn_file_op(
+                                FileOp::Upload,
+                                message,
+                                events.clone(),
+                                async move { session.upload(&local, &remote).await },
+                            );
+                        }
+                        None => not_connected(&events),
+                    },
                     Command::Disconnect => {
                         // A disconnect also clears the single-flight slot.
                         in_flight = false;
-                        if let Some(mut session) = client.take() {
-                            let _ = session.disconnect().await;
+                        // Drop the shared session: its `Drop` closes the channel
+                        // + connection. We no longer call `disconnect().await`
+                        // (we can't get `&mut` through the `Arc`); any in-flight
+                        // transfer task holding a clone keeps the connection alive
+                        // until it finishes (explicit cancellation is M5, D1).
+                        if client.take().is_some() {
                             info!("disconnected");
                         }
                     }
@@ -371,7 +518,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                 in_flight = false;
                 match done {
                     TaskOutcome::Connected { profile_id, client: session } => {
-                        client = Some(session);
+                        client = Some(Arc::from(session));
                         info!(%profile_id, "connected");
                         let _ = events.unbounded_send(Event::Connected { profile_id });
                     }
@@ -385,6 +532,40 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
             }
         }
     }
+}
+
+/// Emit the standard "not connected" error (a file op arrived with no session).
+fn not_connected(events: &FuturesSender<Event>) {
+    let _ = events.unbounded_send(Event::Error {
+        message: "not connected".into(),
+    });
+}
+
+/// The last non-empty path segment (the file/folder name) for toast copy.
+/// Paths are not secrets, so this is safe to surface.
+fn base_name(path: &str) -> &str {
+    path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(path)
+}
+
+/// Spawn a slow file op as a detached task: run `fut` against the cloned session,
+/// then emit [`Event::FileOpDone`] on success or [`Event::Error`] on failure.
+///
+/// The op never touches the dispatcher's session slot or single-flight guard, so
+/// several can run concurrently (`russh-sftp` multiplexes over the one channel).
+/// M5 replaces this bare spawn with the `nyx-transfer` scheduler (plan D1).
+fn spawn_file_op<F>(op: FileOp, message: String, events: FuturesSender<Event>, fut: F)
+where
+    F: Future<Output = nyx_core::Result<()>> + Send + 'static,
+{
+    tokio::spawn(async move {
+        let event = match fut.await {
+            Ok(()) => Event::FileOpDone { op, message },
+            Err(err) => Event::Error {
+                message: err.to_string(),
+            },
+        };
+        let _ = events.unbounded_send(event);
+    });
 }
 
 /// Run a single connect-like attempt and report the outcome to the dispatcher.

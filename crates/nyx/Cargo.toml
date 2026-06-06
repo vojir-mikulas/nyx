@@ -22,6 +22,7 @@ nyx-keyring.workspace = true
 nyx-service.workspace = true
 nyx-ui.workspace = true
 time.workspace = true
+directories.workspace = true
 rust-embed.workspace = true
 anyhow.workspace = true
 futures.workspace = true

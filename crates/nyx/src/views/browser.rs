@@ -6,9 +6,7 @@
 use std::rc::Rc;
 
 use gpui::{div, prelude::*, px, Context, Hsla, SharedString};
-use nyx_ui::{
-    ActiveTheme, Button, ButtonSize, ButtonVariant, Column, IconButton, Table, ToastVariant,
-};
+use nyx_ui::{ActiveTheme, Button, ButtonSize, ButtonVariant, Column, IconButton, Table};
 
 use crate::icon::icon;
 use crate::state::AppState;
@@ -179,7 +177,7 @@ fn toolbar(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
         .child(
             IconButton::new("new-folder", icon("folderPlus", 15., theme.text_muted)).on_click(
                 cx.listener(|this, _, _, cx| {
-                    this.push_toast("New folder — coming in M4", ToastVariant::Info, cx);
+                    this.start_new_folder(cx);
                     cx.notify();
                 }),
             ),
@@ -190,7 +188,7 @@ fn toolbar(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
                 .size(ButtonSize::Sm)
                 .icon(icon("upload", 14., theme.text_muted))
                 .on_click(cx.listener(|this, _, _, cx| {
-                    this.push_toast("Upload — coming in M5", ToastVariant::Info, cx);
+                    this.upload(cx);
                     cx.notify();
                 })),
         )
@@ -335,6 +333,7 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
     let faint = theme.text_faint;
     let rows_for_render = rows.clone();
     let rows_for_select = rows.clone();
+    let rows_for_secondary = rows.clone();
     let rows_for_activate = rows.clone();
     let view = cx.entity();
 
@@ -371,6 +370,20 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                         let name = row.name.clone();
                         view.update(cx, |this, cx| {
                             this.select(name, additive);
+                            cx.notify();
+                        });
+                    }
+                }
+            })
+            .on_secondary({
+                let view = view.clone();
+                let rows = rows_for_secondary;
+                move |ix, pos, _window, cx| {
+                    if let Some(row) = rows.get(ix) {
+                        let name = row.name.clone();
+                        let is_dir = row.is_dir;
+                        view.update(cx, |this, cx| {
+                            this.open_file_menu(name, is_dir, pos);
                             cx.notify();
                         });
                     }

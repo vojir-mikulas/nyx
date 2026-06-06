@@ -87,8 +87,17 @@ impl Render for AppState {
             .when(self.delete_confirm.is_some(), |this| {
                 this.child(delete_confirm_modal(self, cx))
             })
+            .when(self.file_delete.is_some(), |this| {
+                this.child(file_delete_modal(self, cx))
+            })
+            .when(self.input_prompt.is_some(), |this| {
+                this.child(input_prompt_modal(self, cx))
+            })
             .when(self.row_menu.is_some(), |this| {
                 this.child(row_context_menu(self, cx))
+            })
+            .when(self.file_menu.is_some(), |this| {
+                this.child(file_context_menu(self, cx))
             })
             .when_some(self.toast.as_ref(), |this, toast| {
                 this.child(
@@ -355,6 +364,201 @@ fn row_context_menu(state: &AppState, cx: &mut Context<AppState>) -> impl IntoEl
                 .position(position)
                 .child(div().occlude().child(surface)),
         ))
+}
+
+/// The browser file-row right-click menu (Download / Rename / Delete / Copy
+/// path), anchored at the cursor — modeled on [`row_context_menu`]. Download and
+/// Delete act on the whole selection; Rename and Copy path on the clicked row.
+fn file_context_menu(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    let menu = state.file_menu.as_ref().expect("file menu set");
+    let position = menu.position;
+    // Directory download is post-MVP (D5): disable Download on a folder row.
+    let download_disabled = menu.is_dir;
+
+    let surface = ContextMenu::new("file-ctx")
+        .item(
+            ContextMenuItem::new("file-download", "Download")
+                .disabled(download_disabled)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.download_selection(cx);
+                    cx.notify();
+                })),
+        )
+        .item(
+            ContextMenuItem::new("file-rename", "Rename").on_click(cx.listener(
+                |this, _, _, cx| {
+                    this.start_rename(cx);
+                    cx.notify();
+                },
+            )),
+        )
+        .item(
+            ContextMenuItem::new("file-copy-path", "Copy path").on_click(cx.listener(
+                |this, _, _, cx| {
+                    this.copy_path(cx);
+                    cx.notify();
+                },
+            )),
+        )
+        .separator()
+        .item(
+            ContextMenuItem::new("file-delete", "Delete")
+                .danger()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.start_delete(cx);
+                    cx.notify();
+                })),
+        );
+
+    div()
+        .absolute()
+        .inset_0()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _, _, cx| {
+                this.close_file_menu();
+                cx.notify();
+            }),
+        )
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(|this, _, _, cx| {
+                this.close_file_menu();
+                cx.notify();
+            }),
+        )
+        .child(deferred(
+            anchored()
+                .position(position)
+                .child(div().occlude().child(surface)),
+        ))
+}
+
+/// The reusable single-field input modal (New folder / Rename), modeled on
+/// [`password_modal`]. Submitting validates non-empty + no `/` in the state.
+fn input_prompt_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    let theme = cx.theme().clone();
+    let view = cx.entity();
+    let prompt = state.input_prompt.as_ref().expect("input prompt set");
+    let title = prompt.title.clone();
+    let label = prompt.label.clone();
+    let submit_label = prompt.submit_label.clone();
+
+    Modal::new("input-prompt")
+        .title(title)
+        .width(px(400.))
+        .on_close({
+            let view = view.clone();
+            move |_window, cx| {
+                view.update(cx, |this, cx| {
+                    this.cancel_input();
+                    cx.notify();
+                });
+            }
+        })
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text_muted)
+                        .child(label),
+                )
+                .child(prompt.input.clone()),
+        )
+        .footer(
+            div()
+                .flex()
+                .w_full()
+                .justify_end()
+                .gap_2()
+                .child(
+                    Button::new("input-cancel", "Cancel")
+                        .variant(ButtonVariant::Secondary)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.cancel_input();
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("input-submit", submit_label)
+                        .variant(ButtonVariant::Primary)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.submit_input(cx);
+                            cx.notify();
+                        })),
+                ),
+        )
+}
+
+/// The file-delete confirmation (one or many entries), modeled on
+/// [`delete_confirm_modal`] — danger button, copy that names the count and warns
+/// the delete is recursive for folders and can't be undone (plan D8).
+fn file_delete_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    let theme = cx.theme().clone();
+    let view = cx.entity();
+    let confirm = state.file_delete.as_ref().expect("file delete set");
+    let count = confirm.entries.len();
+    let has_dir = confirm.entries.iter().any(|(_, is_dir)| *is_dir);
+
+    let summary = if count == 1 {
+        format!("Delete “{}”?", confirm.entries[0].0)
+    } else {
+        format!("Delete {count} items?")
+    };
+    let detail = if has_dir {
+        "Folders are deleted recursively. This can't be undone."
+    } else {
+        "This can't be undone."
+    };
+
+    Modal::new("file-delete-confirm")
+        .title("Delete")
+        .width(px(400.))
+        .on_close({
+            let view = view.clone();
+            move |_window, cx| {
+                view.update(cx, |this, cx| {
+                    this.cancel_file_delete();
+                    cx.notify();
+                });
+            }
+        })
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(div().text_sm().text_color(theme.text).child(summary))
+                .child(div().text_xs().text_color(theme.text_faint).child(detail)),
+        )
+        .footer(
+            div()
+                .flex()
+                .w_full()
+                .justify_end()
+                .gap_2()
+                .child(
+                    Button::new("file-del-cancel", "Cancel")
+                        .variant(ButtonVariant::Secondary)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.cancel_file_delete();
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("file-del-remove", "Delete")
+                        .variant(ButtonVariant::Danger)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.confirm_file_delete(cx);
+                            cx.notify();
+                        })),
+                ),
+        )
 }
 
 /// A lightweight "connecting…" overlay (full spinner polish is M6).

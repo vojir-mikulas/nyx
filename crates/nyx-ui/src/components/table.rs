@@ -29,7 +29,10 @@
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use gpui::{div, prelude::*, uniform_list, App, ClickEvent, Pixels, SharedString, Styled, Window};
+use gpui::{
+    div, prelude::*, uniform_list, App, ClickEvent, MouseButton, Pixels, Point, SharedString,
+    Styled, Window,
+};
 
 use crate::theme::ActiveTheme;
 
@@ -114,6 +117,9 @@ fn cell_layout<E: Styled>(el: E, column: &Column, align: ColumnAlign) -> E {
 type IndexHandler = Box<dyn Fn(usize, &mut Window, &mut App) + 'static>;
 /// A row-click handler that also receives the originating click (for modifiers).
 type RowClickHandler = Box<dyn Fn(usize, &ClickEvent, &mut Window, &mut App) + 'static>;
+/// A row secondary-click handler, receiving the row index and the cursor
+/// position (so the caller can anchor a context menu there).
+type RowSecondaryHandler = Box<dyn Fn(usize, Point<Pixels>, &mut Window, &mut App) + 'static>;
 /// Builds the cells (one [`AnyElement`] per column) for a given row.
 type RowRenderer = Rc<dyn Fn(usize, &mut Window, &mut App) -> Vec<gpui::AnyElement> + 'static>;
 
@@ -128,6 +134,7 @@ pub struct Table {
     selected_set: Option<Rc<HashSet<usize>>>,
     sort: Option<(usize, bool)>,
     on_select: Option<Rc<RowClickHandler>>,
+    on_secondary: Option<Rc<RowSecondaryHandler>>,
     on_activate: Option<Rc<IndexHandler>>,
     on_sort: Option<Rc<IndexHandler>>,
     render_row: Option<RowRenderer>,
@@ -145,6 +152,7 @@ impl Table {
             selected_set: None,
             sort: None,
             on_select: None,
+            on_secondary: None,
             on_activate: None,
             on_sort: None,
             render_row: None,
@@ -191,6 +199,18 @@ impl Table {
         handler: impl Fn(usize, &ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_select = Some(Rc::new(Box::new(handler)));
+        self
+    }
+
+    /// Handler invoked when a row is **secondary-clicked** (right mouse button),
+    /// with the row index and the cursor position — so the owner can open a
+    /// context menu anchored at the cursor. Stays generic: index + position only,
+    /// no domain types.
+    pub fn on_secondary(
+        mut self,
+        handler: impl Fn(usize, Point<Pixels>, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_secondary = Some(Rc::new(Box::new(handler)));
         self
     }
 
@@ -280,6 +300,7 @@ impl RenderOnce for Table {
         let columns_for_rows = columns.clone();
         let render_row = self.render_row.clone();
         let on_select = self.on_select.clone();
+        let on_secondary = self.on_secondary.clone();
         let on_activate = self.on_activate.clone();
         let selected = self.selected;
         let selected_set = self.selected_set.clone();
@@ -316,6 +337,7 @@ impl RenderOnce for Table {
                 });
 
                 let on_select = on_select.clone();
+                let on_secondary = on_secondary.clone();
                 let on_activate = on_activate.clone();
                 let clickable = on_select.is_some() || on_activate.is_some();
                 rows.push(
@@ -331,7 +353,9 @@ impl RenderOnce for Table {
                         .text_color(text)
                         .when(is_selected, |this| this.bg(bg_selected))
                         .when(!is_selected, |this| this.hover(move |s| s.bg(bg_hover)))
-                        .when(clickable, |this| this.cursor_pointer())
+                        .when(clickable || on_secondary.is_some(), |this| {
+                            this.cursor_pointer()
+                        })
                         .when(clickable, |this| {
                             this.on_click(move |event, window, cx| {
                                 if event.click_count() >= 2 {
@@ -343,6 +367,11 @@ impl RenderOnce for Table {
                                 if let Some(on_select) = on_select.as_ref() {
                                     on_select(ix, event, window, cx);
                                 }
+                            })
+                        })
+                        .when_some(on_secondary, |this, on_secondary| {
+                            this.on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                                on_secondary(ix, event.position, window, cx);
                             })
                         })
                         .children(laid_out),

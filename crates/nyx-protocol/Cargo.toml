@@ -13,5 +13,5 @@ nyx-core.workspace = true
 async-trait.workspace = true
 russh.workspace = true
 russh-sftp.workspace = true
-tokio = { workspace = true, features = ["net", "io-util", "sync", "time", "rt"] }
+tokio = { workspace = true, features = ["net", "io-util", "fs", "sync", "time", "rt"] }
 tracing.workspace = true
