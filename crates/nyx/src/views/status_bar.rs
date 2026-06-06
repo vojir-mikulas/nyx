@@ -68,7 +68,7 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                         item(cx)
                             .font_family(mono)
                             .text_color(theme.green)
-                            .child(icon("zap", 11.))
+                            .child(icon("zap", 11., theme.green))
                             .child(format!("{}/s · {active_count} active", fmt_size(speed))),
                     )
                 })
@@ -78,7 +78,7 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                         .id("sb-dock")
                         .cursor_pointer()
                         .hover(|s| s.bg(theme.bg_hover).text_color(theme.text_muted))
-                        .child(icon("panelBottom", 12.))
+                        .child(icon("panelBottom", 12., theme.text_faint))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.dock_open = !this.dock_open;
                             cx.notify();
@@ -89,7 +89,7 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                         .id("sb-settings")
                         .cursor_pointer()
                         .hover(|s| s.bg(theme.bg_hover).text_color(theme.text_muted))
-                        .child(icon("settings", 12.))
+                        .child(icon("settings", 12., theme.text_faint))
                         .on_click(toggle_settings),
                 );
         }
@@ -107,7 +107,7 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
             .id("sb-settings")
             .cursor_pointer()
             .hover(|s| s.bg(theme.bg_hover).text_color(theme.text_muted))
-            .child(icon("settings", 12.))
+            .child(icon("settings", 12., theme.text_faint))
             .on_click(toggle_settings),
     )
 }

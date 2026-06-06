@@ -71,10 +71,10 @@ fn tab_strip(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
                             .h(px(1.))
                             .bg(theme.accent),
                     )
-                    .child(div().text_color(color).child(icon("server", 13.)))
+                    .child(div().text_color(color).child(icon("server", 13., color)))
                     .child(div().truncate().child(name))
                     .child(
-                        IconButton::new("tab-close", icon("x", 12.))
+                        IconButton::new("tab-close", icon("x", 12., theme.text_faint))
                             .size(nyx_ui::IconButtonSize::Xs)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.disconnect();
@@ -90,20 +90,30 @@ fn tab_strip(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
                     .gap_0p5()
                     .px_2()
                     .child(
-                        IconButton::new("toggle-sidebar", icon("sidebarIc", 15.)).on_click(
-                            cx.listener(|this, _, _, cx| {
+                        IconButton::new("toggle-sidebar", icon("sidebarIc", 15., theme.text_faint))
+                            .on_click(cx.listener(|this, _, _, cx| {
                                 this.sidebar_open = !this.sidebar_open;
                                 cx.notify();
-                            }),
-                        ),
+                            })),
                     )
                     .child(
-                        IconButton::new("toggle-dock", icon("panelBottom", 15.))
-                            .active(dock_open)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.dock_open = !this.dock_open;
-                                cx.notify();
-                            })),
+                        IconButton::new(
+                            "toggle-dock",
+                            icon(
+                                "panelBottom",
+                                15.,
+                                if dock_open {
+                                    theme.text
+                                } else {
+                                    theme.text_faint
+                                },
+                            ),
+                        )
+                        .active(dock_open)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.dock_open = !this.dock_open;
+                            cx.notify();
+                        })),
                     ),
             ),
     )
@@ -131,7 +141,7 @@ fn toolbar(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
                 .flex()
                 .items_center()
                 .child(
-                    IconButton::new("nav-back", icon("arrowLeft", 16.))
+                    IconButton::new("nav-back", icon("arrowLeft", 16., theme.text_muted))
                         .disabled(!can_back)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.back(cx);
@@ -139,7 +149,7 @@ fn toolbar(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
                         })),
                 )
                 .child(
-                    IconButton::new("nav-fwd", icon("arrowRight", 16.))
+                    IconButton::new("nav-fwd", icon("arrowRight", 16., theme.text_muted))
                         .disabled(!can_fwd)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.forward(cx);
@@ -147,7 +157,7 @@ fn toolbar(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
                         })),
                 )
                 .child(
-                    IconButton::new("nav-up", icon("arrowUp", 15.))
+                    IconButton::new("nav-up", icon("arrowUp", 15., theme.text_muted))
                         .disabled(!can_up)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.go_up(cx);
@@ -155,12 +165,11 @@ fn toolbar(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
                         })),
                 )
                 .child(
-                    IconButton::new("nav-refresh", icon("refresh", 15.)).on_click(cx.listener(
-                        |this, _, _, cx| {
+                    IconButton::new("nav-refresh", icon("refresh", 15., theme.text_muted))
+                        .on_click(cx.listener(|this, _, _, cx| {
                             this.refresh(cx);
                             cx.notify();
-                        },
-                    )),
+                        })),
                 ),
         )
         .child(separator(cx))
@@ -168,18 +177,18 @@ fn toolbar(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
         .child(div().w(px(200.)).child(state.filter.clone()))
         .child(separator(cx))
         .child(
-            Button::new("new-folder", "New folder")
-                .variant(ButtonVariant::Secondary)
-                .size(ButtonSize::Sm)
-                .on_click(cx.listener(|this, _, _, cx| {
+            IconButton::new("new-folder", icon("folderPlus", 15., theme.text_muted)).on_click(
+                cx.listener(|this, _, _, cx| {
                     this.push_toast("New folder — coming in M4", ToastVariant::Info, cx);
                     cx.notify();
-                })),
+                }),
+            ),
         )
         .child(
             Button::new("upload", "Upload")
-                .variant(ButtonVariant::Primary)
+                .variant(ButtonVariant::Ghost)
                 .size(ButtonSize::Sm)
+                .icon(icon("upload", 14., theme.text_muted))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.push_toast("Upload — coming in M5", ToastVariant::Info, cx);
                     cx.notify();
@@ -214,7 +223,11 @@ fn breadcrumb(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
     for (i, seg) in state.cwd.iter().enumerate() {
         let is_last = i + 1 == state.cwd.len();
         row = row
-            .child(div().text_color(theme.text_dim).child(icon("chevR", 12.)))
+            .child(
+                div()
+                    .text_color(theme.text_dim)
+                    .child(icon("chevR", 12., theme.text_dim)),
+            )
             .child(crumb(seg.clone(), i + 1, is_last, is_last, cx));
     }
     row
@@ -381,11 +394,11 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                         .items_center()
                         .gap_2()
                         .min_w_0()
-                        .child(
-                            div()
-                                .text_color(row.icon_color)
-                                .child(icon(row.icon_name, 15.)),
-                        )
+                        .child(div().text_color(row.icon_color).child(icon(
+                            row.icon_name,
+                            15.,
+                            row.icon_color,
+                        )))
                         .child(
                             div()
                                 .truncate()
@@ -447,7 +460,11 @@ fn empty_state(filter_active: bool, filter: &str, cx: &Context<AppState>) -> imp
         .justify_center()
         .gap_1p5()
         .text_color(theme.text_dim)
-        .child(div().opacity(0.5).child(icon("folderOpen", 26.)))
+        .child(
+            div()
+                .opacity(0.5)
+                .child(icon("folderOpen", 26., theme.text_dim)),
+        )
         .child(
             div()
                 .font_family(crate::assets::FONT_MONO)

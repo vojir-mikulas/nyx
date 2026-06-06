@@ -50,7 +50,7 @@ fn header(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
         .child(
             IconButton::new(
                 "dock-collapse",
-                icon(if open { "chevD" } else { "chevR" }, 14.),
+                icon(if open { "chevD" } else { "chevR" }, 14., theme.text_faint),
             )
             .on_click(cx.listener(|this, _, _, cx| {
                 this.dock_open = !this.dock_open;
@@ -76,12 +76,12 @@ fn header(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
         )
         .child(div().flex_1())
         .child(
-            IconButton::new("dock-clear", icon("trash", 14.)).on_click(cx.listener(
-                |this, _, _, cx| {
+            IconButton::new("dock-clear", icon("trash", 14., theme.text_faint)).on_click(
+                cx.listener(|this, _, _, cx| {
                     this.clear_finished();
                     cx.notify();
-                },
-            )),
+                }),
+            ),
         )
 }
 
@@ -170,7 +170,14 @@ fn transfer_row(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
         .border_b_1()
         .border_color(theme.border_soft)
         .hover(|s| s.bg(theme.bg_hover))
-        .child(div().text_color(dir_color).child(icon(dir_icon, 15.)))
+        .child(
+            div()
+                .w(px(18.))
+                .flex_shrink_0()
+                .flex()
+                .justify_center()
+                .child(icon(dir_icon, 15., dir_color)),
+        )
         .child(
             // Main: name + path/error + optional progress bar.
             div()
@@ -200,7 +207,8 @@ fn transfer_row(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
         )
         .child(
             div()
-                .w(px(86.))
+                .w(px(90.))
+                .flex_shrink_0()
                 .font_family(mono)
                 .text_xs()
                 .text_color(theme.text_muted)
@@ -209,7 +217,8 @@ fn transfer_row(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
         )
         .child(
             div()
-                .w(px(80.))
+                .w(px(84.))
+                .flex_shrink_0()
                 .font_family(mono)
                 .text_xs()
                 .text_color(theme.text_muted)
@@ -222,7 +231,8 @@ fn transfer_row(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
                 .items_center()
                 .justify_end()
                 .gap_1p5()
-                .w(px(110.))
+                .w(px(112.))
+                .flex_shrink_0()
                 .child(Badge::new(badge_label).variant(badge_variant))
                 .when(show_bar, |this| {
                     this.child(trailing_action(t, "x", "Cancel", cx))
@@ -242,7 +252,7 @@ fn trailing_action(
     let id = t.transfer.id.0;
     IconButton::new(
         gpui::SharedString::from(format!("xfer-{label}-{id}")),
-        icon(glyph, 13.),
+        icon(glyph, 13., cx.theme().text_faint),
     )
     .size(IconButtonSize::Xs)
     .on_click(cx.listener(move |this, _, _, cx| {

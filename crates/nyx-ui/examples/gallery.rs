@@ -95,6 +95,11 @@ impl Gallery {
                     .variant(ButtonVariant::Secondary)
                     .size(ButtonSize::Sm),
             )
+            .child(
+                Button::new("with-icon", "Upload")
+                    .variant(ButtonVariant::Ghost)
+                    .icon("⬆"),
+            )
     }
 
     fn icon_buttons(&self) -> impl IntoElement {

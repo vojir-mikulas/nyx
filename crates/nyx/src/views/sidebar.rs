@@ -1,10 +1,10 @@
 // Copyright 2026 vojir-mikulas
 // SPDX-License-Identifier: Apache-2.0
 
-//! The left sidebar: brand header, saved + recent connection groups, footer.
+//! The left sidebar: header, saved connections, footer.
 
 use gpui::{div, prelude::*, px, Context, FontWeight, MouseButton};
-use nyx_ui::{ActiveTheme, Badge, Button, ButtonSize, IconButton, ToastVariant};
+use nyx_ui::{ActiveTheme, Badge, Button, ButtonSize, ButtonVariant, IconButton, ToastVariant};
 
 use crate::icon::icon;
 use crate::state::models::{protocol_badge, ConnectionVm};
@@ -16,7 +16,6 @@ use super::{status_dot, titlebar_drag};
 pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
     let saved = state.connections.len();
-    let recent = state.connections.iter().filter(|c| c.is_recent).count();
 
     // `cx.listener` results aren't `Clone`, so each call site gets its own.
     let header_new = cx.listener(|this, _, _, cx| {
@@ -52,7 +51,10 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                     .pr(px(10.))
                     .flex_shrink_0()
                     .child(div().flex_1())
-                    .child(IconButton::new("sb-new", icon("plus", 15.)).on_click(header_new)),
+                    .child(
+                        IconButton::new("sb-new", icon("plus", 15., theme.text_faint))
+                            .on_click(header_new),
+                    ),
             ),
         )
         .child(
@@ -63,14 +65,7 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                 .min_h_0()
                 .overflow_y_scroll()
                 .pb_2()
-                .child(group(state, "Saved", saved, &state.connections_all(), cx))
-                .child(group(
-                    state,
-                    "Recent",
-                    recent,
-                    &state.connections_recent(),
-                    cx,
-                )),
+                .child(group(state, "Saved", saved, &state.connections_all(), cx)),
         )
         .child(
             // Footer: New + settings.
@@ -83,12 +78,13 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                 .child(
                     div().flex_1().child(
                         Button::new("sb-foot-new", "New")
+                            .variant(ButtonVariant::Secondary)
                             .size(ButtonSize::Sm)
                             .on_click(footer_new),
                     ),
                 )
                 .child(
-                    IconButton::new("sb-foot-settings", icon("settings", 14.))
+                    IconButton::new("sb-foot-settings", icon("settings", 14., theme.text_faint))
                         .on_click(open_settings),
                 ),
         )

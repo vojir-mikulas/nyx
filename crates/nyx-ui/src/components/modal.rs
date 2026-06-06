@@ -165,6 +165,9 @@ impl RenderOnce for Modal {
             .items_center()
             .justify_center()
             .bg(gpui::black().opacity(0.55))
+            // Block all mouse interaction with the UI behind the scrim, so a
+            // click that dismisses the modal can't also fire an element under it.
+            .occlude()
             .when_some(on_close, |this, close| {
                 this.on_mouse_down(MouseButton::Left, move |_, window, cx| close(window, cx))
             })

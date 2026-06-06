@@ -85,7 +85,7 @@ fn logo(cx: &Context<AppState>) -> impl IntoElement {
         .rounded(px(10.))
         .bg(theme.accent)
         .text_color(theme.on_accent)
-        .child(icon("zap", 22.))
+        .child(icon("zap", 22., theme.on_accent))
 }
 
 fn section_label(label: &'static str, cx: &Context<AppState>) -> impl IntoElement {
@@ -142,7 +142,7 @@ fn card(conn: &ConnectionVm, cx: &mut Context<AppState>) -> impl IntoElement {
                 .border_1()
                 .border_color(theme.border_soft)
                 .text_color(conn.color.color(&theme))
-                .child(icon(glyph, 17.)),
+                .child(icon(glyph, 17., conn.color.color(&theme))),
         )
         .child(
             div()
@@ -170,7 +170,11 @@ fn card(conn: &ConnectionVm, cx: &mut Context<AppState>) -> impl IntoElement {
                         .child(format!("{}  ·  {}", conn.user_host_port(), path)),
                 ),
         )
-        .child(div().text_color(theme.text_dim).child(icon("chevR", 16.)))
+        .child(
+            div()
+                .text_color(theme.text_dim)
+                .child(icon("chevR", 16., theme.text_dim)),
+        )
         .on_click(cx.listener(move |this, _, _, cx| {
             this.open_connection(&id, cx);
             cx.notify();
@@ -204,7 +208,7 @@ fn recent_row(conn: &ConnectionVm, cx: &mut Context<AppState>) -> impl IntoEleme
                 .border_1()
                 .border_color(theme.border_soft)
                 .text_color(theme.text_faint)
-                .child(icon("clock", 14.)),
+                .child(icon("clock", 14., theme.text_faint)),
         )
         .child(
             div()
@@ -218,7 +222,11 @@ fn recent_row(conn: &ConnectionVm, cx: &mut Context<AppState>) -> impl IntoEleme
                         .child(conn.last_used.clone().unwrap_or_else(|| "—".into())),
                 ),
         )
-        .child(div().text_color(theme.text_dim).child(icon("chevR", 15.)))
+        .child(
+            div()
+                .text_color(theme.text_dim)
+                .child(icon("chevR", 15., theme.text_dim)),
+        )
         .on_click(cx.listener(move |this, _, _, cx| {
             this.open_connection(&id, cx);
             cx.notify();
@@ -251,7 +259,7 @@ fn new_button(
                 .text_color(theme.text)
                 .bg(theme.accent_ghost)
         })
-        .child(icon("plus", 15.))
+        .child(icon("plus", 15., theme.text_muted))
         .child("New connection")
         .child(
             div()

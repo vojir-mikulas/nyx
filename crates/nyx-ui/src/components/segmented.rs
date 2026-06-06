@@ -82,6 +82,7 @@ impl RenderOnce for Segmented {
             div()
                 .id(ix)
                 .flex()
+                .flex_1()
                 .items_center()
                 .justify_center()
                 .h(gpui::px(24.))

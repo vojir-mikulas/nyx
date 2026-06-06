@@ -38,10 +38,10 @@ impl Theme {
             text_faint: h(0x6b7280),
             text_dim: h(0x565d68),
 
-            accent: h(0x5d80e6),
-            accent_hover: h(0x6e8eea),
-            accent_ghost: h(0x5d80e6).opacity(0.14),
-            on_accent: h(0xf3f6ff),
+            accent: h(0x98c379),
+            accent_hover: h(0xa9cf8d),
+            accent_ghost: h(0x98c379).opacity(0.16),
+            on_accent: h(0x1d2026),
 
             green: h(0x98c379),
             red: h(0xe06c75),
@@ -80,10 +80,10 @@ impl Theme {
             text_faint: h(0x6e7681),
             text_dim: h(0x545d68),
 
-            accent: h(0x2f81f7),
-            accent_hover: h(0x4895ff),
-            accent_ghost: h(0x2f81f7).opacity(0.15),
-            on_accent: h(0xffffff),
+            accent: h(0x3fb950),
+            accent_hover: h(0x56d364),
+            accent_ghost: h(0x3fb950).opacity(0.18),
+            on_accent: h(0x0d1117),
 
             green: h(0x3fb950),
             red: h(0xf85149),

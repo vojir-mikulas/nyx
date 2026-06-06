@@ -7,7 +7,7 @@
 //! `cva` analog. It is a stateless [`RenderOnce`] element; an id is required so
 //! the click handler can be attached.
 
-use gpui::{div, prelude::*, App, ClickEvent, ElementId, Hsla, SharedString, Window};
+use gpui::{div, prelude::*, AnyElement, App, ClickEvent, ElementId, Hsla, SharedString, Window};
 
 use crate::theme::ActiveTheme;
 
@@ -50,6 +50,7 @@ pub enum ButtonSize {
 pub struct Button {
     id: ElementId,
     label: SharedString,
+    icon: Option<AnyElement>,
     variant: ButtonVariant,
     size: ButtonSize,
     disabled: bool,
@@ -62,11 +63,19 @@ impl Button {
         Self {
             id: id.into(),
             label: label.into(),
+            icon: None,
             variant: ButtonVariant::default(),
             size: ButtonSize::default(),
             disabled: false,
             on_click: None,
         }
+    }
+
+    /// Set an optional leading icon element (an `svg()`, glyph, etc.). Stays
+    /// domain-free: any `impl IntoElement`, never an icon enum.
+    pub fn icon(mut self, icon: impl IntoElement) -> Self {
+        self.icon = Some(icon.into_any_element());
+        self
     }
 
     /// Set the visual variant.
@@ -141,6 +150,7 @@ impl RenderOnce for Button {
             .text_color(fg)
             .border_1()
             .border_color(border)
+            .when_some(self.icon, |this, icon| this.child(icon))
             .child(self.label);
 
         let interactive = if self.disabled {

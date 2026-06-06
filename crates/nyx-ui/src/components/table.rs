@@ -323,6 +323,10 @@ impl RenderOnce for Table {
                         .id(ix)
                         .flex()
                         .items_center()
+                        // `uniform_list` lays each row out as a layout root, so a
+                        // bare flex row sizes to its content; `w_full` makes it
+                        // fill the list width so flex columns align with the header.
+                        .w_full()
                         .h(row_height)
                         .text_color(text)
                         .when(is_selected, |this| this.bg(bg_selected))

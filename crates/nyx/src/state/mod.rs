@@ -130,11 +130,6 @@ impl AppState {
         self.connections.iter().collect()
     }
 
-    /// Connections flagged recent (the "Recent" group).
-    pub fn connections_recent(&self) -> Vec<&ConnectionVm> {
-        self.connections.iter().filter(|c| c.is_recent).collect()
-    }
-
     /// The connection currently open in the browser, if any.
     pub fn active_conn(&self) -> Option<&ConnectionVm> {
         let id = self.active_id.as_deref()?;

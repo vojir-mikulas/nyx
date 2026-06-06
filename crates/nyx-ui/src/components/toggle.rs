@@ -62,27 +62,30 @@ impl RenderOnce for Toggle {
             theme.bg_active
         };
         let knob = div()
-            .absolute()
-            .top(gpui::px(2.))
             .size(gpui::px(14.))
+            .flex_shrink_0()
+            .mx(gpui::px(2.))
             .rounded_full()
             .bg(if checked {
                 theme.on_accent
             } else {
                 theme.text_muted
-            })
-            .when(checked, |this| this.right(gpui::px(2.)))
-            .when(!checked, |this| this.left(gpui::px(2.)));
+            });
 
+        // Flex layout keeps the knob vertically centered regardless of the
+        // track's border; horizontal position is just justify start/end.
         let base = div()
             .id(self.id)
-            .relative()
+            .flex()
+            .items_center()
             .w(gpui::px(34.))
             .h(gpui::px(18.))
             .rounded_full()
             .bg(track_bg)
             .border_1()
             .border_color(if checked { theme.accent } else { theme.border })
+            .when(checked, |this| this.justify_end())
+            .when(!checked, |this| this.justify_start())
             .child(knob);
 
         let next = !checked;
