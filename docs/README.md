@@ -24,6 +24,10 @@ Sequenced implementation plans live in [`plans/`](plans/).
 - [`plans/windows-build.md`](plans/windows-build.md) — enable the Windows build:
   trim the macOS-specific assumptions (keyring backend, GPUI features, titlebar)
   so the existing packaging script + release CI produce a working `.exe`.
+- [`plans/keyboard-controls.md`](plans/keyboard-controls.md) — app-wide keyboard
+  controls: consolidate bindings into one keymap with a clean `key_context`
+  hierarchy, add global shortcuts, modal Esc/Enter, richer browser navigation,
+  and a shortcuts cheat-sheet.
 
 ## Visual reference
 

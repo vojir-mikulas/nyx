@@ -8,11 +8,13 @@
 mod error;
 mod path;
 mod remote;
+mod secret;
 mod transfer;
 
 pub use error::{NyxError, Result};
 pub use path::{RemotePath, RemotePathError};
 pub use remote::{EntryKind, Permissions, Protocol, RemoteEntry, Rwx};
+pub use secret::Secret;
 pub use transfer::{
     CollisionChoice, Transfer, TransferDirection, TransferId, TransferProgress, TransferStatus,
 };

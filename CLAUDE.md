@@ -46,6 +46,12 @@ cargo fmt --all                               # format
   [`crates/nyx-ui/CLAUDE.md`](crates/nyx-ui/CLAUDE.md).
 - **Never log credentials.** Passwords live in the OS keychain (`nyx-keyring`)
   only — never in logs, never in profile files.
+- **Secrets are `nyx_core::Secret`.** Passwords, SSH key passphrases and host
+  keys are wrapped in `Secret`, which has no leaking `Display`/`Debug` (both
+  render `***`) and zeroes its buffer on drop. The inner value is reachable only
+  via `Secret::expose()`, called at the auth boundary and nowhere else. Secrets
+  never appear in logs, error messages, `Debug` output, or `tracing`
+  spans/fields.
 - **GPUI is pinned to a git rev** in the root `Cargo.toml`. Don't bump it
   casually — it freezes the API and the dependency tree.
 

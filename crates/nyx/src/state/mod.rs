@@ -16,13 +16,14 @@ use gpui::{
     SharedString,
 };
 use nyx_core::{
-    CollisionChoice, Protocol, RemotePath, Transfer, TransferDirection, TransferId, TransferStatus,
+    CollisionChoice, Protocol, RemotePath, Secret, Transfer, TransferDirection, TransferId,
+    TransferStatus,
 };
 use nyx_keyring::{passphrase_account, password_account, CredentialStore, OsKeyring};
 use nyx_profile::{
     AuthMethod, FileProfileStore, FileSettingsStore, Profile, ProfileColor, ProfileStore, Settings,
 };
-use nyx_service::{Command, Event, FileOp, Secret, ServiceHandle};
+use nyx_service::{Command, Event, FileOp, ServiceHandle};
 use nyx_ui::{ActiveTheme, TextInput, TextInputEvent, Theme, ToastVariant};
 use time::OffsetDateTime;
 

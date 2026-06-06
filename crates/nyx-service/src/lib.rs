@@ -19,7 +19,6 @@
 //! time, so there is never more than one pending host-key decision.
 
 use std::collections::HashMap;
-use std::fmt;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -31,7 +30,7 @@ use futures::channel::mpsc::{
     UnboundedSender as FuturesSender,
 };
 use nyx_core::{
-    CollisionChoice, NyxError, RemoteEntry, RemotePath, TransferDirection, TransferId,
+    CollisionChoice, NyxError, RemoteEntry, RemotePath, Secret, TransferDirection, TransferId,
     TransferStatus,
 };
 use nyx_profile::{AuthMethod, Profile};
@@ -65,32 +64,6 @@ fn known_hosts() -> PathBuf {
             warn!("could not resolve the OS data directory; using ./known_hosts");
             PathBuf::from("known_hosts")
         }
-    }
-}
-
-/// A password that never reveals itself in `Debug`/logs.
-///
-/// The inner string is only reachable via [`Secret::expose`], which is called in
-/// exactly one place (the SFTP auth call). Everything else — including the derived
-/// `Debug` on [`Command`] — sees `***`.
-#[derive(Clone)]
-pub struct Secret(String);
-
-impl Secret {
-    /// Wrap a secret value.
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-
-    /// Reveal the secret. Call sites must not log the result.
-    pub fn expose(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Debug for Secret {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("***")
     }
 }
 
@@ -1036,5 +1009,33 @@ mod host_key {
             // A dropped sender (e.g. shutdown) resolves to "do not trust".
             answer.await.unwrap_or(false)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nyx_core::Protocol;
+
+    #[test]
+    fn connect_debug_redacts_the_secret() {
+        let cmd = Command::Connect {
+            profile: Profile {
+                id: "id".into(),
+                name: "n".into(),
+                protocol: Protocol::Sftp,
+                host: "example.com".into(),
+                port: 22,
+                username: "user".into(),
+                auth: AuthMethod::Password,
+                remote_path: None,
+                color: Default::default(),
+                last_connected: None,
+            },
+            secret: Secret::new("hunter2"),
+        };
+        let dbg = format!("{cmd:?}");
+        assert!(dbg.contains("***"), "{dbg}");
+        assert!(!dbg.contains("hunter2"), "{dbg}");
     }
 }

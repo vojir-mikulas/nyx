@@ -54,6 +54,10 @@ time = { version = "0.3", features = ["serde-well-known", "macros"] }
 anyhow = "1"
 thiserror = "2"
 
+# --- Secret hygiene ---
+# Zero a secret's heap buffer on drop (defense-in-depth behind `nyx_core::Secret`).
+zeroize = { version = "1", features = ["zeroize_derive"] }
+
 # --- Async trait objects (object-safe RemoteClient) ---
 async-trait = "0.1"
 
