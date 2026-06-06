@@ -9,5 +9,7 @@
 .idea/
 .vscode/
 
+/design/
+
 # Local Claude/agent settings overrides
 .claude/settings.local.json
