@@ -33,6 +33,13 @@ pub struct Profile {
     pub port: u16,
     /// Login username.
     pub username: String,
+    /// How this connection authenticates (password or private key).
+    ///
+    /// `#[serde(default)]` so profiles written before this field existed still
+    /// parse — they take [`AuthMethod::Password`]. The key *path* lives here (it
+    /// is not a secret); the password / key passphrase lives in the keychain.
+    #[serde(default)]
+    pub auth: AuthMethod,
     /// Directory to open on connect, if any.
     pub remote_path: Option<String>,
     /// The accent color shown for this connection (presentation, persisted).
@@ -48,6 +55,29 @@ pub struct Profile {
     /// hand-written files (without the field) still load.
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub last_connected: Option<OffsetDateTime>,
+}
+
+/// How a profile authenticates to its remote host.
+///
+/// Internally tagged on `method` so the TOML reads naturally:
+/// ```toml
+/// [profile.auth]
+/// method = "key"
+/// path = "/home/me/.ssh/id_ed25519"
+/// ```
+/// The secret (password or key passphrase) is **never** stored here — only the
+/// non-secret key *path* travels with the profile.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "method", rename_all = "lowercase")]
+pub enum AuthMethod {
+    /// Password authentication (the default, and the pre-`auth`-field behavior).
+    #[default]
+    Password,
+    /// Public-key authentication with an OpenSSH private key file.
+    Key {
+        /// Path to the private key file (non-secret, persisted).
+        path: PathBuf,
+    },
 }
 
 impl Profile {
@@ -199,6 +229,7 @@ mod tests {
             host: "example.com".to_string(),
             port: 22,
             username: "deploy".to_string(),
+            auth: AuthMethod::Password,
             remote_path: Some("/var/www".to_string()),
             color: ProfileColor::Green,
             last_connected: None,
@@ -247,7 +278,10 @@ mod tests {
         store.save(&sample("a", "alpha")).unwrap();
         let on_disk = fs::read_to_string(store.path()).unwrap();
         let lower = on_disk.to_lowercase();
-        assert!(!lower.contains("password"));
+        // `method = "password"` (the auth *method* name) is expected; what must
+        // never appear is a secret value — a stored password/passphrase field.
+        assert!(!lower.contains("passphrase"));
+        assert!(!lower.contains("password ="));
         assert!(!lower.contains("secret"));
     }
 
@@ -278,6 +312,54 @@ mod tests {
         fs::write(store.path(), "this is = not valid toml ][").unwrap();
         let err = store.list().unwrap_err();
         assert!(err.to_string().contains("malformed profile store"));
+    }
+
+    #[test]
+    fn auth_method_round_trips() {
+        let (_dir, mut store) = temp_store();
+        let mut p = sample("k", "keyed");
+        p.auth = AuthMethod::Key {
+            path: PathBuf::from("/home/me/.ssh/id_ed25519"),
+        };
+        store.save(&p).unwrap();
+        assert_eq!(store.get("k").unwrap().unwrap().auth, p.auth);
+
+        // The default (Password) variant also survives a round-trip.
+        store.save(&sample("p", "passworded")).unwrap();
+        assert_eq!(store.get("p").unwrap().unwrap().auth, AuthMethod::Password);
+    }
+
+    #[test]
+    fn missing_auth_field_defaults_to_password() {
+        // A profile written before `auth` existed must load as Password.
+        let (_dir, store) = temp_store();
+        let legacy = r#"
+            [[profile]]
+            id = "x"
+            name = "legacy"
+            protocol = "sftp"
+            host = "h"
+            port = 22
+            username = "u"
+        "#;
+        fs::write(store.path(), legacy).unwrap();
+        assert_eq!(store.get("x").unwrap().unwrap().auth, AuthMethod::Password);
+    }
+
+    #[test]
+    fn key_path_is_not_a_secret_on_disk() {
+        // The key path is fine to persist; no secret ever is.
+        let (_dir, mut store) = temp_store();
+        let mut p = sample("k", "keyed");
+        p.auth = AuthMethod::Key {
+            path: PathBuf::from("/home/me/.ssh/id_ed25519"),
+        };
+        store.save(&p).unwrap();
+        let on_disk = fs::read_to_string(store.path()).unwrap();
+        assert!(on_disk.contains("id_ed25519"));
+        let lower = on_disk.to_lowercase();
+        assert!(!lower.contains("passphrase"));
+        assert!(!lower.contains("password"));
     }
 
     #[test]

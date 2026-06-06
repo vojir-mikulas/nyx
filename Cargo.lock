@@ -4122,6 +4122,7 @@ dependencies = [
  "nyx-core",
  "russh",
  "russh-sftp",
+ "tempfile",
  "tokio",
  "tracing",
 ]

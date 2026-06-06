@@ -18,9 +18,9 @@ use gpui::{
 use nyx_core::{
     CollisionChoice, Protocol, RemotePath, Transfer, TransferDirection, TransferId, TransferStatus,
 };
-use nyx_keyring::{CredentialStore, OsKeyring};
+use nyx_keyring::{passphrase_account, password_account, CredentialStore, OsKeyring};
 use nyx_profile::{
-    FileProfileStore, FileSettingsStore, Profile, ProfileColor, ProfileStore, Settings,
+    AuthMethod, FileProfileStore, FileSettingsStore, Profile, ProfileColor, ProfileStore, Settings,
 };
 use nyx_service::{Command, Event, FileOp, Secret, ServiceHandle};
 use nyx_ui::{ActiveTheme, TextInput, TextInputEvent, Theme, ToastVariant};
@@ -28,7 +28,8 @@ use time::OffsetDateTime;
 
 use models::{AccentKind, ConnectionVm, Density, DockTab, EntryRow, SortKey, TransferVm};
 
-/// The keychain service name (every password is addressed `("nyx", profile.id)`).
+/// The keychain service name. Secrets are addressed `("nyx", account)`, where the
+/// account is derived per-profile by [`password_account`] / [`passphrase_account`].
 const KEYCHAIN_SERVICE: &str = "nyx";
 
 /// Which top-level screen the main column shows.
@@ -50,8 +51,12 @@ pub struct ToastMsg {
     pub id: u64,
 }
 
-/// The password prompt shown on a keychain miss. The password is read straight
-/// from the masked input into the `Connect` command, never stored on `AppState`.
+/// The secret prompt shown on a keychain miss or a locked key. The secret is read
+/// straight from the masked input into the `Connect` command, never stored on
+/// `AppState`. It prompts for a password or — when [`is_passphrase`] — a key
+/// passphrase.
+///
+/// [`is_passphrase`]: PasswordPrompt::is_passphrase
 pub struct PasswordPrompt {
     /// The profile being connected to.
     pub profile_id: String,
@@ -59,10 +64,12 @@ pub struct PasswordPrompt {
     pub profile_name: SharedString,
     /// `user@host:port` shown under the title.
     pub host_label: SharedString,
-    /// The masked password field.
+    /// The masked secret field.
     pub input: Entity<TextInput>,
-    /// Whether to write the entered password to the keychain on connect.
+    /// Whether to write the entered secret to the keychain on connect.
     pub save_to_keychain: bool,
+    /// Whether this prompts for a key passphrase (vs a login password).
+    pub is_passphrase: bool,
 }
 
 /// A pending host-key trust-on-first-use prompt (an unknown key was presented).
@@ -114,6 +121,13 @@ pub struct ConnectionEditor {
     pub remote_path: Entity<TextInput>,
     /// Password field (obscured). On edit, blank means "keep the stored secret".
     pub password: Entity<TextInput>,
+    /// Whether key auth is selected (vs password).
+    pub auth_is_key: bool,
+    /// Private-key file path field (key auth).
+    pub key_path: Entity<TextInput>,
+    /// Key passphrase field (obscured, optional). Blank = unencrypted key, or on
+    /// edit = "keep the stored passphrase".
+    pub passphrase: Entity<TextInput>,
     /// Selected protocol.
     pub protocol: Protocol,
     /// Selected accent color.
@@ -440,11 +454,11 @@ impl AppState {
         self.connecting_id = Some(id.to_string());
 
         let keyring = self.keyring;
-        let lookup_id = id.to_string();
+        let account = secret_account(&profile);
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { keyring.get_password(KEYCHAIN_SERVICE, &lookup_id) })
+                .spawn(async move { keyring.get_password(KEYCHAIN_SERVICE, &account) })
                 .await;
             this.update(cx, |this, cx| {
                 this.on_password_lookup(profile, result, cx);
@@ -463,8 +477,14 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         match result {
-            Ok(Some(password)) => self.send_connect(profile, password, true, cx),
-            Ok(None) => self.show_password_prompt(profile, cx),
+            Ok(Some(secret)) => self.send_connect(profile, secret, true, cx),
+            // No stored secret. For password auth, prompt. For key auth, try with
+            // no passphrase (an unencrypted key needs none) — an encrypted key
+            // comes back as `KeyLocked` and we prompt for the passphrase then.
+            Ok(None) => match profile.auth {
+                AuthMethod::Password => self.show_password_prompt(profile, cx),
+                AuthMethod::Key { .. } => self.send_connect(profile, String::new(), false, cx),
+            },
             Err(err) => {
                 self.connecting_id = None;
                 self.push_toast(format!("Keychain error: {err}"), ToastVariant::Error, cx);
@@ -473,10 +493,32 @@ impl AppState {
     }
 
     /// Show the password prompt for `profile` (a keychain miss, or a stale-secret
-    /// re-prompt). The "Save to keychain" toggle defaults on.
+    /// re-prompt).
     fn show_password_prompt(&mut self, profile: Profile, cx: &mut Context<Self>) {
+        self.show_secret_prompt(profile, false, cx);
+    }
+
+    /// Show the passphrase prompt for `profile` (a locked key, or a stale-secret
+    /// re-prompt).
+    fn show_passphrase_prompt(&mut self, profile: Profile, cx: &mut Context<Self>) {
+        self.show_secret_prompt(profile, true, cx);
+    }
+
+    /// Build and show the secret prompt — a password or, when `is_passphrase`, a
+    /// key passphrase. The "Save to keychain" toggle defaults on.
+    fn show_secret_prompt(
+        &mut self,
+        profile: Profile,
+        is_passphrase: bool,
+        cx: &mut Context<Self>,
+    ) {
         let host_label = format!("{}@{}:{}", profile.username, profile.host, profile.port);
-        let input = cx.new(|cx| TextInput::new(cx).with_placeholder("Password").obscured());
+        let placeholder = if is_passphrase {
+            "Passphrase"
+        } else {
+            "Password"
+        };
+        let input = cx.new(|cx| TextInput::new(cx).with_placeholder(placeholder).obscured());
         self.wire_input(&input, cx);
         self.password_prompt = Some(PasswordPrompt {
             profile_id: profile.id.clone(),
@@ -484,14 +526,15 @@ impl AppState {
             host_label: host_label.into(),
             input,
             save_to_keychain: true,
+            is_passphrase,
         });
     }
 
-    /// Send a `Connect` command, tracking whether a *stored* password was used.
+    /// Send a `Connect` command, tracking whether a *stored* secret was used.
     fn send_connect(
         &mut self,
         profile: Profile,
-        password: String,
+        secret: String,
         from_keychain: bool,
         cx: &mut Context<Self>,
     ) {
@@ -500,7 +543,7 @@ impl AppState {
         self.used_stored_password = from_keychain.then_some(id);
         let sent = self.service.send(Command::Connect {
             profile,
-            password: Secret::new(password),
+            secret: Secret::new(secret),
         });
         if !sent {
             self.connecting_id = None;
@@ -516,7 +559,7 @@ impl AppState {
         let Some(prompt) = self.password_prompt.take() else {
             return;
         };
-        let password = prompt.input.read(cx).content().to_string();
+        let secret = prompt.input.read(cx).content().to_string();
         let Some(conn) = self
             .connections
             .iter()
@@ -525,42 +568,45 @@ impl AppState {
             return;
         };
         let profile = conn.profile.clone();
-
-        if prompt.save_to_keychain && !password.is_empty() {
-            self.save_password_then_connect(profile, password, cx);
+        let account = if prompt.is_passphrase {
+            passphrase_account(&profile.id)
         } else {
-            self.send_connect(profile, password, false, cx);
+            password_account(&profile.id)
+        };
+
+        if prompt.save_to_keychain && !secret.is_empty() {
+            self.save_secret_then_connect(profile, account, secret, cx);
+        } else {
+            self.send_connect(profile, secret, false, cx);
         }
     }
 
-    /// Save a password to the keychain off-thread, then send `Connect` once the
+    /// Save a secret to the keychain off-thread, then send `Connect` once the
     /// write completes (a failed save is a non-fatal toast — we still connect).
-    fn save_password_then_connect(
+    fn save_secret_then_connect(
         &mut self,
         profile: Profile,
-        password: String,
+        account: String,
+        secret: String,
         cx: &mut Context<Self>,
     ) {
         self.connecting_id = Some(profile.id.clone());
         let keyring = self.keyring;
-        let id = profile.id.clone();
-        let pw_for_save = password.clone();
+        let secret_for_save = secret.clone();
         cx.spawn(async move |this, cx| {
-            let saved = cx
-                .background_executor()
-                .spawn(async move { keyring.set_password(KEYCHAIN_SERVICE, &id, &pw_for_save) })
-                .await;
+            let saved =
+                cx.background_executor()
+                    .spawn(async move {
+                        keyring.set_password(KEYCHAIN_SERVICE, &account, &secret_for_save)
+                    })
+                    .await;
             this.update(cx, |this, cx| {
                 if saved.is_err() {
-                    this.push_toast(
-                        "Couldn't save password to keychain",
-                        ToastVariant::Error,
-                        cx,
-                    );
+                    this.push_toast("Couldn't save secret to keychain", ToastVariant::Error, cx);
                 }
-                // A freshly-typed password isn't a "stored" one for the
-                // auth-retry heuristic, even though we just saved it.
-                this.send_connect(profile, password, false, cx);
+                // A freshly-typed secret isn't a "stored" one for the auth-retry
+                // heuristic, even though we just saved it.
+                this.send_connect(profile, secret, false, cx);
                 cx.notify();
             })
             .ok();
@@ -635,6 +681,13 @@ impl AppState {
             username: cx.new(|cx| TextInput::new(cx).with_placeholder("user")),
             remote_path: cx.new(|cx| TextInput::new(cx).with_placeholder("/var/www  (optional)")),
             password: cx.new(|cx| TextInput::new(cx).with_placeholder("Password").obscured()),
+            auth_is_key: false,
+            key_path: cx.new(|cx| TextInput::new(cx).with_placeholder("~/.ssh/id_ed25519")),
+            passphrase: cx.new(|cx| {
+                TextInput::new(cx)
+                    .with_placeholder("Passphrase  (optional)")
+                    .obscured()
+            }),
             protocol: Protocol::Sftp,
             color: AccentKind::Purple,
             test_status: None,
@@ -652,6 +705,10 @@ impl AppState {
             return;
         };
         let p = conn.profile.clone();
+        let (auth_is_key, key_path_str) = match &p.auth {
+            AuthMethod::Password => (false, String::new()),
+            AuthMethod::Key { path } => (true, path.display().to_string()),
+        };
         self.editor = Some(ConnectionEditor {
             id: p.id.clone(),
             is_new: false,
@@ -665,6 +722,17 @@ impl AppState {
                     .with_content(p.remote_path.clone().unwrap_or_default())
             }),
             password: cx.new(|cx| {
+                TextInput::new(cx)
+                    .with_placeholder("Leave blank to keep current")
+                    .obscured()
+            }),
+            auth_is_key,
+            key_path: cx.new(|cx| {
+                TextInput::new(cx)
+                    .with_placeholder("~/.ssh/id_ed25519")
+                    .with_content(key_path_str)
+            }),
+            passphrase: cx.new(|cx| {
                 TextInput::new(cx)
                     .with_placeholder("Leave blank to keep current")
                     .obscured()
@@ -689,10 +757,48 @@ impl AppState {
             editor.username.clone(),
             editor.remote_path.clone(),
             editor.password.clone(),
+            editor.key_path.clone(),
+            editor.passphrase.clone(),
         ];
         for input in &inputs {
             self.wire_input(input, cx);
         }
+    }
+
+    /// Switch the editor's auth method (0 = password, 1 = key).
+    pub fn set_editor_auth(&mut self, ix: usize) {
+        if let Some(editor) = self.editor.as_mut() {
+            editor.auth_is_key = ix == 1;
+        }
+    }
+
+    /// Open a native file picker for the private key and write the chosen path
+    /// into the editor's key-path field.
+    pub fn pick_key_file(&mut self, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Choose key".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            this.update(cx, |this, cx| {
+                if let Some(editor) = this.editor.as_ref() {
+                    editor.key_path.update(cx, |input, cx| {
+                        input.set_content(path.display().to_string(), cx);
+                    });
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Close the editor without saving.
@@ -742,6 +848,9 @@ impl AppState {
         let username = editor.username.read(cx).content().trim().to_string();
         let remote_path = editor.remote_path.read(cx).content().trim().to_string();
         let password = editor.password.read(cx).content().to_string();
+        let auth_is_key = editor.auth_is_key;
+        let key_path = editor.key_path.read(cx).content().trim().to_string();
+        let passphrase = editor.passphrase.read(cx).content().to_string();
         let protocol = editor.protocol;
         let color = editor.color;
         let id = editor.id.clone();
@@ -755,6 +864,24 @@ impl AppState {
             );
             return;
         }
+        if auth_is_key && key_path.is_empty() {
+            self.push_toast("A key file is required", ToastVariant::Error, cx);
+            return;
+        }
+        let auth = if auth_is_key {
+            AuthMethod::Key {
+                path: key_path.into(),
+            }
+        } else {
+            AuthMethod::Password
+        };
+        // The secret to persist + its keychain account, by method. Blank keeps
+        // whatever is already stored (the field shows "leave blank to keep").
+        let (secret, account) = if auth_is_key {
+            (passphrase, passphrase_account(&id))
+        } else {
+            (password, password_account(&id))
+        };
         let port = if port_text.is_empty() {
             protocol.default_port()
         } else {
@@ -781,6 +908,7 @@ impl AppState {
             host,
             port,
             username,
+            auth,
             remote_path: (!remote_path.is_empty()).then_some(remote_path),
             color: color.to_profile_color(),
             last_connected,
@@ -789,8 +917,8 @@ impl AppState {
             self.push_toast(err.to_string(), ToastVariant::Error, cx);
             return;
         }
-        if !password.is_empty() {
-            self.keyring_set_async(id, password, cx);
+        if !secret.is_empty() {
+            self.keyring_set_async(account, secret, cx);
         }
         self.reload_connections(cx);
         self.editor = None;
@@ -805,21 +933,17 @@ impl AppState {
         );
     }
 
-    /// Write a password to the keychain off-thread, toasting on failure.
-    fn keyring_set_async(&self, id: String, password: String, cx: &mut Context<Self>) {
+    /// Write a secret to the keychain off-thread, toasting on failure.
+    fn keyring_set_async(&self, account: String, secret: String, cx: &mut Context<Self>) {
         let keyring = self.keyring;
         cx.spawn(async move |this, cx| {
             let res = cx
                 .background_executor()
-                .spawn(async move { keyring.set_password(KEYCHAIN_SERVICE, &id, &password) })
+                .spawn(async move { keyring.set_password(KEYCHAIN_SERVICE, &account, &secret) })
                 .await;
             if res.is_err() {
                 this.update(cx, |this, cx| {
-                    this.push_toast(
-                        "Couldn't save password to keychain",
-                        ToastVariant::Error,
-                        cx,
-                    );
+                    this.push_toast("Couldn't save secret to keychain", ToastVariant::Error, cx);
                 })
                 .ok();
             }
@@ -839,12 +963,19 @@ impl AppState {
         let username = editor.username.read(cx).content().trim().to_string();
         let remote_path = editor.remote_path.read(cx).content().trim().to_string();
         let password = editor.password.read(cx).content().to_string();
+        let auth_is_key = editor.auth_is_key;
+        let key_path = editor.key_path.read(cx).content().trim().to_string();
+        let passphrase = editor.passphrase.read(cx).content().to_string();
         let protocol = editor.protocol;
         let id = editor.id.clone();
         let is_new = editor.is_new;
 
         if host.is_empty() || username.is_empty() {
             self.set_test_status(false, "Host and username are required");
+            return;
+        }
+        if auth_is_key && key_path.is_empty() {
+            self.set_test_status(false, "A key file is required");
             return;
         }
         let port = if port_text.is_empty() {
@@ -858,6 +989,13 @@ impl AppState {
                 }
             }
         };
+        let auth = if auth_is_key {
+            AuthMethod::Key {
+                path: key_path.into(),
+            }
+        } else {
+            AuthMethod::Password
+        };
         let profile = Profile {
             id: id.clone(),
             name: if name.is_empty() { "test".into() } else { name },
@@ -865,6 +1003,7 @@ impl AppState {
             host,
             port,
             username,
+            auth,
             remote_path: (!remote_path.is_empty()).then_some(remote_path),
             color: ProfileColor::default(),
             last_connected: None,
@@ -874,25 +1013,30 @@ impl AppState {
             editor.test_status = None;
         }
 
-        if password.is_empty() && !is_new {
-            // Editing with a blank field — probe with the stored secret.
+        // The secret to probe with (password or passphrase). On edit with a blank
+        // field, fetch whatever is stored under the matching account.
+        let (typed_secret, account) = if auth_is_key {
+            (passphrase, passphrase_account(&id))
+        } else {
+            (password, password_account(&id))
+        };
+        if typed_secret.is_empty() && !is_new {
             let keyring = self.keyring;
-            let lookup_id = id;
             cx.spawn(async move |this, cx| {
                 let res = cx
                     .background_executor()
-                    .spawn(async move { keyring.get_password(KEYCHAIN_SERVICE, &lookup_id) })
+                    .spawn(async move { keyring.get_password(KEYCHAIN_SERVICE, &account) })
                     .await;
                 this.update(cx, |this, cx| {
-                    let pw = res.ok().flatten().unwrap_or_default();
-                    this.dispatch_test(profile, pw);
+                    let secret = res.ok().flatten().unwrap_or_default();
+                    this.dispatch_test(profile, secret);
                     cx.notify();
                 })
                 .ok();
             })
             .detach();
         } else {
-            self.dispatch_test(profile, password);
+            self.dispatch_test(profile, typed_secret);
         }
         cx.notify();
     }
@@ -909,10 +1053,10 @@ impl AppState {
     }
 
     /// Send the `TestConnection` command, reflecting a send failure inline.
-    fn dispatch_test(&mut self, profile: Profile, password: String) {
+    fn dispatch_test(&mut self, profile: Profile, secret: String) {
         let sent = self.service.send(Command::TestConnection {
             profile,
-            password: Secret::new(password),
+            secret: Secret::new(secret),
         });
         if !sent {
             self.set_test_status(false, "Backend unavailable");
@@ -962,12 +1106,16 @@ impl AppState {
             self.push_toast(err.to_string(), ToastVariant::Error, cx);
             return;
         }
-        // Best-effort, idempotent keychain cleanup.
+        // Best-effort, idempotent keychain cleanup — remove both the password and
+        // the key-passphrase entries (a profile may have written either).
         let keyring = self.keyring;
         let id_for_keyring = id.clone();
         cx.background_executor()
             .spawn(async move {
-                let _ = keyring.delete_password(KEYCHAIN_SERVICE, &id_for_keyring);
+                let _ =
+                    keyring.delete_password(KEYCHAIN_SERVICE, &password_account(&id_for_keyring));
+                let _ =
+                    keyring.delete_password(KEYCHAIN_SERVICE, &passphrase_account(&id_for_keyring));
             })
             .detach();
         if self.editor.as_ref().is_some_and(|e| e.id == id) {
@@ -1563,8 +1711,8 @@ impl AppState {
             }
             Event::Error { message } => {
                 let stale = self.used_stored_password.take();
+                let connecting = self.connecting_id.take();
                 self.host_key_prompt = None;
-                self.connecting_id = None;
                 self.listing_loading = false;
                 self.push_toast(message.clone(), ToastVariant::Error, cx);
                 // A stored password that fails auth is likely stale — re-open the
@@ -1574,6 +1722,14 @@ impl AppState {
                         if let Some(conn) = self.connections.iter().find(|c| c.profile.id == id) {
                             let profile = conn.profile.clone();
                             self.show_password_prompt(profile, cx);
+                        }
+                    }
+                // An encrypted key with no/wrong passphrase — prompt for it.
+                } else if message.contains("key requires a passphrase") {
+                    if let Some(id) = connecting {
+                        if let Some(conn) = self.connections.iter().find(|c| c.profile.id == id) {
+                            let profile = conn.profile.clone();
+                            self.show_passphrase_prompt(profile, cx);
                         }
                     }
                 }
@@ -1866,6 +2022,15 @@ impl AppState {
             .ok();
         })
         .detach();
+    }
+}
+
+/// The keychain account holding a profile's connection secret — the password for
+/// password auth, the key passphrase for key auth.
+fn secret_account(profile: &Profile) -> String {
+    match profile.auth {
+        AuthMethod::Password => password_account(&profile.id),
+        AuthMethod::Key { .. } => passphrase_account(&profile.id),
     }
 }
 

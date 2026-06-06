@@ -18,7 +18,7 @@ mod sftp;
 
 pub use host_key::HostKeyPrompt;
 pub use known_hosts::{KnownHostStatus, KnownHosts};
-pub use sftp::SftpClient;
+pub use sftp::{Auth, SftpClient};
 
 /// An async client for a remote filesystem.
 ///

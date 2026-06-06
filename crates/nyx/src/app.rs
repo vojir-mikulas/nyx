@@ -141,9 +141,19 @@ fn password_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElem
     let theme = cx.theme().clone();
     let view = cx.entity();
     let prompt = state.password_prompt.as_ref().expect("password prompt set");
+    let title = if prompt.is_passphrase {
+        format!("Unlock key for {}", prompt.profile_name)
+    } else {
+        format!("Connect to {}", prompt.profile_name)
+    };
+    let save_label = if prompt.is_passphrase {
+        "Save passphrase to keychain"
+    } else {
+        "Save to keychain"
+    };
 
     Modal::new("password")
-        .title(format!("Connect to {}", prompt.profile_name))
+        .title(title)
         .width(px(420.))
         .on_close({
             let view = view.clone();
@@ -176,7 +186,7 @@ fn password_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElem
                             div()
                                 .text_sm()
                                 .text_color(theme.text_muted)
-                                .child("Save to keychain"),
+                                .child(save_label),
                         )
                         .child(Toggle::new("pw-save", prompt.save_to_keychain).on_change(
                             cx.listener(|this, on, _window, cx| {

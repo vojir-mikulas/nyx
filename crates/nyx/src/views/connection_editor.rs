@@ -22,6 +22,7 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
     };
     let color_ix = editor.color.index();
     let is_new = editor.is_new;
+    let auth_is_key = editor.auth_is_key;
 
     // The inline test-connection status line.
     let status: Option<gpui::AnyElement> = if editor.testing {
@@ -126,7 +127,46 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                         }),
                     cx,
                 ))
-                .child(field("Password", editor.password.clone(), cx))
+                .child(field(
+                    "Authentication",
+                    Segmented::new("ce-auth")
+                        .segment("Password")
+                        .segment("Key")
+                        .selected(if auth_is_key { 1 } else { 0 })
+                        .on_select({
+                            let view = view.clone();
+                            move |ix, _window, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.set_editor_auth(ix);
+                                    cx.notify();
+                                });
+                            }
+                        }),
+                    cx,
+                ))
+                .when(!auth_is_key, |this| {
+                    this.child(field("Password", editor.password.clone(), cx))
+                })
+                .when(auth_is_key, |this| {
+                    this.child(field(
+                        "Private key",
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(div().flex_1().child(editor.key_path.clone()))
+                            .child(
+                                Button::new("ce-key-browse", "Browse")
+                                    .variant(ButtonVariant::Secondary)
+                                    .size(ButtonSize::Sm)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.pick_key_file(cx);
+                                        cx.notify();
+                                    })),
+                            ),
+                        cx,
+                    ))
+                    .child(field("Passphrase", editor.passphrase.clone(), cx))
+                })
                 .when_some(status, |this, status| {
                     this.child(div().pt_1().child(status))
                 }),

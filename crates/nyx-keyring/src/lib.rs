@@ -13,6 +13,18 @@ use std::sync::Mutex;
 
 use nyx_core::{NyxError, Result};
 
+/// The keychain account for a profile's **password** — the bare profile id, kept
+/// unchanged so credentials stored before key-auth existed still resolve.
+pub fn password_account(profile_id: &str) -> String {
+    profile_id.to_string()
+}
+
+/// The keychain account for a profile's **key passphrase** — namespaced so it
+/// can never clobber the same profile's password entry.
+pub fn passphrase_account(profile_id: &str) -> String {
+    format!("{profile_id}/passphrase")
+}
+
 /// Read/write access to securely stored credentials.
 ///
 /// Secrets are addressed by `(service, account)`. Implementations must not log
@@ -143,6 +155,33 @@ mod tests {
         assert_eq!(store.get_password("nyx", "a").unwrap(), None);
         // Idempotent delete.
         store.delete_password("nyx", "a").unwrap();
+    }
+
+    #[test]
+    fn password_and_passphrase_use_distinct_accounts() {
+        let store = MemoryCredentialStore::new();
+        let id = "profile-1";
+        let pw = password_account(id);
+        let pp = passphrase_account(id);
+        assert_ne!(pw, pp);
+
+        store.set_password("nyx", &pw, "the-password").unwrap();
+        store.set_password("nyx", &pp, "the-passphrase").unwrap();
+        // Neither write clobbers the other.
+        assert_eq!(
+            store.get_password("nyx", &pw).unwrap().as_deref(),
+            Some("the-password")
+        );
+        assert_eq!(
+            store.get_password("nyx", &pp).unwrap().as_deref(),
+            Some("the-passphrase")
+        );
+
+        // Deleting both on profile-delete is idempotent and complete.
+        store.delete_password("nyx", &pw).unwrap();
+        store.delete_password("nyx", &pp).unwrap();
+        assert_eq!(store.get_password("nyx", &pw).unwrap(), None);
+        assert_eq!(store.get_password("nyx", &pp).unwrap(), None);
     }
 
     /// Exercises the real OS keychain — ignored by default (CI has none, and it

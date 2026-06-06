@@ -2,12 +2,14 @@
 //!
 //! The client owns one russh session and one SFTP subsystem channel.
 //!
-//! **Credential discipline:** the password is held only until [`connect`] uses it
-//! and is *never* written to a log or embedded in an error. Auth failures map to
-//! the opaque [`NyxError::Auth`] with no server detail echoed back.
+//! **Credential discipline:** the auth secret (password or key passphrase) is
+//! held only until [`connect`] uses it and is *never* written to a log or
+//! embedded in an error. Auth failures map to the opaque [`NyxError::Auth`] with
+//! no server detail echoed back; an encrypted key with a missing/wrong
+//! passphrase maps to [`NyxError::KeyLocked`] (also credential-free).
 
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -17,7 +19,7 @@ use nyx_core::{
 };
 use russh::client::{self, Handle};
 use russh::keys::ssh_key::PublicKey;
-use russh::keys::HashAlg;
+use russh::keys::{HashAlg, PrivateKeyWithHashAlg};
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::{FileType, StatusCode};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -30,6 +32,24 @@ use crate::host_key::HostKeyPrompt;
 use crate::known_hosts::{KnownHostStatus, KnownHosts};
 use crate::RemoteClient;
 
+/// How a client proves its identity to the server.
+///
+/// The contained secret (the password, or a key's passphrase) is held only until
+/// [`RemoteClient::connect`] consumes it and is never logged. The key *path* is
+/// not a secret.
+pub enum Auth {
+    /// Password authentication.
+    Password(String),
+    /// Public-key authentication with an OpenSSH private key file.
+    Key {
+        /// Path to the private key file.
+        path: PathBuf,
+        /// Passphrase for an encrypted key; `None` (or empty) for an
+        /// unencrypted key.
+        passphrase: Option<String>,
+    },
+}
+
 /// An SFTP client (V1 protocol).
 ///
 /// Construct with [`SftpClient::new`], then drive via the [`RemoteClient`] trait.
@@ -37,8 +57,9 @@ pub struct SftpClient {
     host: String,
     port: u16,
     username: String,
-    /// Held only until [`RemoteClient::connect`] consumes it. Never logged.
-    password: String,
+    /// The chosen auth method + secret. Held only until [`RemoteClient::connect`]
+    /// consumes it, then cleared. Never logged.
+    auth: Auth,
     known_hosts: KnownHosts,
     prompt: Arc<dyn HostKeyPrompt>,
     /// Set by the host-key handler when it rejects a key, so [`connect`] can map
@@ -57,7 +78,7 @@ impl SftpClient {
         host: impl Into<String>,
         port: u16,
         username: impl Into<String>,
-        password: impl Into<String>,
+        auth: Auth,
         known_hosts: KnownHosts,
         prompt: Arc<dyn HostKeyPrompt>,
     ) -> Self {
@@ -65,7 +86,7 @@ impl SftpClient {
             host: host.into(),
             port,
             username: username.into(),
-            password: password.into(),
+            auth,
             known_hosts,
             prompt,
             reject_reason: Arc::new(Mutex::new(None)),
@@ -113,16 +134,26 @@ impl RemoteClient for SftpClient {
                 }
             };
 
-        // Password auth. Never echo the username/password into the error.
-        let result = handle
-            .authenticate_password(&self.username, &self.password)
-            .await
-            .map_err(map_russh_err)?;
+        // Authenticate by the chosen method. Never echo the username or any
+        // secret into an error.
+        let result = match &self.auth {
+            Auth::Password(password) => handle
+                .authenticate_password(&self.username, password)
+                .await
+                .map_err(map_russh_err)?,
+            Auth::Key { path, passphrase } => {
+                let key = load_private_key(path, passphrase.as_deref()).await?;
+                handle
+                    .authenticate_publickey(&self.username, key)
+                    .await
+                    .map_err(map_russh_err)?
+            }
+        };
         if !result.success() {
             return Err(NyxError::Auth);
         }
-        // The password is no longer needed; drop our copy.
-        self.password.clear();
+        // The secret is no longer needed; drop our copy.
+        self.auth = Auth::Password(String::new());
 
         // Open the SFTP subsystem over a session channel.
         let channel = handle.channel_open_session().await.map_err(map_russh_err)?;
@@ -315,6 +346,52 @@ fn map_kind(file_type: FileType) -> EntryKind {
     }
 }
 
+/// Load + decrypt an OpenSSH private key for public-key auth.
+///
+/// The decode (and, for an encrypted key, the bcrypt KDF) is CPU-bound and reads
+/// the file synchronously, so it runs on a blocking thread to avoid stalling the
+/// async runtime. An empty passphrase is treated as "none" (an unencrypted key).
+/// Errors are mapped credential-free by [`map_key_load_err`].
+async fn load_private_key(path: &Path, passphrase: Option<&str>) -> Result<PrivateKeyWithHashAlg> {
+    let path = path.to_path_buf();
+    let passphrase = passphrase.filter(|p| !p.is_empty()).map(str::to_string);
+    let had_passphrase = passphrase.is_some();
+    let key = tokio::task::spawn_blocking(move || {
+        russh::keys::load_secret_key(&path, passphrase.as_deref())
+            .map_err(|err| map_key_load_err(err, &path, had_passphrase))
+    })
+    .await
+    .map_err(|err| NyxError::Other(err.to_string()))??;
+
+    // RSA keys must be signed with a modern hash; the legacy ssh-rsa (SHA-1) is
+    // rejected by current servers. `PrivateKeyWithHashAlg::new` ignores the hash
+    // for non-RSA keys.
+    let hash_alg = key.algorithm().is_rsa().then_some(HashAlg::Sha512);
+    Ok(PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg))
+}
+
+/// Map a private-key load error to a credential-free [`NyxError`].
+///
+/// An encrypted key with a missing or wrong passphrase becomes
+/// [`NyxError::KeyLocked`] so the UI re-prompts; a missing file becomes
+/// [`NyxError::NotFound`] (the path is not a secret). The russh key error
+/// `Display` never contains key bytes, but we still only surface coarse detail.
+fn map_key_load_err(err: russh::keys::Error, path: &Path, had_passphrase: bool) -> NyxError {
+    use russh::keys::Error as KeyError;
+    match err {
+        // Encrypted key, no passphrase supplied.
+        KeyError::KeyIsEncrypted => NyxError::KeyLocked,
+        KeyError::IO(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            NyxError::NotFound(path.display().to_string())
+        }
+        KeyError::IO(e) => NyxError::Io(e.to_string()),
+        // A decode failure once a passphrase *was* supplied is, in practice, a
+        // wrong passphrase — re-prompt rather than claim the server refused us.
+        _ if had_passphrase => NyxError::KeyLocked,
+        other => NyxError::Io(format!("invalid private key: {other}")),
+    }
+}
+
 /// Map a `russh` transport error to [`NyxError`], keeping the message
 /// credential-free (russh errors never contain the password, but stay coarse).
 fn map_russh_err(err: russh::Error) -> NyxError {
@@ -439,6 +516,66 @@ mod tests {
     fn auth_error_has_no_detail() {
         // The opaque auth error must never carry server/credential detail.
         assert_eq!(NyxError::Auth.to_string(), "authentication failed");
+    }
+
+    /// An encrypted Ed25519 key (OpenSSH format); the passphrase is `blabla`.
+    const ENCRYPTED_ED25519: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jYmMAAAAGYmNyeXB0AAAAGAAAABDLGyfA39
+J2FcJygtYqi5ISAAAAEAAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAIN+Wjn4+4Fcvl2Jl
+KpggT+wCRxpSvtqqpVrQrKN1/A22AAAAkOHDLnYZvYS6H9Q3S3Nk4ri3R2jAZlQlBbUos5
+FkHpYgNw65KCWCTXtP7ye2czMC3zjn2r98pJLobsLYQgRiHIv/CUdAdsqbvMPECB+wl/UQ
+e+JpiSq66Z6GIt0801skPh20jxOO3F52SoX1IeO5D5PXfZrfSZlw6S8c7bwyp2FHxDewRx
+7/wNsnDM0T7nLv/Q==
+-----END OPENSSH PRIVATE KEY-----";
+
+    /// An unencrypted Ed25519 key (RFC 8410 PKCS#8 form).
+    const UNENCRYPTED_ED25519: &str = "-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEINTuctv5E1hK1bbY8fdp+K06/nwoy/HU++CXqI9EdVhC
+-----END PRIVATE KEY-----";
+
+    fn key_file(contents: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("id_test");
+        std::fs::write(&path, contents).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn unencrypted_key_loads_without_passphrase() {
+        let (_dir, path) = key_file(UNENCRYPTED_ED25519);
+        assert!(block_on(load_private_key(&path, None)).is_ok());
+    }
+
+    #[test]
+    fn encrypted_key_with_correct_passphrase_loads() {
+        let (_dir, path) = key_file(ENCRYPTED_ED25519);
+        assert!(block_on(load_private_key(&path, Some("blabla"))).is_ok());
+    }
+
+    #[test]
+    fn encrypted_key_with_no_passphrase_is_key_locked() {
+        let (_dir, path) = key_file(ENCRYPTED_ED25519);
+        let err = block_on(load_private_key(&path, None)).unwrap_err();
+        assert!(matches!(err, NyxError::KeyLocked));
+        assert_eq!(err.to_string(), "key requires a passphrase");
+    }
+
+    #[test]
+    fn encrypted_key_with_wrong_passphrase_is_key_locked() {
+        let (_dir, path) = key_file(ENCRYPTED_ED25519);
+        let err = block_on(load_private_key(&path, Some("nope"))).unwrap_err();
+        assert!(matches!(err, NyxError::KeyLocked));
+        // The error must never echo the (wrong) passphrase.
+        assert!(!err.to_string().contains("nope"));
+    }
+
+    #[test]
+    fn missing_key_file_is_not_found() {
+        let path = std::path::Path::new("/no/such/key/id_ed25519");
+        let err = block_on(load_private_key(path, None)).unwrap_err();
+        assert!(matches!(err, NyxError::NotFound(_)));
+        // The path is not a secret, so it is fine to surface.
+        assert!(err.to_string().contains("id_ed25519"));
     }
 
     /// Drive an async future to completion on a minimal current-thread runtime

@@ -34,8 +34,8 @@ use nyx_core::{
     CollisionChoice, NyxError, RemoteEntry, RemotePath, TransferDirection, TransferId,
     TransferStatus,
 };
-use nyx_profile::Profile;
-use nyx_protocol::{KnownHosts, RemoteClient, SftpClient};
+use nyx_profile::{AuthMethod, Profile};
+use nyx_protocol::{Auth, KnownHosts, RemoteClient, SftpClient};
 use nyx_transfer::{CancelOutcome, Started, TransferQueue, TransferSpec};
 use tokio::sync::mpsc::{
     unbounded_channel, UnboundedReceiver as TokioReceiver, UnboundedSender as TokioSender,
@@ -98,14 +98,16 @@ impl fmt::Debug for Secret {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Command {
-    /// Connect to `profile`, authenticating with `password`.
+    /// Connect to `profile`, authenticating with `secret`.
     ///
-    /// The password is wrapped in [`Secret`] so it can never reach a log.
+    /// `secret` is the password or — for key auth — the key passphrase (empty for
+    /// an unencrypted key); the method itself comes from `profile.auth`. It is
+    /// wrapped in [`Secret`] so it can never reach a log.
     Connect {
         /// The profile to connect to.
         profile: Profile,
-        /// The login password (redacted in `Debug`).
-        password: Secret,
+        /// The password or key passphrase (redacted in `Debug`).
+        secret: Secret,
     },
     /// The user's answer to a pending [`Event::HostKeyPrompt`].
     HostKeyDecision {
@@ -157,12 +159,12 @@ pub enum Command {
     ///
     /// Spins up a throwaway client (its own connect + drop), entirely separate
     /// from the stored session, and reports back via [`Event::TestResult`]. The
-    /// password is wrapped in [`Secret`] so it can never reach a log.
+    /// secret is wrapped in [`Secret`] so it can never reach a log.
     TestConnection {
         /// The profile to probe.
         profile: Profile,
-        /// The login password (redacted in `Debug`).
-        password: Secret,
+        /// The password or key passphrase (redacted in `Debug`).
+        secret: Secret,
     },
     /// Cancel a queued or running transfer by id.
     ///
@@ -458,7 +460,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                 let Some(command) = maybe_cmd else { break };
                 match command {
                     Command::Shutdown => break,
-                    Command::Connect { profile, password } => {
+                    Command::Connect { profile, secret } => {
                         if in_flight {
                             let _ = events.unbounded_send(Event::Error {
                                 message: "a connection is already in progress".into(),
@@ -471,13 +473,13 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                         tokio::spawn(run_task(
                             TaskKind::Connect,
                             profile,
-                            password,
+                            secret,
                             events.clone(),
                             register_tx.clone(),
                             done_tx.clone(),
                         ));
                     }
-                    Command::TestConnection { profile, password } => {
+                    Command::TestConnection { profile, secret } => {
                         if in_flight {
                             let _ = events.unbounded_send(Event::TestResult {
                                 profile_id: profile.id,
@@ -490,7 +492,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                         tokio::spawn(run_task(
                             TaskKind::Test,
                             profile,
-                            password,
+                            secret,
                             events.clone(),
                             register_tx.clone(),
                             done_tx.clone(),
@@ -932,7 +934,7 @@ where
 async fn run_task(
     kind: TaskKind,
     profile: Profile,
-    password: Secret,
+    secret: Secret,
     events: FuturesSender<Event>,
     register: TokioSender<oneshot::Sender<bool>>,
     done: TokioSender<TaskOutcome>,
@@ -949,11 +951,23 @@ async fn run_task(
         events: events.clone(),
         register,
     });
+    // Build the auth method from the profile + the carried secret. For key auth
+    // an empty secret means "unencrypted key" (no passphrase).
+    let auth = match &profile.auth {
+        AuthMethod::Password => Auth::Password(secret.expose().to_string()),
+        AuthMethod::Key { path } => {
+            let passphrase = secret.expose();
+            Auth::Key {
+                path: path.clone(),
+                passphrase: (!passphrase.is_empty()).then(|| passphrase.to_string()),
+            }
+        }
+    };
     let mut client = SftpClient::new(
         profile.host.clone(),
         profile.port,
         profile.username.clone(),
-        password.expose().to_string(),
+        auth,
         KnownHosts::at(known_hosts()),
         prompt,
     );

@@ -30,6 +30,13 @@ pub enum NyxError {
     #[error("host key verification failed: {0}")]
     HostKey(String),
 
+    /// A private key file is encrypted and the supplied passphrase was missing
+    /// or wrong. Distinct from [`Auth`](Self::Auth) so the UI can re-prompt for
+    /// the passphrase rather than report a server rejection. Never carries the
+    /// passphrase or any key material.
+    #[error("key requires a passphrase")]
+    KeyLocked,
+
     /// A filesystem / transport I/O error occurred.
     #[error("i/o error: {0}")]
     Io(String),
