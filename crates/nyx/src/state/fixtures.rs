@@ -1,20 +1,18 @@
 // Copyright 2026 vojir-mikulas
 // SPDX-License-Identifier: Apache-2.0
 
-//! In-memory fake data for M1.
+//! In-memory fake data.
 //!
-//! These stand in for the backend until M2 wires real `DirListing` /
-//! `TransferProgress` events. The shapes match what the service will emit, so
-//! the derived getters (`visible_entries`, `dock_rows`) need no change later —
-//! only the *source* swaps.
+//! M2 wired the file browser to real `DirListing` events, so the directory
+//! fixture is gone — connections and transfers stay synthetic until M3
+//! (profiles) and M5 (live transfer queue) respectively. The shapes still match
+//! what the service emits, so the derived getters need no change when the source
+//! swaps.
 
-use gpui::SharedString;
-use nyx_core::{
-    EntryKind, Protocol, RemoteEntry, Transfer, TransferDirection, TransferId, TransferStatus,
-};
+use nyx_core::{Protocol, Transfer, TransferDirection, TransferId, TransferStatus};
 use nyx_profile::Profile;
 
-use super::models::{ymd_hm, AccentKind, ConnectionVm, EntryRow, TransferVm};
+use super::models::{AccentKind, ConnectionVm, TransferVm};
 
 /// The saved + recent connection profiles shown in the sidebar and welcome.
 pub fn fake_connections() -> Vec<ConnectionVm> {
@@ -96,129 +94,6 @@ pub fn fake_connections() -> Vec<ConnectionVm> {
             is_recent: false,
         },
     ]
-}
-
-/// Build a file entry.
-fn file(name: &str, size: u64, perms: &str, modified: (i64, u32, u32, u32, u32)) -> RemoteEntry {
-    let (y, mo, d, h, mi) = modified;
-    RemoteEntry {
-        name: name.to_string(),
-        size,
-        kind: EntryKind::File,
-        modified: Some(ymd_hm(y, mo, d, h, mi)),
-        perms: perms.to_string(),
-        is_dir: false,
-    }
-}
-
-/// Build a directory entry.
-fn dir(name: &str, modified: (i64, u32, u32, u32, u32)) -> RemoteEntry {
-    let (y, mo, d, h, mi) = modified;
-    RemoteEntry {
-        name: name.to_string(),
-        size: 0,
-        kind: EntryKind::Directory,
-        modified: Some(ymd_hm(y, mo, d, h, mi)),
-        perms: "rwxr-xr-x".to_string(),
-        is_dir: true,
-    }
-}
-
-/// A canned listing for the current working directory.
-///
-/// Known paths return believable contents; unknown paths return empty (so deep
-/// navigation gracefully shows the empty state). M2 replaces this with real
-/// `DirListing` events keyed by the same path segments.
-pub fn fake_listing(cwd: &[SharedString]) -> Vec<EntryRow> {
-    let path: Vec<&str> = cwd.iter().map(|s| s.as_ref()).collect();
-    let entries = match path.as_slice() {
-        [] => vec![
-            dir("var", (2026, 5, 12, 9, 14)),
-            dir("home", (2026, 5, 2, 12, 0)),
-            dir("etc", (2026, 4, 18, 8, 0)),
-            dir("opt", (2026, 3, 1, 10, 30)),
-            dir("srv", (2026, 5, 28, 14, 2)),
-            file("deploy.sh", 2204, "rwxr-xr-x", (2026, 5, 28, 11, 0)),
-            file("docker-compose.yml", 1842, "rw-r--r--", (2026, 6, 1, 8, 31)),
-            file("nginx.conf", 2841, "rw-r--r--", (2026, 5, 28, 11, 10)),
-            file(".env.production", 488, "rw-------", (2026, 6, 1, 8, 31)),
-            file("README.md", 4821, "rw-r--r--", (2026, 6, 2, 12, 1)),
-            file(
-                "backup.tar.gz",
-                482_220_114,
-                "rw-r--r--",
-                (2026, 6, 4, 3, 0),
-            ),
-            file("access.log", 188_223_101, "rw-r--r--", (2026, 6, 5, 18, 0)),
-            file("favicon.ico", 15022, "rw-r--r--", (2026, 1, 2, 0, 0)),
-            file("hero-2026.webp", 442_112, "rw-r--r--", (2026, 6, 5, 16, 20)),
-            file(
-                "demo-loop.mp4",
-                28_442_119,
-                "rw-r--r--",
-                (2026, 5, 30, 12, 0),
-            ),
-            file("export-may.csv", 5_520_011, "rw-r--r--", (2026, 6, 1, 3, 0)),
-            file("package.json", 1842, "rw-r--r--", (2026, 6, 4, 22, 8)),
-            file("styles.7be2.css", 64120, "rw-r--r--", (2026, 6, 4, 22, 9)),
-        ],
-        ["var"] => vec![
-            dir("www", (2026, 6, 4, 22, 10)),
-            dir("log", (2026, 6, 5, 18, 0)),
-            dir("lib", (2026, 4, 11, 9, 0)),
-            dir("cache", (2026, 6, 5, 17, 30)),
-        ],
-        ["var", "www"] => vec![
-            dir("nyx-app", (2026, 6, 4, 22, 10)),
-            dir("html", (2026, 5, 20, 10, 0)),
-            file("index.html", 4213, "rw-r--r--", (2026, 6, 4, 22, 9)),
-            file("robots.txt", 112, "rw-r--r--", (2026, 5, 20, 10, 0)),
-        ],
-        ["var", "www", "nyx-app"] => vec![
-            dir("current", (2026, 6, 4, 22, 9)),
-            dir("releases", (2026, 6, 4, 22, 9)),
-            dir("shared", (2026, 5, 31, 9, 33)),
-        ],
-        ["var", "www", "nyx-app", "current"] => vec![
-            dir("dist", (2026, 6, 4, 22, 9)),
-            file("package.json", 1842, "rw-r--r--", (2026, 6, 4, 22, 8)),
-            file(
-                "ecosystem.config.js",
-                612,
-                "rw-r--r--",
-                (2026, 5, 28, 11, 2),
-            ),
-            file(".env.production", 488, "rw-------", (2026, 6, 1, 8, 31)),
-        ],
-        ["var", "www", "nyx-app", "current", "dist"] => vec![
-            file("index.html", 4213, "rw-r--r--", (2026, 6, 4, 22, 9)),
-            file("app.4f9c1a.js", 882_441, "rw-r--r--", (2026, 6, 4, 22, 9)),
-            file(
-                "app.4f9c1a.js.map",
-                2_310_558,
-                "rw-r--r--",
-                (2026, 6, 4, 22, 9),
-            ),
-            file(
-                "vendor.aa31.js",
-                1_442_098,
-                "rw-r--r--",
-                (2026, 6, 4, 22, 9),
-            ),
-            file("styles.7be2.css", 64120, "rw-r--r--", (2026, 6, 4, 22, 9)),
-        ],
-        ["home"] => vec![
-            dir("deploy", (2026, 6, 4, 22, 10)),
-            dir("admin", (2026, 5, 2, 12, 0)),
-        ],
-        ["etc"] => vec![
-            dir("nginx", (2026, 5, 28, 11, 10)),
-            file("hosts", 412, "rw-r--r--", (2026, 4, 18, 8, 0)),
-            file("fstab", 821, "rw-r--r--", (2026, 1, 14, 10, 0)),
-        ],
-        _ => vec![],
-    };
-    entries.into_iter().map(EntryRow::new).collect()
 }
 
 /// The seed transfers shown in the dock — a spread across every status and both

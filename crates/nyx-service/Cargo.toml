@@ -10,7 +10,10 @@ authors.workspace = true
 
 [dependencies]
 nyx-core.workspace = true
+nyx-profile.workspace = true
 nyx-protocol.workspace = true
 nyx-transfer.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
+futures.workspace = true
+async-trait.workspace = true
 tracing.workspace = true

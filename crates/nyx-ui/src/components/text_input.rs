@@ -67,7 +67,12 @@ pub struct TextInput {
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
+    obscured: bool,
 }
+
+/// The glyph each character is shown as in an [obscured](TextInput::obscured)
+/// field, and its UTF-8 length (used to map content offsets to display offsets).
+const OBSCURE_GLYPH: &str = "•";
 
 impl TextInput {
     /// Create an empty input. Use [`with_placeholder`](Self::with_placeholder)
@@ -83,12 +88,21 @@ impl TextInput {
             last_layout: None,
             last_bounds: None,
             is_selecting: false,
+            obscured: false,
         }
     }
 
     /// Builder: set the placeholder shown while empty.
     pub fn with_placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
         self.placeholder = placeholder.into();
+        self
+    }
+
+    /// Builder: obscure the field, rendering each character as a bullet (for
+    /// password entry). The real value is still returned by [`content`](Self::content);
+    /// only the on-screen glyphs are masked.
+    pub fn obscured(mut self) -> Self {
+        self.obscured = true;
         self
     }
 
@@ -266,6 +280,12 @@ impl TextInput {
     fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
         if self.content.is_empty() {
             return 0;
+        }
+        // An obscured field shapes bullets, not the real text, so a hit-test on
+        // the layout would yield offsets that don't line up with `content` (and
+        // could split a multi-byte grapheme). Just place the cursor at the end.
+        if self.obscured {
+            return self.content.len();
         }
         let (Some(bounds), Some(line)) = (self.last_bounds.as_ref(), self.last_layout.as_ref())
         else {
@@ -526,12 +546,35 @@ impl Element for TextElement {
         let content = input.content.clone();
         let selected_range = input.selected_range.clone();
         let cursor = input.cursor_offset();
+        let obscured = input.obscured;
+        let marked_range = input.marked_range.clone();
         let style = window.text_style();
 
-        let (display_text, text_color) = if content.is_empty() {
+        let is_placeholder = content.is_empty();
+        let (display_text, text_color) = if is_placeholder {
             (input.placeholder.clone(), placeholder_color)
+        } else if obscured {
+            // Mask each grapheme with a bullet; offsets are remapped below so the
+            // cursor and selection still land in the right place.
+            let count = content.graphemes(true).count();
+            (SharedString::from(OBSCURE_GLYPH.repeat(count)), style.color)
         } else {
-            (content, style.color)
+            (content.clone(), style.color)
+        };
+
+        // Map a content byte offset to the matching offset in `display_text`.
+        let map_offset = |offset: usize| -> usize {
+            if is_placeholder {
+                0
+            } else if obscured {
+                let graphemes_before = content
+                    .grapheme_indices(true)
+                    .take_while(|(idx, _)| *idx < offset)
+                    .count();
+                graphemes_before * OBSCURE_GLYPH.len()
+            } else {
+                offset
+            }
         };
 
         let run = TextRun {
@@ -542,8 +585,9 @@ impl Element for TextElement {
             underline: None,
             strikethrough: None,
         };
-        let runs = if let Some(marked_range) = input.marked_range.as_ref() {
-            vec![
+        // IME marked-text styling only applies to a plain (non-obscured) field.
+        let runs = match marked_range.as_ref() {
+            Some(marked_range) if !obscured && !is_placeholder => vec![
                 TextRun {
                     len: marked_range.start,
                     ..run.clone()
@@ -564,9 +608,8 @@ impl Element for TextElement {
             ]
             .into_iter()
             .filter(|run| run.len > 0)
-            .collect()
-        } else {
-            vec![run]
+            .collect(),
+            _ => vec![run],
         };
 
         let font_size = style.font_size.to_pixels(window.rem_size());
@@ -574,7 +617,7 @@ impl Element for TextElement {
             .text_system()
             .shape_line(display_text, font_size, &runs, None);
 
-        let cursor_pos = line.x_for_index(cursor);
+        let cursor_pos = line.x_for_index(map_offset(cursor));
         let (selection, cursor) = if selected_range.is_empty() {
             (
                 None,
@@ -591,11 +634,11 @@ impl Element for TextElement {
                 Some(fill(
                     Bounds::from_corners(
                         point(
-                            bounds.left() + line.x_for_index(selected_range.start),
+                            bounds.left() + line.x_for_index(map_offset(selected_range.start)),
                             bounds.top(),
                         ),
                         point(
-                            bounds.left() + line.x_for_index(selected_range.end),
+                            bounds.left() + line.x_for_index(map_offset(selected_range.end)),
                             bounds.bottom(),
                         ),
                     ),

@@ -20,6 +20,16 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "137e677a
 
 # --- Async / backend ---
 tokio = { version = "1", default-features = false }
+# Channels/streams for the Tokio↔GPUI bridge: the service→UI `Event` side is a
+# `futures::channel::mpsc` so the GPUI foreground executor can `await` it as a
+# `Stream` inside `cx.spawn` (a blocking `std` recv there would freeze the UI).
+futures = { version = "0.3", default-features = false, features = ["std"] }
+
+# --- SFTP (V1 protocol) ---
+# `russh` is the pure-Rust SSH transport; `russh-sftp` rides the SFTP subsystem
+# over a russh channel. Both are Tokio-based and live behind `RemoteClient`.
+russh = "0.61"
+russh-sftp = "2.3"
 
 # --- Serialization ---
 serde = { version = "1", features = ["derive"] }
@@ -33,6 +43,8 @@ async-trait = "0.1"
 
 # --- Logging / tracing ---
 tracing = "0.1"
+# App-edge log init (the binary only; libraries stay subscriber-agnostic).
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # --- Embedded assets (fonts + icons baked into the app binary) ---
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }

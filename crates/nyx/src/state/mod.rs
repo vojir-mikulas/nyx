@@ -17,8 +17,10 @@ pub mod models;
 use std::collections::HashSet;
 use std::time::Duration;
 
+use futures::StreamExt;
 use gpui::{prelude::*, App, Context, Entity, SharedString};
 use nyx_core::TransferStatus;
+use nyx_service::{Command, Event, Secret, ServiceHandle};
 use nyx_ui::{TextInput, ToastVariant};
 
 use models::{ConnectionVm, Density, DockTab, EntryRow, SortKey, TransferVm};
@@ -40,6 +42,30 @@ pub struct ToastMsg {
     pub variant: ToastVariant,
     /// Monotonic id so a stale auto-dismiss does not clear a newer toast.
     pub id: u64,
+}
+
+/// The password prompt shown before a connection is attempted (M2).
+///
+/// M3 replaces this with a keyring lookup that only prompts on a miss; the
+/// password is read straight out of the masked input into the `Connect` command
+/// and never stored on `AppState`.
+pub struct PasswordPrompt {
+    /// The profile being connected to.
+    pub profile_id: String,
+    /// Display name (modal title).
+    pub profile_name: SharedString,
+    /// `user@host:port` shown under the title.
+    pub host_label: SharedString,
+    /// The masked password field.
+    pub input: Entity<TextInput>,
+}
+
+/// A pending host-key trust-on-first-use prompt (an unknown key was presented).
+pub struct HostKeyPrompt {
+    /// The host the key belongs to.
+    pub host: SharedString,
+    /// The SHA-256 fingerprint, e.g. `SHA256:…`.
+    pub fingerprint: SharedString,
 }
 
 /// The whole application's mutable state.
@@ -90,6 +116,18 @@ pub struct AppState {
     pub toast: Option<ToastMsg>,
     /// Monotonic toast id source.
     next_toast_id: u64,
+
+    // --- backend bridge (M2) ---
+    /// Handle to the backend thread (dropped on app exit → graceful shutdown).
+    service: ServiceHandle,
+    /// The profile id of an in-flight connection attempt, if any.
+    pub connecting_id: Option<String>,
+    /// A pending password prompt (shown before connecting).
+    pub password_prompt: Option<PasswordPrompt>,
+    /// A pending host-key trust prompt (unknown key).
+    pub host_key_prompt: Option<HostKeyPrompt>,
+    /// Whether a directory listing is in flight (drives the loading hint).
+    pub listing_loading: bool,
 }
 
 impl AppState {
@@ -98,6 +136,23 @@ impl AppState {
         let filter = cx.new(|cx| TextInput::new(cx).with_placeholder("Filter this folder…"));
         // Re-render whenever the filter text changes.
         cx.observe(&filter, |_, _, cx| cx.notify()).detach();
+
+        // Spawn the backend thread and drain its events into this entity. The
+        // drain runs on the GPUI foreground executor: `next().await` yields, so it
+        // never blocks the UI. This is the single Tokio↔GPUI bridge (M2); later
+        // milestones only add event variants, never another bridge.
+        let (service, mut events) = nyx_service::spawn();
+        cx.spawn(async move |this, cx| {
+            while let Some(event) = events.next().await {
+                if this
+                    .update(cx, |state, cx| state.apply_event(event, cx))
+                    .is_err()
+                {
+                    break; // entity gone → app is closing
+                }
+            }
+        })
+        .detach();
 
         Self {
             view: View::Welcome,
@@ -120,6 +175,11 @@ impl AppState {
             show_perms: true,
             toast: None,
             next_toast_id: 0,
+            service,
+            connecting_id: None,
+            password_prompt: None,
+            host_key_prompt: None,
+            listing_loading: false,
         }
     }
 
@@ -136,21 +196,131 @@ impl AppState {
         self.connections.iter().find(|c| c.profile.id == id)
     }
 
-    /// Open a connection in the browser (the M2 `Connect` seam).
+    /// Begin opening a connection: show the password prompt.
+    ///
+    /// The actual `Connect` command is sent from [`confirm_password`](Self::confirm_password)
+    /// once the user supplies a secret. M3 swaps the prompt for a keyring lookup.
     pub fn open_connection(&mut self, id: &str, cx: &mut Context<Self>) {
         let Some(conn) = self.connections.iter().find(|c| c.profile.id == id) else {
             return;
         };
-        let name = conn.profile.name.clone();
-        let root = conn
-            .profile
-            .remote_path
-            .as_deref()
+        let profile_name = conn.profile.name.clone();
+        let host_label = conn.user_host_port();
+        let input = cx.new(|cx| TextInput::new(cx).with_placeholder("Password").obscured());
+        self.password_prompt = Some(PasswordPrompt {
+            profile_id: id.to_string(),
+            profile_name: profile_name.into(),
+            host_label: host_label.into(),
+            input,
+        });
+    }
+
+    /// Submit the password prompt: send a `Connect` command to the backend.
+    pub fn confirm_password(&mut self, cx: &mut Context<Self>) {
+        let Some(prompt) = self.password_prompt.take() else {
+            return;
+        };
+        let password = prompt.input.read(cx).content().to_string();
+        let Some(conn) = self
+            .connections
+            .iter()
+            .find(|c| c.profile.id == prompt.profile_id)
+        else {
+            return;
+        };
+        let profile = conn.profile.clone();
+        self.connecting_id = Some(prompt.profile_id.clone());
+        let sent = self.service.send(Command::Connect {
+            profile,
+            password: Secret::new(password),
+        });
+        if !sent {
+            self.connecting_id = None;
+            self.push_toast("Backend unavailable", ToastVariant::Error, cx);
+        }
+    }
+
+    /// Dismiss the password prompt without connecting.
+    pub fn cancel_password(&mut self) {
+        self.password_prompt = None;
+    }
+
+    /// Trust the pending host key and continue connecting.
+    pub fn trust_host_key(&mut self) {
+        self.host_key_prompt = None;
+        self.service.send(Command::HostKeyDecision { accept: true });
+    }
+
+    /// Reject the pending host key and abort the connection.
+    pub fn reject_host_key(&mut self) {
+        self.host_key_prompt = None;
+        self.service
+            .send(Command::HostKeyDecision { accept: false });
+    }
+
+    /// Close the active connection and return to the welcome screen.
+    pub fn disconnect(&mut self) {
+        self.service.send(Command::Disconnect);
+        self.active_id = None;
+        self.online_id = None;
+        self.connecting_id = None;
+        self.view = View::Welcome;
+        self.transfers.clear();
+        self.listing.clear();
+        self.selected.clear();
+        self.listing_loading = false;
+    }
+
+    /// Apply a backend [`Event`] to the state and request a redraw. This is the
+    /// single sink for everything the service emits (see [`AppState::new`]).
+    fn apply_event(&mut self, event: Event, cx: &mut Context<Self>) {
+        match event {
+            Event::Connecting { profile_id } => {
+                self.connecting_id = Some(profile_id);
+            }
+            Event::HostKeyPrompt { host, fingerprint } => {
+                self.host_key_prompt = Some(HostKeyPrompt {
+                    host: host.into(),
+                    fingerprint: fingerprint.into(),
+                });
+            }
+            Event::Connected { profile_id } => {
+                self.host_key_prompt = None;
+                self.enter_browser(profile_id, cx);
+            }
+            Event::DirListing { path, entries } => {
+                // Drop a listing for a directory we've since navigated away from.
+                if path == self.current_path() {
+                    self.listing = entries.into_iter().map(EntryRow::new).collect();
+                    self.listing_loading = false;
+                }
+            }
+            Event::Error { message } => {
+                self.host_key_prompt = None;
+                self.connecting_id = None;
+                self.listing_loading = false;
+                self.push_toast(message, ToastVariant::Error, cx);
+            }
+            // Lifecycle pings (and any future variants) need no UI change.
+            Event::Ready | Event::Stopped => {}
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    /// Enter the browser for a freshly-connected profile and list its root.
+    fn enter_browser(&mut self, profile_id: String, cx: &mut Context<Self>) {
+        let root = self
+            .connections
+            .iter()
+            .find(|c| c.profile.id == profile_id)
+            .and_then(|c| c.profile.remote_path.as_deref())
             .map(path_segments)
             .unwrap_or_default();
 
-        self.active_id = Some(id.to_string());
-        self.online_id = Some(id.to_string());
+        self.active_id = Some(profile_id.clone());
+        self.online_id = Some(profile_id.clone());
+        self.connecting_id = None;
         self.view = View::Browse;
         self.cwd = root.clone();
         self.history = vec![root];
@@ -159,31 +329,43 @@ impl AppState {
         self.filter
             .update(cx, |input, cx| input.set_content("", cx));
         self.dock_open = true;
-        // Seed the dock with believable in-flight transfers for the prod box.
-        self.transfers = if id == "prod" {
+        // Transfers are still fixtures until M5; seed the prod box's dock.
+        self.transfers = if profile_id == "prod" {
             fixtures::fake_transfers()
         } else {
             Vec::new()
         };
-        self.reload_listing();
-        self.push_toast(format!("Connected to {name}"), ToastVariant::Success, cx);
-    }
-
-    /// Close the active connection and return to the welcome screen.
-    pub fn disconnect(&mut self) {
-        self.active_id = None;
-        self.online_id = None;
-        self.view = View::Welcome;
-        self.transfers.clear();
-        self.listing.clear();
-        self.selected.clear();
+        self.reload_listing(cx);
     }
 
     // --- navigation -------------------------------------------------------
 
-    /// Reload the listing for the current `cwd` from fixtures.
-    fn reload_listing(&mut self) {
-        self.listing = fixtures::fake_listing(&self.cwd);
+    /// The current working directory as an absolute remote path (`"/"` at root).
+    fn current_path(&self) -> String {
+        if self.cwd.is_empty() {
+            "/".to_string()
+        } else {
+            let joined = self
+                .cwd
+                .iter()
+                .map(|s| s.as_ref())
+                .collect::<Vec<_>>()
+                .join("/");
+            format!("/{joined}")
+        }
+    }
+
+    /// Request a listing for the current `cwd` from the backend. The result
+    /// arrives asynchronously as an [`Event::DirListing`].
+    fn reload_listing(&mut self, cx: &mut Context<Self>) {
+        self.listing.clear();
+        self.listing_loading = true;
+        if !self.service.send(Command::ListDir {
+            path: self.current_path(),
+        }) {
+            self.listing_loading = false;
+            self.push_toast("Backend unavailable", ToastVariant::Error, cx);
+        }
     }
 
     /// Navigate to a path, optionally pushing onto the history stack.
@@ -197,7 +379,7 @@ impl AppState {
             self.history.push(segs);
             self.history_ix = self.history.len() - 1;
         }
-        self.reload_listing();
+        self.reload_listing(cx);
     }
 
     /// Open a child directory by name.
@@ -254,8 +436,7 @@ impl AppState {
 
     /// Refresh the current listing.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        self.reload_listing();
-        self.push_toast("Directory refreshed", ToastVariant::Info, cx);
+        self.reload_listing(cx);
     }
 
     // --- sort / filter / selection ---------------------------------------

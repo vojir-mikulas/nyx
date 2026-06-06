@@ -339,7 +339,13 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
     let view = cx.entity();
 
     let body: gpui::AnyElement = if is_empty {
-        empty_state(filter_active, &state.filter_text(cx), cx).into_any_element()
+        empty_state(
+            state.listing_loading,
+            filter_active,
+            &state.filter_text(cx),
+            cx,
+        )
+        .into_any_element()
     } else {
         Table::new("files", columns)
             .row_count(rows.len())
@@ -445,12 +451,19 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
         .child(body)
 }
 
-fn empty_state(filter_active: bool, filter: &str, cx: &Context<AppState>) -> impl IntoElement {
+fn empty_state(
+    loading: bool,
+    filter_active: bool,
+    filter: &str,
+    cx: &Context<AppState>,
+) -> impl IntoElement {
     let theme = cx.theme().clone();
-    let label = if filter_active {
-        format!("No matches for “{}”", filter.trim())
+    let (glyph, label) = if loading {
+        ("refresh", "Loading…".to_string())
+    } else if filter_active {
+        ("folderOpen", format!("No matches for “{}”", filter.trim()))
     } else {
-        "This folder is empty".to_string()
+        ("folderOpen", "This folder is empty".to_string())
     };
     div()
         .flex_1()
@@ -460,11 +473,7 @@ fn empty_state(filter_active: bool, filter: &str, cx: &Context<AppState>) -> imp
         .justify_center()
         .gap_1p5()
         .text_color(theme.text_dim)
-        .child(
-            div()
-                .opacity(0.5)
-                .child(icon("folderOpen", 26., theme.text_dim)),
-        )
+        .child(div().opacity(0.5).child(icon(glyph, 26., theme.text_dim)))
         .child(
             div()
                 .font_family(crate::assets::FONT_MONO)

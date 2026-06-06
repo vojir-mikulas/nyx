@@ -8,7 +8,8 @@
 use gpui::{div, prelude::*, px, Context, FontWeight, Window};
 use nyx_ui::{ActiveTheme, Button, ButtonVariant, Modal, Segmented, Theme, Toast, Toggle};
 
-use crate::assets::FONT_UI;
+use crate::assets::{FONT_MONO, FONT_UI};
+use crate::icon::icon;
 use crate::state::models::Density;
 use crate::state::{AppState, View};
 use crate::views;
@@ -63,6 +64,20 @@ impl Render for AppState {
                 let modal = tweaks_modal(self, cx);
                 this.child(modal)
             })
+            // Backend-driven overlays (M2): the connecting indicator sits under
+            // the prompts, which are mutually exclusive in practice.
+            .when(
+                self.connecting_id.is_some()
+                    && self.host_key_prompt.is_none()
+                    && self.password_prompt.is_none(),
+                |this| this.child(connecting_overlay(self, cx)),
+            )
+            .when(self.password_prompt.is_some(), |this| {
+                this.child(password_modal(self, cx))
+            })
+            .when(self.host_key_prompt.is_some(), |this| {
+                this.child(host_key_modal(self, cx))
+            })
             .when_some(self.toast.as_ref(), |this, toast| {
                 this.child(
                     div()
@@ -76,6 +91,183 @@ impl Render for AppState {
                 )
             })
     }
+}
+
+/// The password prompt shown before a connection is attempted (M2). M3 replaces
+/// this with a keyring lookup that only prompts on a miss.
+fn password_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    let theme = cx.theme().clone();
+    let view = cx.entity();
+    // Caller guards `password_prompt.is_some()`.
+    let prompt = state.password_prompt.as_ref().expect("password prompt set");
+
+    Modal::new("password")
+        .title(format!("Connect to {}", prompt.profile_name))
+        .width(px(420.))
+        .on_close({
+            let view = view.clone();
+            move |_window, cx| {
+                view.update(cx, |this, cx| {
+                    this.cancel_password();
+                    cx.notify();
+                });
+            }
+        })
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(
+                    div()
+                        .text_xs()
+                        .font_family(FONT_MONO)
+                        .text_color(theme.text_faint)
+                        .child(prompt.host_label.clone()),
+                )
+                .child(prompt.input.clone()),
+        )
+        .footer(
+            div()
+                .flex()
+                .w_full()
+                .justify_end()
+                .gap_2()
+                .child(
+                    Button::new("pw-cancel", "Cancel")
+                        .variant(ButtonVariant::Secondary)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.cancel_password();
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("pw-connect", "Connect")
+                        .variant(ButtonVariant::Primary)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.confirm_password(cx);
+                            cx.notify();
+                        })),
+                ),
+        )
+}
+
+/// The host-key trust-on-first-use prompt (an unknown key was presented). A
+/// mismatch never reaches here — it is rejected outright and surfaced as a toast.
+fn host_key_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    let theme = cx.theme().clone();
+    let view = cx.entity();
+    let prompt = state.host_key_prompt.as_ref().expect("host-key prompt set");
+
+    Modal::new("host-key")
+        .title("Verify host key")
+        .width(px(470.))
+        .on_close({
+            // Dismissing the prompt is a rejection.
+            let view = view.clone();
+            move |_window, cx| {
+                view.update(cx, |this, cx| {
+                    this.reject_host_key();
+                    cx.notify();
+                });
+            }
+        })
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(div().text_sm().text_color(theme.text_muted).child(format!(
+                    "The authenticity of host “{}” can't be established.",
+                    prompt.host
+                )))
+                .child(
+                    div()
+                        .p_3()
+                        .rounded(theme.radius)
+                        .bg(theme.bg_input)
+                        .border_1()
+                        .border_color(theme.border)
+                        .font_family(FONT_MONO)
+                        .text_xs()
+                        .text_color(theme.text)
+                        .child(prompt.fingerprint.clone()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.text_faint)
+                        .child("Trust this key and continue? It will be saved to known_hosts."),
+                ),
+        )
+        .footer(
+            div()
+                .flex()
+                .w_full()
+                .justify_end()
+                .gap_2()
+                .child(
+                    Button::new("hk-reject", "Reject")
+                        .variant(ButtonVariant::Secondary)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.reject_host_key();
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("hk-trust", "Trust & connect")
+                        .variant(ButtonVariant::Primary)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.trust_host_key();
+                            cx.notify();
+                        })),
+                ),
+        )
+}
+
+/// A lightweight "connecting…" overlay (full spinner polish is M6).
+fn connecting_overlay(state: &AppState, cx: &Context<AppState>) -> impl IntoElement {
+    let theme = cx.theme().clone();
+    let name = state
+        .connecting_id
+        .as_deref()
+        .and_then(|id| state.connections.iter().find(|c| c.profile.id == id))
+        .map(|c| c.profile.name.clone())
+        .unwrap_or_default();
+
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(gpui::black().opacity(0.55))
+        .occlude()
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap_3()
+                .px_8()
+                .py_6()
+                .rounded(px(10.))
+                .bg(theme.bg_elevated)
+                .border_1()
+                .border_color(theme.border_strong)
+                .shadow_lg()
+                .child(
+                    div()
+                        .text_color(theme.accent)
+                        .child(icon("zap", 24., theme.accent)),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme.text)
+                        .child(format!("Connecting to {name}…")),
+                ),
+        )
 }
 
 /// The in-memory tweaks modal (density, permissions column, theme).

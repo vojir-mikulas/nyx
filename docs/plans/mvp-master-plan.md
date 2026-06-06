@@ -75,6 +75,8 @@ data; sorting/filtering/tab-switching work locally; clippy + fmt clean.
 
 ## M2 — SFTP vertical slice: connect + list
 
+> **Detailed breakdown:** [`mvp-m2-sftp-connect-list.md`](./mvp-m2-sftp-connect-list.md).
+
 The key risk-retirement milestone: prove the **Tokio↔GPUI channel bridge** and
 the **`russh` API** end-to-end by listing one real remote directory.
 

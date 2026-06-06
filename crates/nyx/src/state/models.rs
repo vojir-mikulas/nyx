@@ -9,7 +9,7 @@
 //! speed/error). The derived display strings (size, date, type label) are
 //! computed here from the domain type, never stored on it.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{Hsla, SharedString};
 use nyx_core::{Protocol, RemoteEntry, Transfer, TransferStatus};
@@ -295,25 +295,6 @@ pub fn fmt_modified(time: Option<SystemTime>) -> String {
     let hh = tod / 3600;
     let mm = (tod % 3600) / 60;
     format!("{} {day:>2}  {hh:02}:{mm:02}", MONTHS[(month - 1) as usize])
-}
-
-/// Build a `SystemTime` from a civil date — used by fixtures so the date path is
-/// exercised end-to-end (string → `SystemTime` → derived display).
-pub fn ymd_hm(year: i64, month: u32, day: u32, hour: u32, minute: u32) -> SystemTime {
-    let days = days_from_civil(year, month, day);
-    let secs = days * 86_400 + (hour as i64) * 3600 + (minute as i64) * 60;
-    UNIX_EPOCH + Duration::from_secs(secs as u64)
-}
-
-/// Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm).
-fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400; // [0, 399]
-    let m = month as i64;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + day as i64 - 1; // [0, 365]
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
-    era * 146_097 + doe - 719_468
 }
 
 /// Civil date (year, month 1-12, day 1-31) from days since 1970-01-01.

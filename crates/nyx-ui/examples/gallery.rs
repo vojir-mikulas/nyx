@@ -27,6 +27,7 @@ const ROWS: &[(&str, &str, &str)] = &[
 struct Gallery {
     name_input: Entity<TextInput>,
     host_input: Entity<TextInput>,
+    password_input: Entity<TextInput>,
     tab: usize,
     modal_open: bool,
     selected_row: Option<usize>,
@@ -40,6 +41,7 @@ impl Gallery {
         Self {
             name_input: cx.new(|cx| TextInput::new(cx).with_content("Production")),
             host_input: cx.new(|cx| TextInput::new(cx).with_placeholder("sftp.example.com")),
+            password_input: cx.new(|cx| TextInput::new(cx).with_placeholder("password").obscured()),
             tab: 0,
             modal_open: false,
             selected_row: Some(2),
@@ -134,6 +136,7 @@ impl Gallery {
             .items_center()
             .child(div().w(gpui::px(200.)).child(self.name_input.clone()))
             .child(div().w(gpui::px(240.)).child(self.host_input.clone()))
+            .child(div().w(gpui::px(160.)).child(self.password_input.clone()))
     }
 
     fn progress(&self, cx: &App) -> impl IntoElement {

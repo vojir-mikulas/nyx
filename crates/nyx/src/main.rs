@@ -23,6 +23,7 @@ use crate::assets::Assets;
 use crate::state::AppState;
 
 fn main() {
+    init_tracing();
     application().with_assets(Assets).run(|cx: &mut App| {
         cx.set_global(Theme::one_dark());
         if let Err(err) = Assets::load_fonts(cx) {
@@ -50,4 +51,18 @@ fn main() {
 
         cx.activate(true);
     });
+}
+
+/// Initialise `tracing` at the app edge.
+///
+/// Logs go to stderr; the level is `RUST_LOG` or `info` by default. Credentials
+/// never reach a log line — the backend redacts passwords in `Debug` and maps
+/// errors to credential-free messages (see `nyx-service`).
+fn init_tracing() {
+    use tracing_subscriber::EnvFilter;
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
 }

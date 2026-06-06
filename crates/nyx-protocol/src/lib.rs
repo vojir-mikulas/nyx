@@ -15,8 +15,12 @@ use std::path::Path;
 use async_trait::async_trait;
 use nyx_core::{RemoteEntry, Result};
 
+mod host_key;
+mod known_hosts;
 mod sftp;
 
+pub use host_key::HostKeyPrompt;
+pub use known_hosts::{KnownHostStatus, KnownHosts};
 pub use sftp::SftpClient;
 
 /// An async client for a remote filesystem.
