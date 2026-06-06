@@ -33,6 +33,7 @@ const FONT_FILES: &[&str] = &[
 #[folder = "$CARGO_MANIFEST_DIR/../../assets"]
 #[include = "fonts/*"]
 #[include = "icons/*"]
+#[include = "*.svg"]
 pub struct Assets;
 
 impl AssetSource for Assets {

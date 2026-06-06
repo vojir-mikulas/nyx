@@ -1,6 +1,6 @@
 //! The welcome / connection-manager screen (shown when nothing is open).
 
-use gpui::{div, prelude::*, px, Context, FontWeight};
+use gpui::{div, prelude::*, px, svg, Context, FontWeight};
 use nyx_core::Protocol;
 use nyx_ui::{ActiveTheme, Badge, IconButton, IconButtonSize};
 
@@ -73,15 +73,14 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
 
 fn logo(cx: &Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
-    div()
-        .flex()
-        .items_center()
-        .justify_center()
+    // GPUI's `svg()` ignores the file's own fills and tints the whole glyph with
+    // `text_color`, so the mark inherits the current accent (the ring keeps its
+    // baked-in 0.45 opacity as alpha in the mask).
+    svg()
+        .path("nyx_black.svg")
         .size(px(40.))
-        .rounded(px(10.))
-        .bg(theme.accent)
-        .text_color(theme.on_accent)
-        .child(icon("zap", 22., theme.on_accent))
+        .text_color(theme.accent)
+        .flex_shrink_0()
 }
 
 fn section_label(label: &'static str, cx: &Context<AppState>) -> impl IntoElement {
