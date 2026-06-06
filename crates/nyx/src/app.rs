@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! The root view: the app-shell grid, view routing, and global overlays
 //! (tweaks modal + toasts). [`AppState`] is the single root entity; this file
 //! is its `Render` impl.

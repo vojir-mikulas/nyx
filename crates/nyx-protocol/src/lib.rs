@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! Protocol abstraction for Nyx.
 //!
 //! [`RemoteClient`] is the single async trait every protocol implements. V1

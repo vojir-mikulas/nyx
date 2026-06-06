@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! Remote-filesystem domain types: protocols and directory entries.
 
 use std::time::SystemTime;

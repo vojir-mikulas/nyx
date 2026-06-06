@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! App-managed `known_hosts` store for trust-on-first-use host-key verification.
 //!
 //! This is intentionally *not* OpenSSH `known_hosts` compatible — V1 only needs a

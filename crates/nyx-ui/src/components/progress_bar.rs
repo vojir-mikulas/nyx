@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! `ProgressBar` — a thin determinate / indeterminate progress track.
 //!
 //! Mirrors the design's `.xbar` (transfer dock): a recessed track with an

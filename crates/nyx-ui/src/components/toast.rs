@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! `Toast` — a small, transient notification surface.
 //!
 //! The component renders a single toast (elevated pill with a status dot and a

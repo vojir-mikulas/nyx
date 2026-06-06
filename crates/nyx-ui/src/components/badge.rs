@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! `Badge` — a small, colored label chip (status, protocol tags, counts).
 //!
 //! Variants are **semantic** ([`BadgeVariant`]), not app-specific: the app maps

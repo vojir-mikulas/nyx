@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! Transfer queue for Nyx.
 //!
 //! A **sans-IO scheduler**: pure policy with no tokio, no protocol and no

@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! `nyx-ui` — an in-house GPUI component library and semantic theme layer.
 //!
 //! Built shadcn-style: we own the source, build on GPUI's `div`/styling

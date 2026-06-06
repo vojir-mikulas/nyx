@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! The Nyx application binary.
 //!
 //! M1 assembles the full app shell — sidebar, welcome / connection manager,

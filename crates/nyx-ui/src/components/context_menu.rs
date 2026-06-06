@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! `ContextMenu` — a floating list of actions (right-click / overflow menus).
 //!
 //! This component renders only the **menu surface** (the panel + items). Where

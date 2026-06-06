@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! The bottom status bar: connection state, host, transfer speed, counts.
 
 use gpui::{div, prelude::*, px, Context};

@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! The bottom transfer dock: collapsible header (tabs + clear) and rows.
 
 use gpui::{div, prelude::*, px, Context};

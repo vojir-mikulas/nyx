@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! [`AppState`] — the single source of truth for the M1 app shell.
 //!
 //! One root `Entity<AppState>` holds all mutable state plus the interaction

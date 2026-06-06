@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! OS-keychain credential storage for Nyx.
 //!
 //! **Security rule:** secrets handled here are *never* logged and *never*

@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! The host-key prompt callback.
 //!
 //! When an SFTP connection meets a host it has never seen, the protocol layer

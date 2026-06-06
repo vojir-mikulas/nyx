@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! The transfer model: identifiers, direction, status and the transfer record.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

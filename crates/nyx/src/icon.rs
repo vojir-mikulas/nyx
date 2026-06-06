@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! App-side icon helper.
 //!
 //! `nyx-ui` is intentionally icon-agnostic (it stays icon-provider-free so the

@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! `TextInput` — a single-line, themed text field built **in-house** on GPUI's
 //! text/element primitives (no external widget crate).
 //!

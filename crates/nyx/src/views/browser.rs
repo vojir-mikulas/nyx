@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! The file browser: tab strip, breadcrumb toolbar, and the remote file table.
 
 use std::rc::Rc;

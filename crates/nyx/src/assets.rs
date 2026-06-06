@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! Embedded application assets — the vendored fonts and icon set — and the
 //! [`gpui::AssetSource`] that serves them.
 //!

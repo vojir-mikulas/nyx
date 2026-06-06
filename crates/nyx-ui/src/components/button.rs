@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! `Button` — the reference component demonstrating the variant API.
 //!
 //! Styling is a function of typed props (`variant`, `size`, `disabled`) — the

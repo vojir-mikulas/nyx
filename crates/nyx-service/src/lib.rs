@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! The Nyx backend service.
 //!
 //! GPUI runs its own executor on the main thread; `russh` (the SFTP transport) is

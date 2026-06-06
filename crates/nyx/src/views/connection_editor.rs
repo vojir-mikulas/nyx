@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! The connection editor modal — create or edit a profile (M3).
 //!
 //! A domain-free [`Modal`] wrapping the `nyx-ui` form kit (`TextInput`,

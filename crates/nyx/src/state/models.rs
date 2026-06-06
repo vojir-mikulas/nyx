@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! View-models and presentation helpers.
 //!
 //! Per the M1 decision (see the plan), `nyx-core` domain types are **not**

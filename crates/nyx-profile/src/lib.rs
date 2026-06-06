@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! Connection profiles for Nyx.
 //!
 //! A [`Profile`] is the persisted, shareable description of a connection — host,

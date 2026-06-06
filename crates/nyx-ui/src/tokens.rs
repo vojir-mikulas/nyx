@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! Concrete token tables for the built-in themes, ported from
 //! `design/styles.css`. Add new themes here as additional `Theme` constructors.
 

@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! `StyledExt` — the "@apply" layer: reusable, theme-aware style recipes on top
 //! of GPUI's [`Styled`] builder.
 //!

@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! `Table` — a virtualized, fixed-row-height data table (the file browser's
 //! backbone), built on GPUI's [`uniform_list`](gpui::uniform_list).
 //!

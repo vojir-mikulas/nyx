@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! `Modal` — a centered, elevated dialog over a dimming scrim.
 //!
 //! The component renders an `absolute inset-0` scrim with a centered panel

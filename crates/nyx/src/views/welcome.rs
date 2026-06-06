@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! The welcome / connection-manager screen (shown when nothing is open).
 
 use gpui::{div, prelude::*, px, Context, FontWeight};

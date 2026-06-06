@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! SFTP implementation of [`RemoteClient`] over `russh` / `russh-sftp`.
 //!
 //! M2 implements `connect` (password auth + host-key verification) and

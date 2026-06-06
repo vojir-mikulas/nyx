@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! The view tree. Each module is a `RenderOnce`-style helper that reads a
 //! `&AppState` and emits elements; mutation happens through `cx.listener`
 //! handlers that call back into [`crate::state::AppState`].

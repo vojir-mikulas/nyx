@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! The semantic theme layer: the [`Theme`] token set, installed as a GPUI
 //! [`Global`], and the [`ActiveTheme`] accessor.
 //!

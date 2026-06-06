@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! `Tabs` — a horizontal strip of selectable tabs with an optional count pill.
 //!
 //! Stateless: the caller owns the selected index and is told about clicks via

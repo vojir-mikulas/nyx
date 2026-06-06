@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! `IconButton` — a compact, square, icon-only button (toolbars, row actions).
 //!
 //! It stays domain-free by taking its glyph as a generic `impl IntoElement`

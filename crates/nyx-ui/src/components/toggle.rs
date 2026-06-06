@@ -1,6 +1,3 @@
-// Copyright 2026 vojir-mikulas
-// SPDX-License-Identifier: Apache-2.0
-
 //! `Toggle` — a binary on/off switch (settings, feature flags).
 //!
 //! Stateless: the caller owns the boolean and is told about flips via
