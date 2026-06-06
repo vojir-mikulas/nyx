@@ -1369,13 +1369,13 @@ impl AppState {
                     fingerprint: fingerprint.into(),
                 });
             }
-            Event::Connected { profile_id } => {
+            Event::Connected { profile_id, home } => {
                 self.host_key_prompt = None;
                 self.used_stored_password = None;
                 // Stamp the successful connect and persist it, so "Recent"
                 // ordering survives a restart (plan M3 D6).
                 self.stamp_last_connected(&profile_id, cx);
-                self.enter_browser(profile_id, cx);
+                self.enter_browser(profile_id, home, cx);
             }
             Event::DirListing { path, entries } => {
                 // Drop a listing for a directory we've since navigated away from.
@@ -1527,15 +1527,19 @@ impl AppState {
         }
     }
 
-    /// Enter the browser for a freshly-connected profile and list its root.
-    fn enter_browser(&mut self, profile_id: String, cx: &mut Context<Self>) {
-        let root = self
+    /// Enter the browser for a freshly-connected profile and list its starting
+    /// directory: the profile's configured remote path if set, otherwise the
+    /// server-resolved home (`home`) — so the user lands somewhere writable
+    /// instead of the filesystem root.
+    fn enter_browser(&mut self, profile_id: String, home: String, cx: &mut Context<Self>) {
+        let configured = self
             .connections
             .iter()
             .find(|c| c.profile.id == profile_id)
             .and_then(|c| c.profile.remote_path.as_deref())
-            .map(path_segments)
-            .unwrap_or_default();
+            .map(str::trim)
+            .filter(|p| !p.is_empty());
+        let root = path_segments(configured.unwrap_or(&home));
 
         self.active_id = Some(profile_id.clone());
         self.online_id = Some(profile_id.clone());

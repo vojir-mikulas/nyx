@@ -142,6 +142,12 @@ impl RemoteClient for SftpClient {
         Ok(())
     }
 
+    async fn default_dir(&self) -> Result<String> {
+        // `canonicalize(".")` resolves the SFTP session's start directory (the
+        // user's home on most servers) to an absolute path.
+        self.sftp()?.canonicalize(".").await.map_err(map_sftp_err)
+    }
+
     async fn list_dir(&self, path: &str) -> Result<Vec<RemoteEntry>> {
         let dir = self.sftp()?.read_dir(path).await.map_err(map_sftp_err)?;
         let mut entries: Vec<RemoteEntry> = Vec::new();

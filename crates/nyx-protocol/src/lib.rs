@@ -33,6 +33,12 @@ pub trait RemoteClient: Send + Sync {
     /// Establish the connection and authenticate.
     async fn connect(&mut self) -> Result<()>;
 
+    /// The connection's default landing directory (the user's home), as an
+    /// absolute path — used as the starting directory when a profile has no
+    /// explicit remote path, so the user lands somewhere writable rather than at
+    /// the filesystem root.
+    async fn default_dir(&self) -> Result<String>;
+
     /// List the entries of a remote directory.
     async fn list_dir(&self, path: &str) -> Result<Vec<RemoteEntry>>;
 

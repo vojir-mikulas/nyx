@@ -210,6 +210,9 @@ pub enum Event {
     Connected {
         /// The connected profile's id.
         profile_id: String,
+        /// The resolved default landing directory (home), used when the profile
+        /// has no explicit remote path.
+        home: String,
     },
     /// A directory listing for `path` on the active connection.
     DirListing {
@@ -379,6 +382,8 @@ enum TaskOutcome {
     Connected {
         profile_id: String,
         client: Box<SftpClient>,
+        /// The resolved default landing directory (home).
+        home: String,
     },
     /// A live connect failed with a credential-free message.
     ConnectFailed { message: String },
@@ -624,10 +629,10 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                 // Any terminal outcome clears the single-flight slot.
                 in_flight = false;
                 match done {
-                    TaskOutcome::Connected { profile_id, client: session } => {
+                    TaskOutcome::Connected { profile_id, client: session, home } => {
                         client = Some(Arc::from(session));
                         info!(%profile_id, "connected");
-                        let _ = events.unbounded_send(Event::Connected { profile_id });
+                        let _ = events.unbounded_send(Event::Connected { profile_id, home });
                     }
                     TaskOutcome::ConnectFailed { message } => {
                         let _ = events.unbounded_send(Event::Error { message });
@@ -828,10 +833,16 @@ async fn run_task(
     );
 
     let outcome = match (kind, client.connect().await) {
-        (TaskKind::Connect, Ok(())) => TaskOutcome::Connected {
-            profile_id,
-            client: Box::new(client),
-        },
+        (TaskKind::Connect, Ok(())) => {
+            // Resolve the landing directory once, up front; fall back to root if
+            // the server doesn't answer `canonicalize`.
+            let home = client.default_dir().await.unwrap_or_else(|_| "/".into());
+            TaskOutcome::Connected {
+                profile_id,
+                client: Box::new(client),
+                home,
+            }
+        }
         (TaskKind::Connect, Err(err)) => TaskOutcome::ConnectFailed {
             message: err.to_string(),
         },
