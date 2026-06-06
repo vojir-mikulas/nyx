@@ -12,6 +12,7 @@ use nyx_ui::{
 
 use crate::icon::icon;
 use crate::state::AppState;
+use crate::views::titlebar_drag;
 
 /// Render the browser column (tab strip + toolbar + table).
 pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
@@ -32,73 +33,80 @@ fn tab_strip(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
         .map(|c| (c.profile.name.clone(), c.color.color(&theme)))
         .unwrap_or_else(|| ("—".into(), theme.text_faint));
     let dock_open = state.dock_open;
+    // When the sidebar is hidden this strip is at the window's top-left, so it
+    // must clear the macOS traffic lights itself.
+    let sidebar_open = state.sidebar_open;
 
-    div()
-        .flex()
-        .items_stretch()
-        .h(px(36.))
-        .flex_shrink_0()
-        .bg(theme.bg_bar)
-        .border_b_1()
-        .border_color(theme.border_soft)
-        .child(
-            // Active connection tab.
-            div()
-                .relative()
-                .flex()
-                .items_center()
-                .gap_2()
-                .px_3()
-                .max_w(px(230.))
-                .bg(theme.bg_app)
-                .text_color(theme.text)
-                .text_sm()
-                .border_r_1()
-                .border_color(theme.border_soft)
-                .child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .top_0()
-                        .h(px(1.))
-                        .bg(theme.accent),
-                )
-                .child(div().text_color(color).child(icon("server", 13.)))
-                .child(div().truncate().child(name))
-                .child(
-                    IconButton::new("tab-close", icon("x", 12.))
-                        .size(nyx_ui::IconButtonSize::Xs)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.disconnect();
-                            cx.notify();
-                        })),
-                ),
-        )
-        .child(div().flex_1())
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap_0p5()
-                .px_2()
-                .child(
-                    IconButton::new("toggle-sidebar", icon("sidebarIc", 15.)).on_click(
-                        cx.listener(|this, _, _, cx| {
-                            this.sidebar_open = !this.sidebar_open;
-                            cx.notify();
-                        }),
+    titlebar_drag(
+        div()
+            .id("titlebar-right")
+            .flex()
+            .items_stretch()
+            .h(px(36.))
+            .flex_shrink_0()
+            .bg(theme.bg_bar)
+            .border_b_1()
+            .border_color(theme.border_soft)
+            .when(!sidebar_open, |this| this.pl(px(72.)))
+            .child(
+                // Active connection tab.
+                div()
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .max_w(px(230.))
+                    .bg(theme.bg_app)
+                    .text_color(theme.text)
+                    .text_sm()
+                    .border_r_1()
+                    .border_color(theme.border_soft)
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .top_0()
+                            .h(px(1.))
+                            .bg(theme.accent),
+                    )
+                    .child(div().text_color(color).child(icon("server", 13.)))
+                    .child(div().truncate().child(name))
+                    .child(
+                        IconButton::new("tab-close", icon("x", 12.))
+                            .size(nyx_ui::IconButtonSize::Xs)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.disconnect();
+                                cx.notify();
+                            })),
                     ),
-                )
-                .child(
-                    IconButton::new("toggle-dock", icon("panelBottom", 15.))
-                        .active(dock_open)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.dock_open = !this.dock_open;
-                            cx.notify();
-                        })),
-                ),
-        )
+            )
+            .child(div().flex_1())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_0p5()
+                    .px_2()
+                    .child(
+                        IconButton::new("toggle-sidebar", icon("sidebarIc", 15.)).on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.sidebar_open = !this.sidebar_open;
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .child(
+                        IconButton::new("toggle-dock", icon("panelBottom", 15.))
+                            .active(dock_open)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.dock_open = !this.dock_open;
+                                cx.notify();
+                            })),
+                    ),
+            ),
+    )
 }
 
 fn toolbar(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {

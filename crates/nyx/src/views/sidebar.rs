@@ -10,7 +10,7 @@ use crate::icon::icon;
 use crate::state::models::{protocol_badge, ConnectionVm};
 use crate::state::AppState;
 
-use super::status_dot;
+use super::{status_dot, titlebar_drag};
 
 /// Render the sidebar.
 pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
@@ -39,18 +39,21 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
         .w(px(244.))
         .bg(theme.bg_panel)
         .child(
-            // Header: brand + new-connection button.
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .h(px(38.))
-                .pl(px(13.))
-                .pr(px(10.))
-                .flex_shrink_0()
-                .child(brand(cx))
-                .child(div().flex_1())
-                .child(IconButton::new("sb-new", icon("plus", 15.)).on_click(header_new)),
+            // Header doubles as the left titlebar; left padding clears the
+            // macOS traffic lights, and the strip is the native drag region.
+            titlebar_drag(
+                div()
+                    .id("titlebar-left")
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .h(px(38.))
+                    .pl(px(72.))
+                    .pr(px(10.))
+                    .flex_shrink_0()
+                    .child(div().flex_1())
+                    .child(IconButton::new("sb-new", icon("plus", 15.)).on_click(header_new)),
+            ),
         )
         .child(
             // Scrollable connection groups.
@@ -88,32 +91,6 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                     IconButton::new("sb-foot-settings", icon("settings", 14.))
                         .on_click(open_settings),
                 ),
-        )
-}
-
-fn brand(cx: &Context<AppState>) -> impl IntoElement {
-    let theme = cx.theme().clone();
-    div()
-        .flex()
-        .items_center()
-        .gap_2()
-        .text_color(theme.text)
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .justify_center()
-                .size(px(18.))
-                .rounded(theme.radius_sm)
-                .bg(theme.accent)
-                .text_color(theme.on_accent)
-                .child(icon("zap", 11.)),
-        )
-        .child(
-            div()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_sm()
-                .child("Nyx"),
         )
 }
 

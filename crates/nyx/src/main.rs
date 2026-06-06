@@ -34,9 +34,13 @@ fn main() {
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                // Seamless titlebar: hide the native bar and let our chrome reach
+                // the window's top edge, with the macOS traffic lights inset into
+                // the top-left strip (drag/zoom wired in `views::titlebar_drag`).
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Nyx".into()),
-                    ..Default::default()
+                    title: None,
+                    appears_transparent: true,
+                    traffic_light_position: Some(gpui::point(gpui::px(13.), gpui::px(13.))),
                 }),
                 ..Default::default()
             },
