@@ -30,8 +30,8 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use gpui::{
-    div, prelude::*, uniform_list, App, ClickEvent, MouseButton, Pixels, Point, SharedString,
-    Styled, Window,
+    div, prelude::*, uniform_list, App, ClickEvent, ExternalPaths, MouseButton, Pixels, Point,
+    SharedString, Styled, Window,
 };
 
 use crate::theme::ActiveTheme;
@@ -126,6 +126,10 @@ type RowRenderer = Rc<dyn Fn(usize, &mut Window, &mut App) -> Vec<gpui::AnyEleme
 /// [`AnyElement`]) so the library stays domain- and icon-set-free; the caller
 /// supplies its own glyph (plan M6 D9).
 type CaretBuilder = Rc<dyn Fn() -> gpui::AnyElement + 'static>;
+/// A handler invoked when external files are dropped onto a row, with the row
+/// index and the dropped paths. Generic: `ExternalPaths` is a `gpui` type, not a
+/// domain type, so the table stays Flint-safe.
+type RowDropHandler = Rc<dyn Fn(usize, &ExternalPaths, &mut Window, &mut App) + 'static>;
 
 /// A virtualized, fixed-row-height data table.
 #[derive(IntoElement)]
@@ -144,6 +148,8 @@ pub struct Table {
     render_row: Option<RowRenderer>,
     sort_caret_asc: Option<CaretBuilder>,
     sort_caret_desc: Option<CaretBuilder>,
+    on_row_drop: Option<RowDropHandler>,
+    droppable_rows: Option<Rc<HashSet<usize>>>,
 }
 
 impl Table {
@@ -164,6 +170,8 @@ impl Table {
             render_row: None,
             sort_caret_asc: None,
             sort_caret_desc: None,
+            on_row_drop: None,
+            droppable_rows: None,
         }
     }
 
@@ -249,6 +257,24 @@ impl Table {
     ) -> Self {
         self.sort_caret_asc = Some(Rc::new(asc));
         self.sort_caret_desc = Some(Rc::new(desc));
+        self
+    }
+
+    /// Mark which rows accept an external file drop: only these rows highlight
+    /// while files are dragged over them and dispatch [`on_row_drop`](Self::on_row_drop).
+    /// (The owner knows which rows are directories; the table stays domain-free.)
+    pub fn droppable_rows(mut self, rows: HashSet<usize>) -> Self {
+        self.droppable_rows = Some(Rc::new(rows));
+        self
+    }
+
+    /// Handler invoked when external files are dropped onto a [droppable](Self::droppable_rows)
+    /// row, with the row index and the dropped paths.
+    pub fn on_row_drop(
+        mut self,
+        handler: impl Fn(usize, &ExternalPaths, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_row_drop = Some(Rc::new(handler));
         self
     }
 
@@ -338,6 +364,8 @@ impl RenderOnce for Table {
         let on_select = self.on_select.clone();
         let on_secondary = self.on_secondary.clone();
         let on_activate = self.on_activate.clone();
+        let on_row_drop = self.on_row_drop.clone();
+        let droppable_rows = self.droppable_rows.clone();
         let selected = self.selected;
         let selected_set = self.selected_set.clone();
         let row_count = self.row_count;
@@ -345,6 +373,7 @@ impl RenderOnce for Table {
         // Token snapshot so the `'static` row closure doesn't borrow `cx`.
         let bg_hover = theme.bg_hover;
         let bg_selected = theme.bg_selected;
+        let drop_highlight = theme.bg_active;
         let text = theme.text;
 
         let list = uniform_list("table-rows", row_count, move |range, window, cx| {
@@ -375,7 +404,10 @@ impl RenderOnce for Table {
                 let on_select = on_select.clone();
                 let on_secondary = on_secondary.clone();
                 let on_activate = on_activate.clone();
+                let on_row_drop = on_row_drop.clone();
                 let clickable = on_select.is_some() || on_activate.is_some();
+                let is_droppable = droppable_rows.as_ref().is_some_and(|s| s.contains(&ix))
+                    && on_row_drop.is_some();
                 rows.push(
                     div()
                         .id(ix)
@@ -408,6 +440,17 @@ impl RenderOnce for Table {
                         .when_some(on_secondary, |this, on_secondary| {
                             this.on_mouse_down(MouseButton::Right, move |event, window, cx| {
                                 on_secondary(ix, event.position, window, cx);
+                            })
+                        })
+                        // A droppable row (e.g. a directory) highlights while an
+                        // external file drag is over it and uploads on drop.
+                        .when(is_droppable, |this| {
+                            let this = this
+                                .drag_over::<ExternalPaths>(move |s, _, _, _| s.bg(drop_highlight));
+                            this.when_some(on_row_drop, |this, on_row_drop| {
+                                this.on_drop::<ExternalPaths>(move |paths, window, cx| {
+                                    on_row_drop(ix, paths, window, cx);
+                                })
                             })
                         })
                         .children(laid_out),

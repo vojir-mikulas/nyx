@@ -10,7 +10,11 @@
 //! element's `text_color` — so an icon inherits its parent's color by default and
 //! can be overridden with `.text_color(..)`.
 
-use gpui::{prelude::*, px, svg, Hsla, Svg};
+use std::time::Duration;
+
+use gpui::{
+    percentage, prelude::*, px, svg, Animation, AnimationExt, ElementId, Hsla, Svg, Transformation,
+};
 
 /// An icon glyph at the given square `size` (px), tinted with `color`.
 ///
@@ -23,4 +27,16 @@ pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
         .size(px(size))
         .flex_shrink_0()
         .text_color(color)
+}
+
+/// A minimal, continuously-rotating ring spinner — the single loading indicator
+/// used app-wide (connecting overlay, directory loading, test probe). `id` must
+/// be unique among sibling elements so each spinner keeps its own animation
+/// state.
+pub fn spinner(id: impl Into<ElementId>, size: f32, color: Hsla) -> impl IntoElement {
+    icon("spinner", size, color).with_animation(
+        id,
+        Animation::new(Duration::from_secs(1)).repeat(),
+        |icon, delta| icon.with_transformation(Transformation::rotate(percentage(delta))),
+    )
 }

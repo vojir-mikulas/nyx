@@ -31,8 +31,12 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
     let status: Option<gpui::AnyElement> = if editor.testing {
         Some(
             div()
+                .flex()
+                .items_center()
+                .gap_1p5()
                 .text_xs()
                 .text_color(theme.text_muted)
+                .child(crate::icon::spinner("ce-testing", 13., theme.text_muted))
                 .child("Testing connection…")
                 .into_any_element(),
         )

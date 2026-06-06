@@ -6,8 +6,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    actions, div, prelude::*, px, radians, App, Context, Hsla, KeyBinding, MouseButton,
-    SharedString, Transformation,
+    actions, div, prelude::*, px, radians, App, Context, ExternalPaths, Hsla, KeyBinding,
+    MouseButton, SharedString, Transformation,
 };
 use nyx_ui::{ActiveTheme, Button, ButtonSize, ButtonVariant, Column, IconButton, Table};
 
@@ -359,10 +359,20 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
     // domain-free `Table` via its generic caret slot: up for ascending, down for
     // descending (plan M6 D9).
     let caret_color = theme.text_muted;
+    // Drop-zone tint shown while external files are dragged over the browser.
+    let drop_zone = theme.accent_ghost;
     let rows_for_render = rows.clone();
     let rows_for_select = rows.clone();
     let rows_for_secondary = rows.clone();
     let rows_for_activate = rows.clone();
+    let rows_for_drop = rows.clone();
+    // Directory rows accept an external file drop (upload into that folder).
+    let dir_rows: std::collections::HashSet<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.is_dir)
+        .map(|(ix, _)| ix)
+        .collect();
     let view = cx.entity();
 
     let body: gpui::AnyElement = if is_empty {
@@ -434,6 +444,23 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                             let name = row.name.clone();
                             view.update(cx, |this, cx| {
                                 this.open_dir(&name, cx);
+                                cx.notify();
+                            });
+                        }
+                    }
+                }
+            })
+            .droppable_rows(dir_rows)
+            .on_row_drop({
+                let view = view.clone();
+                let rows = rows_for_drop;
+                move |ix, paths, _window, cx| {
+                    if let Some(row) = rows.get(ix) {
+                        if row.is_dir {
+                            let name = row.name.clone();
+                            let files = paths.paths().to_vec();
+                            view.update(cx, |this, cx| {
+                                this.upload_paths(files, Some(name), cx);
                                 cx.notify();
                             });
                         }
@@ -525,6 +552,14 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
             this.start_delete(cx);
             cx.notify();
         }))
+        // Drag external files anywhere into the browser → upload to the current
+        // directory (dropping onto a folder row instead targets that folder,
+        // handled by the table's row-drop above). A faint tint marks the zone.
+        .drag_over::<ExternalPaths>(move |s, _, _, _| s.bg(drop_zone))
+        .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+            this.upload_paths(paths.paths().to_vec(), None, cx);
+            cx.notify();
+        }))
         .child(body)
 }
 
@@ -535,12 +570,21 @@ fn empty_state(
     cx: &Context<AppState>,
 ) -> impl IntoElement {
     let theme = cx.theme().clone();
-    let (glyph, label) = if loading {
-        ("refresh", "Loading…".to_string())
+    let label = if loading {
+        "Loading…".to_string()
     } else if filter_active {
-        ("folderOpen", format!("No matches for “{}”", filter.trim()))
+        format!("No matches for “{}”", filter.trim())
     } else {
-        ("folderOpen", "This folder is empty".to_string())
+        "This folder is empty".to_string()
+    };
+    // While loading, show the minimal spinner; otherwise a faint folder glyph.
+    let indicator: gpui::AnyElement = if loading {
+        crate::icon::spinner("browser-loading", 24., theme.text_dim).into_any_element()
+    } else {
+        div()
+            .opacity(0.5)
+            .child(icon("folderOpen", 26., theme.text_dim))
+            .into_any_element()
     };
     div()
         .flex_1()
@@ -550,7 +594,7 @@ fn empty_state(
         .justify_center()
         .gap_1p5()
         .text_color(theme.text_dim)
-        .child(div().opacity(0.5).child(icon(glyph, 26., theme.text_dim)))
+        .child(indicator)
         .child(
             div()
                 .font_family(crate::assets::FONT_MONO)

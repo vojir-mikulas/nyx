@@ -5,11 +5,8 @@
 //! (tweaks modal + toasts). [`AppState`] is the single root entity; this file
 //! is its `Render` impl.
 
-use std::time::Duration;
-
 use gpui::{
-    actions, anchored, deferred, div, percentage, prelude::*, px, Animation, AnimationExt, Context,
-    FontWeight, MouseButton, Transformation, Window,
+    actions, anchored, deferred, div, prelude::*, px, Context, FontWeight, MouseButton, Window,
 };
 use nyx_ui::{
     ActiveTheme, Button, ButtonVariant, ContextMenu, ContextMenuItem, Modal, Segmented, Theme,
@@ -17,7 +14,6 @@ use nyx_ui::{
 };
 
 use crate::assets::{FONT_MONO, FONT_UI};
-use crate::icon::icon;
 use crate::state::models::Density;
 use crate::state::{AppState, View};
 use crate::views;
@@ -623,17 +619,11 @@ fn connecting_overlay(state: &AppState, cx: &Context<AppState>) -> impl IntoElem
                 .border_1()
                 .border_color(theme.border_strong)
                 .shadow_lg()
-                .child(
-                    // A continuously rotating spinner (matches the design's
-                    // `.connecting .spin` ring) instead of a static glyph.
-                    icon("refresh", 26., theme.accent).with_animation(
-                        "connecting-spinner",
-                        Animation::new(Duration::from_secs(1)).repeat(),
-                        |icon, delta| {
-                            icon.with_transformation(Transformation::rotate(percentage(delta)))
-                        },
-                    ),
-                )
+                .child(crate::icon::spinner(
+                    "connecting-spinner",
+                    26.,
+                    theme.accent,
+                ))
                 .child(
                     div()
                         .text_sm()

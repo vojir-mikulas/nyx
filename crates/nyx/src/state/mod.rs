@@ -1239,24 +1239,66 @@ impl AppState {
                 return;
             };
             this.update(cx, |this, cx| {
-                let mut ok = true;
-                for local in paths {
-                    let Some(name) = local.file_name().and_then(|n| n.to_str()) else {
-                        continue;
-                    };
-                    let remote = this.remote_path_of(name);
-                    if !this.service.send(Command::Upload { local, remote }) {
-                        ok = false;
-                    }
-                }
-                if !ok {
-                    this.push_toast("Backend unavailable", ToastVariant::Error, cx);
-                }
+                this.upload_paths(paths, None, cx);
                 cx.notify();
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Upload already-known local files (from a drag-and-drop, plan post-MVP
+    /// drag-in). `subdir`, when set, is a directory *in the current folder* the
+    /// files were dropped onto; otherwise they land in the current folder.
+    /// Folders are skipped (recursive upload is post-MVP) with a toast.
+    pub fn upload_paths(
+        &mut self,
+        paths: Vec<std::path::PathBuf>,
+        subdir: Option<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        // Only meaningful while browsing a connection.
+        if self.view != View::Browse {
+            return;
+        }
+        let mut ok = true;
+        let mut sent = 0;
+        let mut skipped_dir = false;
+        for local in paths {
+            if local.is_dir() {
+                skipped_dir = true;
+                continue;
+            }
+            let Some(name) = local.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let remote = match subdir.as_ref() {
+                Some(dir) => format!("{}/{}", self.remote_path_of(dir), name),
+                None => self.remote_path_of(name),
+            };
+            if self.service.send(Command::Upload { local, remote }) {
+                sent += 1;
+            } else {
+                ok = false;
+            }
+        }
+        if skipped_dir {
+            self.push_toast("Folders can't be uploaded yet", ToastVariant::Info, cx);
+        }
+        if !ok {
+            self.push_toast("Backend unavailable", ToastVariant::Error, cx);
+        } else if sent > 0 {
+            let into = subdir
+                .as_deref()
+                .map(|d| format!(" to {d}/"))
+                .unwrap_or_default();
+            let label = if sent == 1 {
+                format!("Uploading 1 file{into}")
+            } else {
+                format!("Uploading {sent} files{into}")
+            };
+            self.push_toast(label, ToastVariant::Info, cx);
+        }
     }
 
     /// Trust the pending host key and continue connecting.
@@ -1289,6 +1331,29 @@ impl AppState {
     /// row updates reactively when the matching [`Event::TransferDone`] arrives.
     pub fn cancel_transfer(&mut self, id: TransferId) {
         self.service.send(Command::CancelTransfer { id });
+    }
+
+    /// Re-issue a failed transfer (the dock's retry button). Resends the original
+    /// `Upload`/`Download` command and drops the stale failed row — the retry
+    /// re-enters the queue as a fresh transfer (its own `TransferQueued` event).
+    pub fn retry_transfer(&mut self, id: TransferId, cx: &mut Context<Self>) {
+        let Some(vm) = self.transfers.iter().find(|t| t.transfer.id == id) else {
+            return;
+        };
+        if vm.transfer.status != TransferStatus::Failed {
+            return;
+        }
+        let remote = vm.transfer.remote_path.clone();
+        let local = std::path::PathBuf::from(vm.transfer.local_path.clone());
+        let command = match vm.transfer.direction {
+            TransferDirection::Upload => Command::Upload { local, remote },
+            TransferDirection::Download => Command::Download { remote, local },
+        };
+        if self.service.send(command) {
+            self.transfers.retain(|t| t.transfer.id != id);
+        } else {
+            self.push_toast("Backend unavailable", ToastVariant::Error, cx);
+        }
     }
 
     /// Apply a backend [`Event`] to the state and request a redraw. This is the

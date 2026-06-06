@@ -5,7 +5,7 @@
 
 use gpui::{div, prelude::*, px, Context};
 use nyx_core::{TransferDirection, TransferStatus};
-use nyx_ui::{ActiveTheme, IconButton, IconButtonSize, ProgressBar, Tabs, ToastVariant};
+use nyx_ui::{ActiveTheme, IconButton, IconButtonSize, ProgressBar, Tabs};
 
 use crate::icon::icon;
 use crate::state::models::{fmt_bytes_pair, fmt_size, DockTab, TransferVm};
@@ -270,17 +270,16 @@ fn cancel_button(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
     }))
 }
 
-/// The retry (`refresh`) button on a failed row. Wiring re-issue is deferred
-/// (M5 D13); for now it surfaces a placeholder toast.
+/// The retry (`refresh`) button on a failed row — re-issues the transfer.
 fn retry_button(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
-    let id = t.transfer.id.0;
+    let id = t.transfer.id;
     IconButton::new(
-        gpui::SharedString::from(format!("xfer-retry-{id}")),
+        gpui::SharedString::from(format!("xfer-retry-{}", id.0)),
         icon("refresh", 13., cx.theme().text_faint),
     )
     .size(IconButtonSize::Xs)
     .on_click(cx.listener(move |this, _, _, cx| {
-        this.push_toast("Retry — coming soon", ToastVariant::Info, cx);
+        this.retry_transfer(id, cx);
         cx.notify();
     }))
 }
