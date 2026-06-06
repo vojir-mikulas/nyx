@@ -7,7 +7,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{Hsla, SharedString};
-use nyx_core::{Protocol, RemoteEntry, Transfer, TransferStatus};
+use nyx_core::{EntryKind, Protocol, RemoteEntry, Transfer, TransferStatus};
 use nyx_profile::{Profile, ProfileColor};
 use nyx_ui::{BadgeVariant, Theme};
 use time::OffsetDateTime;
@@ -97,17 +97,18 @@ pub struct EntryRow {
 impl EntryRow {
     /// Build a row from a domain entry, deriving its type label.
     pub fn new(entry: RemoteEntry) -> Self {
-        let type_label = if entry.is_dir {
-            "Folder".into()
-        } else {
-            file_kind(&entry.name).into()
+        let type_label = match entry.kind {
+            EntryKind::Directory => "Folder".into(),
+            EntryKind::Symlink => "Symlink".into(),
+            // `file_kind` adds the extension nuance (e.g. "JavaScript").
+            EntryKind::File | EntryKind::Other => file_kind(&entry.name).into(),
         };
         Self { entry, type_label }
     }
 
     /// Display size: `"—"` for directories, otherwise a human byte size.
     pub fn display_size(&self) -> SharedString {
-        if self.entry.is_dir {
+        if self.entry.is_dir() {
             "—".into()
         } else {
             fmt_size(self.entry.size).into()
@@ -119,9 +120,21 @@ impl EntryRow {
         fmt_modified(self.entry.modified).into()
     }
 
+    /// The `ls -l`-style permission string with a leading type char, e.g.
+    /// `"drwxr-xr-x"`. The type prefix is derived from `kind` (UI concern), not
+    /// stored.
+    pub fn display_perms(&self) -> SharedString {
+        let type_char = match self.entry.kind {
+            EntryKind::Directory => 'd',
+            EntryKind::Symlink => 'l',
+            EntryKind::File | EntryKind::Other => '-',
+        };
+        format!("{type_char}{}", self.entry.permissions.rwx_string()).into()
+    }
+
     /// The icon name + color for this entry, against the active theme.
     pub fn icon(&self, theme: &Theme) -> (&'static str, Hsla) {
-        if self.entry.is_dir {
+        if self.entry.is_dir() {
             return ("folder", theme.blue);
         }
         file_icon(&self.entry.name, theme)

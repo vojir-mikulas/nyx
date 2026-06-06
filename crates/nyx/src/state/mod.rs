@@ -1036,7 +1036,7 @@ impl AppState {
                     .listing
                     .iter()
                     .find(|row| row.entry.name.as_str() == name.as_ref())
-                    .is_some_and(|row| row.entry.is_dir);
+                    .is_some_and(|row| row.entry.is_dir());
                 if is_dir {
                     self.open_dir(&name, cx);
                     return;
@@ -1097,7 +1097,7 @@ impl AppState {
                 self.listing
                     .iter()
                     .find(|row| row.entry.name.as_str() == name.as_ref())
-                    .map(|row| (name.clone(), row.entry.is_dir))
+                    .map(|row| (name.clone(), row.entry.is_dir()))
             })
             .collect();
         if entries.is_empty() {
@@ -1156,7 +1156,7 @@ impl AppState {
             else {
                 continue;
             };
-            if row.entry.is_dir {
+            if row.entry.is_dir() {
                 skipped_folder = true;
                 continue;
             }
@@ -1655,7 +1655,7 @@ impl AppState {
         let (key, asc) = self.sort;
         rows.sort_by(|a, b| {
             // Directories always sort before files.
-            let dir_order = b.entry.is_dir.cmp(&a.entry.is_dir);
+            let dir_order = b.entry.is_dir().cmp(&a.entry.is_dir());
             if dir_order != std::cmp::Ordering::Equal {
                 return dir_order;
             }

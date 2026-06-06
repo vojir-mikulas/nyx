@@ -12,7 +12,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use nyx_core::{EntryKind, NyxError, RemoteEntry, RemotePath, Result, TransferProgress};
+use nyx_core::{
+    EntryKind, NyxError, Permissions, RemoteEntry, RemotePath, Result, TransferProgress,
+};
 use russh::client::{self, Handle};
 use russh::keys::ssh_key::PublicKey;
 use russh::keys::HashAlg;
@@ -153,17 +155,14 @@ impl RemoteClient for SftpClient {
         let mut entries: Vec<RemoteEntry> = Vec::new();
         for item in dir {
             let meta = item.metadata();
-            let file_type = item.file_type();
-            let is_dir = file_type.is_dir();
             entries.push(RemoteEntry {
                 name: item.file_name(),
                 size: meta.size.unwrap_or(0),
-                kind: map_kind(file_type),
+                kind: map_kind(item.file_type()),
                 modified: meta
                     .mtime
                     .map(|secs| UNIX_EPOCH + Duration::from_secs(secs as u64)),
-                perms: format_perms(meta.permissions.unwrap_or(0)),
-                is_dir,
+                permissions: Permissions::from_mode(meta.permissions.unwrap_or(0)),
             });
         }
         Ok(entries)
@@ -303,25 +302,6 @@ fn map_kind(file_type: FileType) -> EntryKind {
     }
 }
 
-/// Render the low 9 bits of a unix mode as `"rwxr-xr-x"`.
-fn format_perms(mode: u32) -> String {
-    const FLAGS: [(u32, char); 9] = [
-        (0o400, 'r'),
-        (0o200, 'w'),
-        (0o100, 'x'),
-        (0o040, 'r'),
-        (0o020, 'w'),
-        (0o010, 'x'),
-        (0o004, 'r'),
-        (0o002, 'w'),
-        (0o001, 'x'),
-    ];
-    FLAGS
-        .iter()
-        .map(|(bit, ch)| if mode & bit != 0 { *ch } else { '-' })
-        .collect()
-}
-
 /// Map a `russh` transport error to [`NyxError`], keeping the message
 /// credential-free (russh errors never contain the password, but stay coarse).
 fn map_russh_err(err: russh::Error) -> NyxError {
@@ -441,15 +421,6 @@ fn map_sftp_err(err: russh_sftp::client::error::Error) -> NyxError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn perms_render() {
-        assert_eq!(format_perms(0o755), "rwxr-xr-x");
-        assert_eq!(format_perms(0o644), "rw-r--r--");
-        assert_eq!(format_perms(0o600), "rw-------");
-        // Type/setuid bits above the low 9 are ignored.
-        assert_eq!(format_perms(0o100_644), "rw-r--r--");
-    }
 
     #[test]
     fn auth_error_has_no_detail() {

@@ -308,10 +308,10 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
             let (icon_name, icon_color) = row.icon(&theme);
             VisibleRow {
                 name: row.entry.name.clone().into(),
-                is_dir: row.entry.is_dir,
+                is_dir: row.entry.is_dir(),
                 icon_name,
                 icon_color,
-                name_color: if row.entry.is_dir {
+                name_color: if row.entry.is_dir() {
                     theme.blue
                 } else {
                     theme.text
@@ -319,7 +319,7 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                 size: row.display_size(),
                 modified: row.display_modified(),
                 type_label: row.type_label.clone(),
-                perms: row.entry.perms.clone().into(),
+                perms: row.display_perms(),
             }
         })
         .collect();
