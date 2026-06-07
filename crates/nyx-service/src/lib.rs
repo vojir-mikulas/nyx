@@ -30,8 +30,8 @@ use futures::channel::mpsc::{
     UnboundedSender as FuturesSender,
 };
 use nyx_core::{
-    CollisionChoice, EntryKind, NyxError, Protocol, RemoteEntry, RemotePath, Secret,
-    ServerTrustKind, TransferDirection, TransferId, TransferKind, TransferStatus,
+    CollisionChoice, EntryIssue, EntryKind, NyxError, Protocol, RemoteEntry, RemotePath, Secret,
+    ServerTrustKind, TransferDirection, TransferId, TransferKind, TransferReport, TransferStatus,
 };
 use nyx_profile::{AuthMethod, Profile};
 use nyx_protocol::{
@@ -359,14 +359,20 @@ pub enum Event {
     },
     /// A transfer reached a terminal state: `Completed`, `Failed`, `Cancelled`
     /// or `Skipped`. `message` carries the credential-free error detail for
-    /// `Failed`.
+    /// `Failed`, or a folder transfer's one-line skipped/failed summary for a
+    /// `Completed`-with-issues.
     TransferDone {
         /// The transfer id.
         id: TransferId,
         /// The terminal status.
         status: TransferStatus,
-        /// An error detail for `Failed`; `None` otherwise.
+        /// An error detail for `Failed`, or the one-line summary for a folder
+        /// that completed with issues; `None` otherwise.
         message: Option<String>,
+        /// The per-entry detail behind a folder transfer's summary (the paths
+        /// that failed or were skipped, and why). `None` for file transfers and
+        /// clean folders, so non-folder call sites ignore it.
+        report: Option<TransferReport>,
     },
     /// A transfer was paused by a connection loss and is retained for resume on
     /// reconnect (it is *not* terminal). `transferred` is the bytes-done
@@ -595,6 +601,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                                     id,
                                     status: TransferStatus::Cancelled,
                                     message: None,
+                                    report: None,
                                 });
                             }
                         }
@@ -769,6 +776,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                                 id,
                                 status: TransferStatus::Cancelled,
                                 message: None,
+                                report: None,
                             });
                         }
                         // Running: the copy loop notices the flag and reports
@@ -787,6 +795,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                                 id: sid,
                                 status: TransferStatus::Skipped,
                                 message: None,
+                                report: None,
                             });
                         }
                         for cid in resolution.cancelled {
@@ -795,6 +804,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                                 id: cid,
                                 status: TransferStatus::Cancelled,
                                 message: None,
+                                report: None,
                             });
                         }
                         try_start(&mut queue, &client, &events, &xfer_done_tx, generation);
@@ -820,6 +830,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                                 id,
                                 status: TransferStatus::Cancelled,
                                 message: None,
+                                report: None,
                             });
                         }
                         // Drop the shared session: its `Drop` closes the channel
@@ -923,16 +934,18 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                     terminal => {
                         queue.finish(id);
                         last_bytes.remove(&id);
-                        let (status, message) = match terminal {
-                            TransferOutcome::Completed { message } => (TransferStatus::Completed, message),
-                            TransferOutcome::Cancelled => (TransferStatus::Cancelled, None),
-                            TransferOutcome::Skipped => (TransferStatus::Skipped, None),
-                            TransferOutcome::Failed(msg) => (TransferStatus::Failed, Some(msg)),
+                        let (status, message, report) = match terminal {
+                            TransferOutcome::Completed { message, report } => {
+                                (TransferStatus::Completed, message, report)
+                            }
+                            TransferOutcome::Cancelled => (TransferStatus::Cancelled, None, None),
+                            TransferOutcome::Skipped => (TransferStatus::Skipped, None, None),
+                            TransferOutcome::Failed(msg) => (TransferStatus::Failed, Some(msg), None),
                             TransferOutcome::Collision { .. } | TransferOutcome::Interrupted { .. } => {
                                 unreachable!()
                             }
                         };
-                        let _ = events.unbounded_send(Event::TransferDone { id, status, message });
+                        let _ = events.unbounded_send(Event::TransferDone { id, status, message, report });
                     }
                 }
                 // Backfill any freed slot (a parked item frees its slot too).
@@ -968,8 +981,12 @@ enum TransferOutcome {
         existing_size: Option<u64>,
     },
     /// The copy finished and the remote writes were acknowledged. `message`
-    /// carries a folder transfer's skipped/failed tally, if any.
-    Completed { message: Option<String> },
+    /// carries a folder transfer's one-line skipped/failed tally, if any;
+    /// `report` carries the per-entry detail behind it (folder transfers only).
+    Completed {
+        message: Option<String>,
+        report: Option<TransferReport>,
+    },
     /// The copy was cancelled mid-flight (a partial file was cleaned up).
     Cancelled,
     /// The destination existed and the policy resolved to skip; nothing written.
@@ -1143,7 +1160,10 @@ async fn copy_file(
         }
     };
     match result {
-        Ok(()) => TransferOutcome::Completed { message: None },
+        Ok(()) => TransferOutcome::Completed {
+            message: None,
+            report: None,
+        },
         Err(NyxError::Cancelled) => {
             cleanup_partial(client, spec).await;
             TransferOutcome::Cancelled
@@ -1273,7 +1293,8 @@ async fn copy_dir(
         return TransferOutcome::Failed(err.to_string());
     }
 
-    let mut failures = 0u64;
+    let mut failed = 0u64;
+    let mut issues: Vec<EntryIssue> = Vec::new();
     for item in &walk.items {
         if progress.is_cancelled() {
             return TransferOutcome::Cancelled;
@@ -1283,20 +1304,39 @@ async fn copy_dir(
             Err(NyxError::Cancelled) => return TransferOutcome::Cancelled,
             Err(err) => {
                 debug!(error = %err, rel = ?item.rel, "skipping unreadable entry in folder transfer");
-                failures += 1;
+                failed += 1;
+                push_capped(
+                    &mut issues,
+                    EntryIssue::failed(item.rel.join("/"), err.to_string()),
+                );
             }
         }
     }
 
-    let mut notes = Vec::new();
-    if failures > 0 {
-        notes.push(format!("{failures} failed"));
+    let skipped = walk.skips.len() as u64;
+    for skip in walk.skips {
+        push_capped(&mut issues, skip);
     }
-    if walk.skipped > 0 {
-        notes.push(format!("{} skipped", walk.skipped));
+
+    let report = TransferReport {
+        failed,
+        skipped,
+        issues,
+    };
+    let message = report.summary();
+    let report = report.has_issues().then_some(report);
+    TransferOutcome::Completed { message, report }
+}
+
+/// Append `issue` to the retained list only while it is under the cap — full
+/// counts stay exact, but a folder with thousands of bad entries never ships a
+/// thousands-long report. The dropped tail is surfaced via
+/// [`TransferReport::truncated`].
+fn push_capped(issues: &mut Vec<EntryIssue>, issue: EntryIssue) {
+    const ISSUE_CAP: usize = 100;
+    if issues.len() < ISSUE_CAP {
+        issues.push(issue);
     }
-    let message = (!notes.is_empty()).then(|| notes.join(", "));
-    TransferOutcome::Completed { message }
 }
 
 /// Enumerate a directory transfer's work items + totals — a remote walk for a
@@ -1386,24 +1426,38 @@ async fn local_walk(root: &std::path::Path) -> Result<DirWalk, NyxError> {
             .await
             .map_err(|e| NyxError::Io(e.to_string()))?
         {
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else {
-                walk.skipped += 1; // non-UTF-8 names are not representable remotely
+            let raw_name = entry.file_name();
+            let Some(name) = raw_name.to_str() else {
+                // Non-UTF-8 names are not representable remotely — skip, but still
+                // surface a (lossy) path so the report names the offending entry.
+                let mut shown = rel.clone();
+                shown.push(raw_name.to_string_lossy().into_owned());
+                walk.skips
+                    .push(EntryIssue::skipped(shown.join("/"), "non-UTF-8 name"));
                 continue;
             };
+            let mut child_rel = rel.clone();
+            child_rel.push(name.to_string());
             // `symlink_metadata` is lstat-style, so a link is reported as a link.
             let meta = match tokio::fs::symlink_metadata(entry.path()).await {
                 Ok(meta) => meta,
-                Err(_) => {
-                    walk.skipped += 1;
+                Err(err) => {
+                    walk.skips.push(EntryIssue::skipped(
+                        child_rel.join("/"),
+                        format!("unreadable: {err}"),
+                    ));
                     continue;
                 }
             };
             let ft = meta.file_type();
-            let mut child_rel = rel.clone();
-            child_rel.push(name.to_string());
-            if ft.is_symlink() || (!ft.is_dir() && !ft.is_file()) {
-                walk.skipped += 1;
+            if ft.is_symlink() {
+                walk.skips
+                    .push(EntryIssue::skipped(child_rel.join("/"), "symlink skipped"));
+            } else if !ft.is_dir() && !ft.is_file() {
+                walk.skips.push(EntryIssue::skipped(
+                    child_rel.join("/"),
+                    "special file skipped",
+                ));
             } else if ft.is_dir() {
                 walk.items.push(WalkItem {
                     rel: child_rel.clone(),
