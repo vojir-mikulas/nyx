@@ -51,6 +51,10 @@ pub enum TransferStatus {
     Completed,
     /// Stopped with an error.
     Failed,
+    /// Paused because the connection dropped mid-flight. The bytes already
+    /// written are retained and the transfer resumes on reconnect (or can be
+    /// cancelled manually). Not a terminal state.
+    Interrupted,
     /// Cancelled by the user.
     Cancelled,
     /// Not transferred because the destination already existed and the user (or
@@ -106,6 +110,21 @@ impl Transfer {
     }
 }
 
+/// A cheap fingerprint of a transfer's source file, captured when a copy first
+/// starts and re-checked before a resume. If the source changed under us during
+/// the outage (different size or mtime), splicing the remaining bytes onto the
+/// partial destination would corrupt it — so a mismatch forces a full restart
+/// from zero instead. `mtime` is best-effort: a `None` on either side (a server
+/// that doesn't report it, a protocol that can't stat) is treated as "can't
+/// verify", which also forces a restart. Never resume on doubt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceMeta {
+    /// Source size in bytes at capture time.
+    pub size: u64,
+    /// Source modification time (seconds), if the source could report it.
+    pub mtime: Option<u64>,
+}
+
 /// A shared progress + cancel handle carried into a running transfer's copy loop.
 ///
 /// One handle is held by both the copy task (which `add`s bytes per chunk and
@@ -123,6 +142,13 @@ impl TransferProgress {
     /// Record `n` more transferred bytes.
     pub fn add(&self, n: u64) {
         self.transferred.fetch_add(n, Ordering::Relaxed);
+    }
+
+    /// Seed the byte counter to `n`. Used when resuming a transfer from an
+    /// offset: the already-written bytes count toward progress so the dock's
+    /// `%` / speed math stays correct from the first sample.
+    pub fn seed(&self, n: u64) {
+        self.transferred.store(n, Ordering::Relaxed);
     }
 
     /// Cumulative bytes transferred so far.

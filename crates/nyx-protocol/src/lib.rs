@@ -11,7 +11,7 @@
 use std::path::Path;
 
 use async_trait::async_trait;
-use nyx_core::{EntryKind, RemoteEntry, RemotePath, Result, TransferProgress};
+use nyx_core::{EntryKind, RemoteEntry, RemotePath, Result, SourceMeta, TransferProgress};
 
 mod ftp;
 mod ftps;
@@ -107,26 +107,55 @@ pub trait RemoteClient: Send + Sync {
         None
     }
 
-    /// Download a remote file to a local path.
+    /// Whether this protocol can resume an interrupted transfer from a byte
+    /// offset (a positioned remote read for download, a positioned remote write
+    /// for upload). Only resume-capable clients are ever handed a non-zero
+    /// `offset`; the default is `false`, so a protocol opts in explicitly.
+    fn supports_resume(&self) -> bool {
+        false
+    }
+
+    /// Best-effort `(size, mtime)` fingerprint of a remote file, used as the
+    /// source-unchanged guard for a resumed **download** (the source is remote).
+    /// `None` when it can't be cheaply statted — which forces a safe full restart
+    /// rather than a blind splice. Defaults to `None`.
+    async fn remote_meta(&self, path: &RemotePath) -> Option<SourceMeta> {
+        let _ = path;
+        None
+    }
+
+    /// Download a remote file to a local path, starting at `offset` bytes.
     ///
-    /// `progress` is bumped per chunk and checked between chunks: a requested
-    /// cancellation short-circuits the copy with [`nyx_core::NyxError::Cancelled`].
+    /// `offset == 0` truncates/creates the local file and copies from the start;
+    /// a non-zero `offset` (only ever passed to a [`supports_resume`] client)
+    /// seeks both ends and appends the remaining bytes — resuming an interrupted
+    /// download. `progress` is bumped per chunk and checked between chunks: a
+    /// requested cancellation short-circuits with [`nyx_core::NyxError::Cancelled`].
+    ///
+    /// [`supports_resume`]: RemoteClient::supports_resume
     async fn download(
         &self,
         remote: &RemotePath,
         local: &Path,
         progress: &TransferProgress,
+        offset: u64,
     ) -> Result<()>;
 
-    /// Upload a local file to a remote path.
+    /// Upload a local file to a remote path, starting at `offset` bytes.
     ///
-    /// `progress` is bumped per chunk and checked between chunks: a requested
-    /// cancellation short-circuits the copy with [`nyx_core::NyxError::Cancelled`].
+    /// `offset == 0` truncates/creates the remote file; a non-zero `offset` (only
+    /// ever passed to a [`supports_resume`] client) seeks both ends and appends
+    /// the remaining bytes — resuming an interrupted upload. `progress` is bumped
+    /// per chunk and checked between chunks: a requested cancellation
+    /// short-circuits with [`nyx_core::NyxError::Cancelled`].
+    ///
+    /// [`supports_resume`]: RemoteClient::supports_resume
     async fn upload(
         &self,
         local: &Path,
         remote: &RemotePath,
         progress: &TransferProgress,
+        offset: u64,
     ) -> Result<()>;
 
     /// Rename / move a remote entry.

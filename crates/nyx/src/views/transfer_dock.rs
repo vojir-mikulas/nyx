@@ -145,9 +145,15 @@ fn transfer_row(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
         TransferStatus::Failed => (theme.red, "Failed".to_string()),
         TransferStatus::Cancelled => (theme.text_dim, "Cancelled".to_string()),
         TransferStatus::Skipped => (theme.text_dim, "Skipped".to_string()),
+        TransferStatus::Interrupted => (theme.yellow, "Paused".to_string()),
     };
 
-    let show_bar = matches!(status, TransferStatus::Running | TransferStatus::Queued);
+    // Interrupted keeps its bar at the retained watermark (it resumes on
+    // reconnect) and stays cancellable so the user can abandon it.
+    let show_bar = matches!(
+        status,
+        TransferStatus::Running | TransferStatus::Queued | TransferStatus::Interrupted
+    );
     let show_cancel = show_bar || status == TransferStatus::AwaitingDecision;
     let path_or_error = if status == TransferStatus::Failed {
         (

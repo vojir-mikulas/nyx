@@ -368,6 +368,15 @@ pub enum Event {
         /// An error detail for `Failed`; `None` otherwise.
         message: Option<String>,
     },
+    /// A transfer was paused by a connection loss and is retained for resume on
+    /// reconnect (it is *not* terminal). `transferred` is the bytes-done
+    /// watermark so the dock keeps its progress instead of zeroing the bar.
+    TransferInterrupted {
+        /// The transfer id.
+        id: TransferId,
+        /// Cumulative bytes written so far (the resume watermark).
+        transferred: u64,
+    },
     /// An operation failed. The message is human-readable and credential-free.
     Error {
         /// The error detail (a `NyxError` display; never contains a secret).
@@ -538,11 +547,19 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
     // Internal channels: connect-like task → dispatcher.
     let (register_tx, mut register_rx) = unbounded_channel::<oneshot::Sender<bool>>();
     let (done_tx, mut done_rx) = unbounded_channel::<TaskOutcome>();
-    // Internal channel: a finished copy task → dispatcher (mirrors `done`).
-    let (xfer_done_tx, mut xfer_done_rx) = unbounded_channel::<(TransferId, TransferOutcome)>();
+    // Internal channel: a finished copy task → dispatcher (mirrors `done`). The
+    // `u64` is the session generation the copy ran under (see `generation` below).
+    let (xfer_done_tx, mut xfer_done_rx) =
+        unbounded_channel::<(TransferId, u64, TransferOutcome)>();
 
     // Owns the session credentials cached for auto-reconnect and the backoff loop.
     let mut reconnector = Reconnector::new(register_tx.clone(), done_tx.clone());
+
+    // Bumped on every successful connect. Each spawned copy task carries the
+    // generation it ran under, so a straggler that only notices a drop *after* a
+    // reconnect already succeeded can't be mistaken for a fresh loss of the new,
+    // healthy session — it's resumed instead of flipping the session again.
+    let mut generation: u64 = 0;
 
     // The throttle ticker for progress sampling. The first tick fires
     // immediately; on an idle loop it samples an empty set (cheap no-op).
@@ -561,9 +578,26 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                             });
                             continue;
                         }
-                        // A manual connect supersedes any backoff loop and re-seeds
-                        // the credentials cached for a later auto-reconnect.
+                        // A manual connect supersedes any backoff loop. A manual
+                        // *reconnect* (same profile) keeps interrupted transfers so
+                        // they resume on `Connected`; connecting to a *different*
+                        // profile cancels them — they belong to the old session.
                         reconnector.abort();
+                        let same_profile = reconnector
+                            .creds
+                            .as_ref()
+                            .map(|c| c.profile.id.as_str())
+                            == Some(profile.id.as_str());
+                        if !same_profile {
+                            for id in queue.drain_interrupted() {
+                                last_bytes.remove(&id);
+                                let _ = events.unbounded_send(Event::TransferDone {
+                                    id,
+                                    status: TransferStatus::Cancelled,
+                                    message: None,
+                                });
+                            }
+                        }
                         reconnector.set_creds(profile.clone(), secret.clone(), auto_reconnect);
                         // Replace any existing session.
                         client = None;
@@ -716,13 +750,13 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                     // no `FileOpDone` toast for transfers.
                     Command::Download { remote, local, is_dir } => {
                         submit_transfer(
-                            &mut queue, &client, &events, &xfer_done_tx,
+                            &mut queue, &client, &events, &xfer_done_tx, generation,
                             TransferDirection::Download, kind_of(is_dir), remote, local,
                         );
                     }
                     Command::Upload { local, remote, is_dir } => {
                         submit_transfer(
-                            &mut queue, &client, &events, &xfer_done_tx,
+                            &mut queue, &client, &events, &xfer_done_tx, generation,
                             TransferDirection::Upload, kind_of(is_dir), remote, local,
                         );
                     }
@@ -763,7 +797,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                                 message: None,
                             });
                         }
-                        try_start(&mut queue, &client, &events, &xfer_done_tx);
+                        try_start(&mut queue, &client, &events, &xfer_done_tx, generation);
                     }
                     Command::CancelReconnect => {
                         // Stop the backoff loop but keep the session credentials —
@@ -811,8 +845,14 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                         reconnector.abort();
                         client = Some(Arc::from(session));
                         active_profile = Some(profile_id.clone());
+                        generation += 1;
                         info!(%profile_id, "connected");
                         let _ = events.unbounded_send(Event::Connected { profile_id, home });
+                        // Resume any transfers interrupted by the loss, in their
+                        // original order (a no-op on a first connect).
+                        if queue.readmit_interrupted() > 0 {
+                            try_start(&mut queue, &client, &events, &xfer_done_tx, generation);
+                        }
                     }
                     TaskOutcome::ConnectFailed { message } => {
                         // A failed manual connect holds no session to reconnect to.
@@ -829,7 +869,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                     }
                 }
             }
-            Some((id, outcome)) = xfer_done_rx.recv() => {
+            Some((id, gen, outcome)) = xfer_done_rx.recv() => {
                 match outcome {
                     // The pre-flight gate found an existing destination: park the
                     // item and ask the UI. If there is no UI to answer (the event
@@ -853,6 +893,31 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                             }
                         }
                     }
+                    // The transport died mid-copy: park this transfer in the
+                    // resumable holding state, then decide what the loss means.
+                    TransferOutcome::Interrupted { transferred, source_meta } => {
+                        if queue.interrupt(id, transferred, source_meta) {
+                            last_bytes.remove(&id);
+                            let _ = events.unbounded_send(Event::TransferInterrupted { id, transferred });
+                        }
+                        if gen == generation {
+                            // First sign of loss for the *current* session (a sibling
+                            // may have flipped it already — note_connection_lost is
+                            // idempotent). Flips the session, interrupts the pending
+                            // transfers and starts the backoff loop.
+                            note_connection_lost(
+                                &mut client, &mut active_profile, &mut queue,
+                                &mut last_bytes, &mut reconnector, &events,
+                                "connection lost".into(),
+                            );
+                        } else if client.is_some() {
+                            // A straggler from an already-replaced session noticing
+                            // the *old* drop after we reconnected — don't flip the
+                            // healthy session; re-admit it so the trailing try_start
+                            // resumes it on the new one.
+                            queue.readmit_interrupted();
+                        }
+                    }
                     // A copy task finished: free its slot, drop its speed counter,
                     // announce the terminal state.
                     terminal => {
@@ -863,13 +928,15 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                             TransferOutcome::Cancelled => (TransferStatus::Cancelled, None),
                             TransferOutcome::Skipped => (TransferStatus::Skipped, None),
                             TransferOutcome::Failed(msg) => (TransferStatus::Failed, Some(msg)),
-                            TransferOutcome::Collision { .. } => unreachable!(),
+                            TransferOutcome::Collision { .. } | TransferOutcome::Interrupted { .. } => {
+                                unreachable!()
+                            }
                         };
                         let _ = events.unbounded_send(Event::TransferDone { id, status, message });
                     }
                 }
                 // Backfill any freed slot (a parked item frees its slot too).
-                try_start(&mut queue, &client, &events, &xfer_done_tx);
+                try_start(&mut queue, &client, &events, &xfer_done_tx, generation);
             }
             _ = progress_tick.tick() => {
                 // Sample every running transfer's byte counter and emit a
@@ -907,6 +974,16 @@ enum TransferOutcome {
     Cancelled,
     /// The destination existed and the policy resolved to skip; nothing written.
     Skipped,
+    /// The transport died mid-copy: the partial is **kept** for a resume. Carries
+    /// the bytes-done watermark and the source fingerprint captured at start.
+    /// Only file transfers produce this; the dispatcher flips the session to
+    /// lost and parks the transfer in the queue's interrupted state.
+    Interrupted {
+        /// Bytes written so far (the resume offset).
+        transferred: u64,
+        /// The source fingerprint at start, for the resume's unchanged-guard.
+        source_meta: Option<nyx_core::SourceMeta>,
+    },
     /// The copy failed; the credential-free message is for the UI.
     Failed(String),
 }
@@ -928,7 +1005,8 @@ fn submit_transfer(
     queue: &mut TransferQueue,
     client: &Option<Arc<dyn RemoteClient>>,
     events: &FuturesSender<Event>,
-    xfer_done: &TokioSender<(TransferId, TransferOutcome)>,
+    xfer_done: &TokioSender<(TransferId, u64, TransferOutcome)>,
+    generation: u64,
     direction: TransferDirection,
     kind: TransferKind,
     remote: RemotePath,
@@ -944,6 +1022,8 @@ fn submit_transfer(
         remote: remote.clone(),
         local: local.clone(),
         on_collision: None,
+        resume_from: 0,
+        source_meta: None,
     };
     match queue.submit(spec) {
         Ok(id) => {
@@ -954,7 +1034,7 @@ fn submit_transfer(
                 remote,
                 local: local.display().to_string(),
             });
-            try_start(queue, client, events, xfer_done);
+            try_start(queue, client, events, xfer_done, generation);
         }
         Err(_) => path_in_use(events, &remote),
     }
@@ -969,11 +1049,18 @@ fn try_start(
     queue: &mut TransferQueue,
     client: &Option<Arc<dyn RemoteClient>>,
     events: &FuturesSender<Event>,
-    xfer_done: &TokioSender<(TransferId, TransferOutcome)>,
+    xfer_done: &TokioSender<(TransferId, u64, TransferOutcome)>,
+    generation: u64,
 ) {
     let Some(client) = client else { return };
     while let Some(started) = queue.poll_start() {
-        spawn_transfer(client.clone(), started, events.clone(), xfer_done.clone());
+        spawn_transfer(
+            client.clone(),
+            started,
+            events.clone(),
+            xfer_done.clone(),
+            generation,
+        );
     }
 }
 
@@ -984,14 +1071,16 @@ fn spawn_transfer(
     client: Arc<dyn RemoteClient>,
     started: Started,
     events: FuturesSender<Event>,
-    xfer_done: TokioSender<(TransferId, TransferOutcome)>,
+    xfer_done: TokioSender<(TransferId, u64, TransferOutcome)>,
+    generation: u64,
 ) {
     let Started { id, spec, progress } = started;
     tokio::spawn(async move {
         // Pre-flight collision gate: stat the destination before writing a byte.
-        // A reliability-first client must never blind-overwrite.
+        // A reliability-first client must never blind-overwrite. A re-admitted
+        // resume carries an `Overwrite` policy, so it skips the prompt here.
         if let Some(outcome) = collision_gate(&*client, &spec).await {
-            let _ = xfer_done.send((id, outcome));
+            let _ = xfer_done.send((id, generation, outcome));
             return;
         }
 
@@ -999,12 +1088,13 @@ fn spawn_transfer(
             TransferKind::File => copy_file(&*client, &spec, &progress, id, &events).await,
             TransferKind::Dir => copy_dir(&*client, &spec, &progress, id, &events).await,
         };
-        let _ = xfer_done.send((id, outcome));
+        let _ = xfer_done.send((id, generation, outcome));
     });
 }
 
-/// Copy a single file: stat the total, announce the start, run the protocol copy,
-/// clean up any partial on cancel/fail.
+/// Copy a single file: capture the source fingerprint, decide the resume offset,
+/// announce the start, run the protocol copy, and classify the outcome — a
+/// transport death keeps the partial for a resume; any other error cleans it up.
 async fn copy_file(
     client: &dyn RemoteClient,
     spec: &TransferSpec,
@@ -1012,16 +1102,45 @@ async fn copy_file(
     id: TransferId,
     events: &FuturesSender<Event>,
 ) -> TransferOutcome {
+    // Fingerprint the source now. For a download the source is remote (only an
+    // SFTP client reports it); for an upload it's the always-statable local file.
+    // The fingerprint is carried into a resume to confirm the source is unchanged.
+    let source_meta = capture_source_meta(client, spec).await;
+
+    // The effective offset is the **destination's actual on-disk size**, not the
+    // watermark — the watermark can run ahead of durably-written bytes (an upload's
+    // SFTP writes ack lazily), and resuming past the real EOF would leave a gap.
+    // Only resume when the client can, the source is verifiably unchanged, and the
+    // partial fits within it; otherwise restart from zero.
+    let dest_size = if spec.resume_from > 0 {
+        destination_size(client, spec).await
+    } else {
+        None
+    };
+    let offset = resume_offset(client.supports_resume(), spec, source_meta, dest_size);
+    progress.seed(offset);
+
     // Stat the total up front so the dock can show a real %/total.
     let total = match spec.direction {
-        TransferDirection::Download => client.remote_size(&spec.remote).await,
+        TransferDirection::Download => client
+            .remote_size(&spec.remote)
+            .await
+            .or_else(|| source_meta.map(|m| m.size)),
         TransferDirection::Upload => tokio::fs::metadata(&spec.local).await.ok().map(|m| m.len()),
     };
     let _ = events.unbounded_send(Event::TransferStarted { id, total });
 
     let result = match spec.direction {
-        TransferDirection::Download => client.download(&spec.remote, &spec.local, progress).await,
-        TransferDirection::Upload => client.upload(&spec.local, &spec.remote, progress).await,
+        TransferDirection::Download => {
+            client
+                .download(&spec.remote, &spec.local, progress, offset)
+                .await
+        }
+        TransferDirection::Upload => {
+            client
+                .upload(&spec.local, &spec.remote, progress, offset)
+                .await
+        }
     };
     match result {
         Ok(()) => TransferOutcome::Completed { message: None },
@@ -1030,10 +1149,97 @@ async fn copy_file(
             TransferOutcome::Cancelled
         }
         Err(err) => {
-            cleanup_partial(client, spec).await;
-            TransferOutcome::Failed(err.to_string())
+            // A transport loss is resumable: keep the partial, hand back the
+            // watermark + fingerprint. A genuine error (disk full, permissions)
+            // is terminal: clean up. The probe disambiguates the two.
+            if is_transport_lost(client, &spec.remote, &err).await {
+                TransferOutcome::Interrupted {
+                    transferred: progress.transferred(),
+                    source_meta,
+                }
+            } else {
+                cleanup_partial(client, spec).await;
+                TransferOutcome::Failed(err.to_string())
+            }
         }
     }
+}
+
+/// Capture the source file's `(size, mtime)` fingerprint at the start of a copy,
+/// used to guard a later resume. The source is the **remote** file for a download
+/// (reported only by resume-capable clients) and the **local** file for an upload.
+async fn capture_source_meta(
+    client: &dyn RemoteClient,
+    spec: &TransferSpec,
+) -> Option<nyx_core::SourceMeta> {
+    match spec.direction {
+        TransferDirection::Download => client.remote_meta(&spec.remote).await,
+        TransferDirection::Upload => {
+            let meta = tokio::fs::metadata(&spec.local).await.ok()?;
+            let mtime = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs());
+            Some(nyx_core::SourceMeta {
+                size: meta.len(),
+                mtime,
+            })
+        }
+    }
+}
+
+/// The current size of a copy's **destination** partial — the local file for a
+/// download, the remote file for an upload. This is the source of truth for the
+/// resume offset (the watermark can run ahead of durably-written bytes).
+async fn destination_size(client: &dyn RemoteClient, spec: &TransferSpec) -> Option<u64> {
+    match spec.direction {
+        TransferDirection::Download => tokio::fs::metadata(&spec.local).await.ok().map(|m| m.len()),
+        TransferDirection::Upload => client.remote_size(&spec.remote).await,
+    }
+}
+
+/// The byte offset a file copy should actually start from: the destination's
+/// real `dest_size`, but only when this is a resume (`resume_from > 0`), the
+/// client supports it, the source is verifiably unchanged (same size + mtime),
+/// and the partial fits within the source. On any doubt — a changed source, a
+/// missing mtime, an unverifiable fingerprint, an oversized partial — restart
+/// from `0` rather than splice bytes blind. Silent corruption is worse than a
+/// re-transfer.
+fn resume_offset(
+    supports_resume: bool,
+    spec: &TransferSpec,
+    current: Option<nyx_core::SourceMeta>,
+    dest_size: Option<u64>,
+) -> u64 {
+    if spec.resume_from == 0 || !supports_resume {
+        return 0;
+    }
+    match (spec.source_meta, current, dest_size) {
+        (Some(orig), Some(cur), Some(dest))
+            if orig == cur && orig.mtime.is_some() && dest <= cur.size =>
+        {
+            dest
+        }
+        _ => 0,
+    }
+}
+
+/// Whether a failed file copy was a transport loss (→ resumable) rather than a
+/// genuine error (→ terminal). An error already typed [`NyxError::ConnectionLost`]
+/// is decisive; otherwise probe the session with a cheap stat — if that itself
+/// reports the connection gone, the copy died with it.
+async fn is_transport_lost(client: &dyn RemoteClient, remote: &RemotePath, err: &NyxError) -> bool {
+    if matches!(err, NyxError::ConnectionLost(_)) {
+        return true;
+    }
+    // The mid-copy byte loop surfaces a remote transport death as a generic I/O
+    // error, so confirm with a probe: a live session answers (Ok), a dead one
+    // maps to ConnectionLost.
+    matches!(
+        client.exists(remote).await,
+        Err(NyxError::ConnectionLost(_))
+    )
 }
 
 /// Copy a whole directory tree as one aggregate transfer: enumerate it (so the
@@ -1129,9 +1335,10 @@ async fn copy_walk_item(
         (TransferDirection::Download, true) => tokio::fs::create_dir_all(&local)
             .await
             .map_err(|e| NyxError::Io(e.to_string())),
-        (TransferDirection::Download, false) => client.download(&remote, &local, progress).await,
+        // Directory transfers don't resume per-item yet — always copy from 0.
+        (TransferDirection::Download, false) => client.download(&remote, &local, progress, 0).await,
         (TransferDirection::Upload, true) => ensure_remote_dir(client, &remote).await,
-        (TransferDirection::Upload, false) => client.upload(&local, &remote, progress).await,
+        (TransferDirection::Upload, false) => client.upload(&local, &remote, progress, 0).await,
     }
 }
 
@@ -1325,12 +1532,12 @@ fn report_op_error(
 }
 
 /// Flip the active session to "lost": drop the client (so later commands fail
-/// fast), emit exactly one [`Event::ConnectionLost`], fail the **pending**
-/// transfers (queued/parked can't run without a session; in-flight ones fail on
-/// their own next I/O), and kick off an auto-reconnect backoff loop (a no-op when
-/// the setting is off or no credentials are cached). The `client.take()` guard
-/// makes this idempotent — a later op that also sees a transport error finds no
-/// client and is a no-op.
+/// fast), emit exactly one [`Event::ConnectionLost`], move the **pending**
+/// transfers (queued/parked) into the resumable interrupted state, and kick off
+/// an auto-reconnect backoff loop (a no-op when the setting is off or no
+/// credentials are cached). In-flight transfers interrupt themselves as their
+/// copy tasks notice the drop. The `client.take()` guard makes this idempotent —
+/// a later op that also sees a transport error finds no client and is a no-op.
 fn note_connection_lost(
     client: &mut Option<Arc<dyn RemoteClient>>,
     active_profile: &mut Option<String>,
@@ -1346,13 +1553,9 @@ fn note_connection_lost(
     let profile_id = active_profile.take().unwrap_or_default();
     warn!(%profile_id, "connection lost");
     let _ = events.unbounded_send(Event::ConnectionLost { profile_id, reason });
-    for id in queue.fail_pending() {
+    for id in queue.interrupt_pending() {
         last_bytes.remove(&id);
-        let _ = events.unbounded_send(Event::TransferDone {
-            id,
-            status: TransferStatus::Failed,
-            message: Some("connection lost".into()),
-        });
+        let _ = events.unbounded_send(Event::TransferInterrupted { id, transferred: 0 });
     }
     reconnector.start(events);
 }
@@ -1811,5 +2014,106 @@ mod tests {
         assert!(!is_transient_connect_error(&NyxError::Auth));
         assert!(!is_transient_connect_error(&NyxError::HostKey("x".into())));
         assert!(!is_transient_connect_error(&NyxError::KeyLocked));
+    }
+
+    fn resume_spec(resume_from: u64, source_meta: Option<nyx_core::SourceMeta>) -> TransferSpec {
+        TransferSpec {
+            direction: TransferDirection::Download,
+            kind: TransferKind::File,
+            remote: RemotePath::new("/r/f"),
+            local: std::path::PathBuf::from("/l/f"),
+            on_collision: Some(CollisionChoice::Overwrite),
+            resume_from,
+            source_meta,
+        }
+    }
+
+    #[test]
+    fn resume_only_when_supported_and_source_unchanged() {
+        let meta = nyx_core::SourceMeta {
+            size: 1000,
+            mtime: Some(42),
+        };
+        // Fresh transfer (offset 0) never resumes.
+        assert_eq!(
+            resume_offset(true, &resume_spec(0, Some(meta)), Some(meta), Some(256)),
+            0
+        );
+        // A resume-capable client with an unchanged source resumes from the
+        // destination's actual size (256), not the recorded watermark (300).
+        assert_eq!(
+            resume_offset(true, &resume_spec(300, Some(meta)), Some(meta), Some(256)),
+            256
+        );
+        // A non-resume-capable client always restarts.
+        assert_eq!(
+            resume_offset(false, &resume_spec(300, Some(meta)), Some(meta), Some(256)),
+            0
+        );
+    }
+
+    #[test]
+    fn resume_restarts_on_any_doubt() {
+        let orig = nyx_core::SourceMeta {
+            size: 1000,
+            mtime: Some(42),
+        };
+        // Size changed under us → restart.
+        let bigger = nyx_core::SourceMeta {
+            size: 2000,
+            mtime: Some(42),
+        };
+        assert_eq!(
+            resume_offset(true, &resume_spec(256, Some(orig)), Some(bigger), Some(256)),
+            0
+        );
+        // mtime changed → restart.
+        let touched = nyx_core::SourceMeta {
+            size: 1000,
+            mtime: Some(99),
+        };
+        assert_eq!(
+            resume_offset(
+                true,
+                &resume_spec(256, Some(orig)),
+                Some(touched),
+                Some(256)
+            ),
+            0
+        );
+        // Source unstattable now → restart.
+        assert_eq!(
+            resume_offset(true, &resume_spec(256, Some(orig)), None, Some(256)),
+            0
+        );
+        // No fingerprint captured at start → restart.
+        assert_eq!(
+            resume_offset(true, &resume_spec(256, None), Some(orig), Some(256)),
+            0
+        );
+        // Destination unstattable → restart.
+        assert_eq!(
+            resume_offset(true, &resume_spec(256, Some(orig)), Some(orig), None),
+            0
+        );
+        // mtime unknown on both sides (equal but unverifiable) → restart.
+        let no_mtime = nyx_core::SourceMeta {
+            size: 1000,
+            mtime: None,
+        };
+        assert_eq!(
+            resume_offset(
+                true,
+                &resume_spec(256, Some(no_mtime)),
+                Some(no_mtime),
+                Some(256)
+            ),
+            0
+        );
+        // Partial larger than the current source (truncated/replaced) → restart.
+        assert_eq!(
+            resume_offset(true, &resume_spec(256, Some(orig)), Some(orig), Some(1200)),
+            0
+        );
     }
 }

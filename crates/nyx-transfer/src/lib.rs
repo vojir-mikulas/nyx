@@ -27,7 +27,8 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 use nyx_core::{
-    CollisionChoice, RemotePath, TransferDirection, TransferId, TransferKind, TransferProgress,
+    CollisionChoice, RemotePath, SourceMeta, TransferDirection, TransferId, TransferKind,
+    TransferProgress,
 };
 
 /// A `submit` (or a mutating op against a locked path) was rejected because the
@@ -51,6 +52,13 @@ pub struct TransferSpec {
     /// destination already exists"; a resolved choice (e.g. an "apply to all"
     /// stamp) skips the prompt round-trip.
     pub on_collision: Option<CollisionChoice>,
+    /// Byte offset to resume from; `0` means start fresh. Set when the queue
+    /// re-admits an interrupted transfer — the copy only actually seeks to it if
+    /// the source is verifiably unchanged, otherwise it restarts from `0`.
+    pub resume_from: u64,
+    /// The source fingerprint captured on the first run, carried across an
+    /// interruption so a resume can confirm the source hasn't changed under us.
+    pub source_meta: Option<SourceMeta>,
 }
 
 /// What [`TransferQueue::poll_start`] hands back when a queued transfer is
@@ -105,6 +113,11 @@ pub struct TransferQueue {
     /// Transfers parked at the pre-flight gate, awaiting a collision decision.
     /// A parked item holds no running slot.
     awaiting: HashMap<TransferId, TransferSpec>,
+    /// Transfers paused by a connection loss, retaining their spec (with the
+    /// resume offset stamped on it). They hold a running slot for no one but keep
+    /// their path lock — [`readmit_interrupted`](Self::readmit_interrupted) puts
+    /// them back on the queue on reconnect.
+    interrupted: HashMap<TransferId, TransferSpec>,
     /// Per-transfer record of the paths it locked (and the kind, which decides
     /// whether the lock covers a subtree), so a terminal transition releases
     /// exactly those. The conflict checks iterate these directly.
@@ -146,6 +159,7 @@ impl TransferQueue {
             queued: VecDeque::new(),
             running: HashMap::new(),
             awaiting: HashMap::new(),
+            interrupted: HashMap::new(),
             locks: HashMap::new(),
         }
     }
@@ -310,6 +324,11 @@ impl TransferQueue {
             self.release(id);
             return CancelOutcome::WasQueued;
         }
+        if self.interrupted.remove(&id).is_some() {
+            // Paused by a loss and never resumed — drop it like a queued one.
+            self.release(id);
+            return CancelOutcome::WasQueued;
+        }
         if let Some((_, progress)) = self.running.get(&id) {
             // The copy winds down and the service calls `finish`, which unlocks.
             progress.cancel();
@@ -328,25 +347,86 @@ impl TransferQueue {
         }
         let mut dropped: Vec<TransferId> = self.queued.drain(..).map(|(id, _)| id).collect();
         dropped.extend(self.awaiting.drain().map(|(id, _)| id));
-        // The dropped queued/parked items get no `finish`, so release their locks
-        // now; the flagged running ones release when the service `finish`es them.
+        dropped.extend(self.interrupted.drain().map(|(id, _)| id));
+        // The dropped queued/parked/interrupted items get no `finish`, so release
+        // their locks now; the flagged running ones release when the service
+        // `finish`es them.
         for id in &dropped {
             self.release(*id);
         }
         dropped
     }
 
-    /// Drain the **pending** transfers (queued + parked) without touching the
-    /// running ones, releasing their locks and returning their ids. Used on a
-    /// connection loss: the pending transfers can't run, so the service fails
-    /// them, while the in-flight ones fail on their own next I/O.
-    pub fn fail_pending(&mut self) -> Vec<TransferId> {
-        let mut dropped: Vec<TransferId> = self.queued.drain(..).map(|(id, _)| id).collect();
-        dropped.extend(self.awaiting.drain().map(|(id, _)| id));
-        for id in &dropped {
+    /// Move the **pending** transfers (queued + parked) into the Interrupted
+    /// holding state on a connection loss, **keeping their locks**, and return
+    /// their ids. They hadn't started, so their resume offset is `0` (a fresh
+    /// restart on reconnect). The running ones are interrupted individually via
+    /// [`interrupt`](Self::interrupt) as their copy tasks notice the drop.
+    pub fn interrupt_pending(&mut self) -> Vec<TransferId> {
+        let mut moved: Vec<TransferId> = Vec::new();
+        let queued: Vec<(TransferId, TransferSpec)> = self.queued.drain(..).collect();
+        for (id, mut spec) in queued {
+            spec.resume_from = 0;
+            self.interrupted.insert(id, spec);
+            moved.push(id);
+        }
+        let awaiting: Vec<(TransferId, TransferSpec)> = self.awaiting.drain().collect();
+        for (id, mut spec) in awaiting {
+            spec.resume_from = 0;
+            self.interrupted.insert(id, spec);
+            moved.push(id);
+        }
+        moved
+    }
+
+    /// Move a **running** transfer into the Interrupted holding state, stamping
+    /// the bytes-done `watermark` as its resume offset and recording the source
+    /// fingerprint for the resume guard. Keeps its path lock. Returns `false` if
+    /// the id wasn't running (already finished, or never started).
+    pub fn interrupt(
+        &mut self,
+        id: TransferId,
+        watermark: u64,
+        source_meta: Option<nyx_core::SourceMeta>,
+    ) -> bool {
+        let Some((mut spec, _progress)) = self.running.remove(&id) else {
+            return false;
+        };
+        spec.resume_from = watermark;
+        spec.source_meta = source_meta;
+        self.interrupted.insert(id, spec);
+        true
+    }
+
+    /// Re-admit every interrupted transfer to the queue (at the front, in their
+    /// original submission order) for a resume after reconnect. Each is stamped
+    /// `Overwrite` so the pre-flight gate doesn't re-prompt for the partial it is
+    /// resuming onto. Returns the number re-admitted.
+    pub fn readmit_interrupted(&mut self) -> usize {
+        if self.interrupted.is_empty() {
+            return 0;
+        }
+        // Ids are monotonic, so sorting by id restores submission order.
+        let mut entries: Vec<(TransferId, TransferSpec)> = self.interrupted.drain().collect();
+        entries.sort_by_key(|(id, _)| *id);
+        let count = entries.len();
+        // Push in reverse so the final front order matches submission order.
+        for (id, mut spec) in entries.into_iter().rev() {
+            spec.on_collision = Some(CollisionChoice::Overwrite);
+            self.queued.push_front((id, spec));
+        }
+        count
+    }
+
+    /// Drop every interrupted transfer (e.g. on connecting to a *different*
+    /// profile, or on disconnect), releasing their locks and returning their ids
+    /// so the service can announce them cancelled.
+    pub fn drain_interrupted(&mut self) -> Vec<TransferId> {
+        let ids: Vec<TransferId> = self.interrupted.drain().map(|(id, _)| id).collect();
+        for id in &ids {
             self.release(*id);
         }
-        dropped
+        ids
     }
 
     /// Each running transfer's `(id, bytes transferred so far)`, for the
@@ -369,6 +449,8 @@ mod tests {
             remote: RemotePath::new(format!("/r/{n}")),
             local: PathBuf::from(format!("/l/{n}")),
             on_collision: None,
+            resume_from: 0,
+            source_meta: None,
         }
     }
 
@@ -380,6 +462,8 @@ mod tests {
             remote: RemotePath::new(remote),
             local: PathBuf::from(local),
             on_collision: None,
+            resume_from: 0,
+            source_meta: None,
         }
     }
 
@@ -707,19 +791,80 @@ mod tests {
     }
 
     #[test]
-    fn fail_pending_drops_queued_and_parked_but_not_running() {
+    fn interrupt_pending_holds_queued_and_parked_keeping_locks() {
         let mut q = TransferQueue::new(1);
         let a = q.submit(spec(0)).unwrap(); // will run
         let b = q.submit(spec(1)).unwrap(); // stays queued
         let started_a = q.poll_start().unwrap();
         assert_eq!(started_a.id, a);
 
-        let failed = q.fail_pending();
-        assert_eq!(failed, vec![b]);
-        // The running one keeps its lock until it finishes on its own.
+        let held = q.interrupt_pending();
+        assert_eq!(held, vec![b]);
+        // The pending one is now interrupted but still locks its path (it will
+        // resume on reconnect), and the running one is untouched.
         assert!(q.is_remote_locked(&RemotePath::new("/r/0")));
-        assert!(!q.is_remote_locked(&RemotePath::new("/r/1")));
+        assert!(q.is_remote_locked(&RemotePath::new("/r/1")));
+        // It can't start while merely interrupted…
+        assert!(q.poll_start().is_none());
+        // …until it's re-admitted, which restores it to the queue (front).
+        assert_eq!(q.readmit_interrupted(), 1);
         q.finish(a);
+        let resumed = q.poll_start().unwrap();
+        assert_eq!(resumed.id, b);
+        assert_eq!(resumed.spec.on_collision, Some(CollisionChoice::Overwrite));
+    }
+
+    #[test]
+    fn interrupt_running_records_watermark_and_resumes() {
+        let mut q = TransferQueue::new(2);
+        let a = q.submit(spec(0)).unwrap();
+        let started = q.poll_start().unwrap();
+        assert_eq!(started.id, a);
+
+        let meta = nyx_core::SourceMeta {
+            size: 1000,
+            mtime: Some(42),
+        };
+        assert!(q.interrupt(a, 256, Some(meta)));
+        // It's out of the running set but keeps its lock.
+        assert!(q.is_remote_locked(&RemotePath::new("/r/0")));
+        assert!(q.running_progress().next().is_none());
+
+        // Re-admit restores it with the resume offset + source fingerprint.
+        assert_eq!(q.readmit_interrupted(), 1);
+        let resumed = q.poll_start().unwrap();
+        assert_eq!(resumed.id, a);
+        assert_eq!(resumed.spec.resume_from, 256);
+        assert_eq!(resumed.spec.source_meta, Some(meta));
+    }
+
+    #[test]
+    fn readmit_preserves_submission_order() {
+        let mut q = TransferQueue::new(3);
+        let ids: Vec<_> = (0..3).map(|n| q.submit(spec(n)).unwrap()).collect();
+        for _ in 0..3 {
+            q.poll_start().unwrap();
+        }
+        // Interrupt all three running transfers out of order…
+        assert!(q.interrupt(ids[2], 10, None));
+        assert!(q.interrupt(ids[0], 20, None));
+        assert!(q.interrupt(ids[1], 30, None));
+        // …re-admit, and they come back in original submission order.
+        assert_eq!(q.readmit_interrupted(), 3);
+        let order: Vec<_> = std::iter::from_fn(|| q.poll_start())
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(order, ids);
+    }
+
+    #[test]
+    fn cancel_interrupted_drops_it_and_frees_the_path() {
+        let mut q = TransferQueue::new(1);
+        let a = q.submit(spec(0)).unwrap();
+        q.poll_start().unwrap();
+        assert!(q.interrupt(a, 64, None));
+        assert_eq!(q.cancel(a), CancelOutcome::WasQueued);
         assert!(!q.is_remote_locked(&RemotePath::new("/r/0")));
+        assert_eq!(q.readmit_interrupted(), 0);
     }
 }

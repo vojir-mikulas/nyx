@@ -53,6 +53,16 @@ pub(crate) fn map_io_err(err: std::io::Error) -> NyxError {
     NyxError::Io(err.to_string())
 }
 
+/// Reject a non-zero resume offset for a protocol that can't resume (its
+/// [`supports_resume`](crate::RemoteClient::supports_resume) is `false`, so the
+/// service never hands it one — this is a defensive guard, not a live path).
+pub(crate) fn reject_offset(offset: u64) -> Result<()> {
+    if offset != 0 {
+        return Err(NyxError::Unsupported);
+    }
+    Ok(())
+}
+
 /// One step of a recursive removal, in the order it must be performed: a
 /// directory only ever appears **after** all of its descendants.
 #[derive(Debug, Clone, PartialEq, Eq)]

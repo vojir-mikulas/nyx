@@ -50,6 +50,7 @@ use crate::ftp::{
 };
 use crate::host_key::ServerTrustPrompt;
 use crate::known_hosts::{KnownHostStatus, KnownHosts};
+use crate::util::reject_offset;
 use crate::{DirWalk, RemoteClient};
 
 /// An FTPS client (FTP over TLS).
@@ -239,7 +240,11 @@ impl RemoteClient for FtpsClient {
         remote: &RemotePath,
         local: &Path,
         progress: &TransferProgress,
+        offset: u64,
     ) -> Result<()> {
+        // FTPS resume (REST) is a follow-up; `supports_resume` is false, so a
+        // non-zero offset never reaches here — reject it defensively.
+        reject_offset(offset)?;
         let mut guard = self.stream.lock().await;
         op_download(connected(&mut guard)?, remote, local, progress).await
     }
@@ -249,7 +254,9 @@ impl RemoteClient for FtpsClient {
         local: &Path,
         remote: &RemotePath,
         progress: &TransferProgress,
+        offset: u64,
     ) -> Result<()> {
+        reject_offset(offset)?;
         let mut guard = self.stream.lock().await;
         op_upload(connected(&mut guard)?, local, remote, progress).await
     }

@@ -277,6 +277,7 @@ impl DockTab {
                     TransferStatus::Running
                         | TransferStatus::Queued
                         | TransferStatus::AwaitingDecision
+                        | TransferStatus::Interrupted
                 )
             }
             DockTab::Completed => status == TransferStatus::Completed,

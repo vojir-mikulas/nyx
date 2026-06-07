@@ -2131,6 +2131,21 @@ impl AppState {
                     self.reload_listing(cx);
                 }
             }
+            // A transfer was paused by a connection loss: mark it Interrupted and
+            // retain its watermark so the dock keeps the progress bar (it resumes
+            // on reconnect). A drag-out promise can't resume gracefully, so resolve
+            // its slot now to avoid hanging the OS drop.
+            Event::TransferInterrupted { id, transferred } => {
+                self.drag_downloads
+                    .note_done(id, TransferStatus::Cancelled, None);
+                if let Some(vm) = self.transfers.iter_mut().find(|t| t.transfer.id == id) {
+                    vm.transfer.status = TransferStatus::Interrupted;
+                    vm.speed_bps = None;
+                    if transferred > 0 {
+                        vm.transfer.transferred_bytes = transferred;
+                    }
+                }
+            }
             Event::Error { message } => {
                 let stale = self.used_stored_password.take();
                 let connecting = self.connecting_id.take();
@@ -2413,7 +2428,8 @@ impl AppState {
             match t.transfer.status {
                 TransferStatus::Running
                 | TransferStatus::Queued
-                | TransferStatus::AwaitingDecision => counts.1 += 1,
+                | TransferStatus::AwaitingDecision
+                | TransferStatus::Interrupted => counts.1 += 1,
                 TransferStatus::Completed => counts.2 += 1,
                 TransferStatus::Failed => counts.3 += 1,
                 TransferStatus::Cancelled | TransferStatus::Skipped => {}
@@ -2438,7 +2454,10 @@ impl AppState {
         self.transfers.retain(|t| {
             matches!(
                 t.transfer.status,
-                TransferStatus::Running | TransferStatus::Queued | TransferStatus::AwaitingDecision
+                TransferStatus::Running
+                    | TransferStatus::Queued
+                    | TransferStatus::AwaitingDecision
+                    | TransferStatus::Interrupted
             )
         });
     }

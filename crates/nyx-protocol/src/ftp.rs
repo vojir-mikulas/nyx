@@ -26,7 +26,7 @@ use suppaftp::{FtpError, Mode};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
-use crate::util::{copy_counting, map_io_err, RemoveOp};
+use crate::util::{copy_counting, map_io_err, reject_offset, RemoveOp};
 use crate::{DirWalk, RemoteClient, WalkItem};
 
 /// A plain-FTP client.
@@ -115,7 +115,12 @@ impl RemoteClient for FtpClient {
         remote: &RemotePath,
         local: &Path,
         progress: &TransferProgress,
+        offset: u64,
     ) -> Result<()> {
+        // FTP resume (REST) is a follow-up; `supports_resume` is false, so a
+        // non-zero offset never reaches here — reject it defensively rather than
+        // silently corrupt by ignoring it.
+        reject_offset(offset)?;
         let mut guard = self.stream.lock().await;
         op_download(stream_mut(&mut guard)?, remote, local, progress).await
     }
@@ -125,7 +130,9 @@ impl RemoteClient for FtpClient {
         local: &Path,
         remote: &RemotePath,
         progress: &TransferProgress,
+        offset: u64,
     ) -> Result<()> {
+        reject_offset(offset)?;
         let mut guard = self.stream.lock().await;
         op_upload(stream_mut(&mut guard)?, local, remote, progress).await
     }

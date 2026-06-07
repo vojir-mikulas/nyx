@@ -13,16 +13,18 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use std::io::SeekFrom;
+
 use nyx_core::{
-    EntryKind, NyxError, Permissions, RemoteEntry, RemotePath, Result, ServerTrustKind,
+    EntryKind, NyxError, Permissions, RemoteEntry, RemotePath, Result, ServerTrustKind, SourceMeta,
     TransferProgress,
 };
 use russh::client::{self, Handle};
 use russh::keys::ssh_key::PublicKey;
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg};
 use russh_sftp::client::SftpSession;
-use russh_sftp::protocol::{FileType, StatusCode};
-use tokio::io::AsyncWriteExt;
+use russh_sftp::protocol::{FileType, OpenFlags, StatusCode};
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tracing::warn;
 
 use crate::host_key::ServerTrustPrompt;
@@ -172,6 +174,18 @@ impl RemoteClient for SftpClient {
         self.sftp().ok()?.metadata(path.as_str()).await.ok()?.size
     }
 
+    fn supports_resume(&self) -> bool {
+        true
+    }
+
+    async fn remote_meta(&self, path: &RemotePath) -> Option<SourceMeta> {
+        let meta = self.sftp().ok()?.metadata(path.as_str()).await.ok()?;
+        Some(SourceMeta {
+            size: meta.size?,
+            mtime: meta.mtime.map(|secs| secs as u64),
+        })
+    }
+
     async fn exists(&self, path: &RemotePath) -> Result<bool> {
         match self.sftp()?.metadata(path.as_str()).await {
             Ok(_) => Ok(true),
@@ -237,13 +251,33 @@ impl RemoteClient for SftpClient {
         remote: &RemotePath,
         local: &Path,
         progress: &TransferProgress,
+        offset: u64,
     ) -> Result<()> {
         let sftp = self.sftp()?;
-        // The remote-open / local-create halves keep their split mapping; the
-        // byte loop itself goes through the `AsyncRead`/`AsyncWrite` interface,
-        // which yields `std::io::Error` on either side (mapped via `map_io_err`).
+        // The remote-open / local-open halves keep their split mapping; the byte
+        // loop itself goes through the `AsyncRead`/`AsyncWrite` interface, which
+        // yields `std::io::Error` on either side (mapped via `map_io_err`).
         let mut reader = sftp.open(remote.as_str()).await.map_err(map_sftp_err)?;
-        let mut writer = tokio::fs::File::create(local).await.map_err(map_io_err)?;
+        // offset 0 truncates/creates; a resume opens the existing partial for
+        // writing and seeks both ends to the watermark so the tail is appended.
+        let mut writer = if offset == 0 {
+            tokio::fs::File::create(local).await.map_err(map_io_err)?
+        } else {
+            let mut writer = tokio::fs::OpenOptions::new()
+                .write(true)
+                .open(local)
+                .await
+                .map_err(map_io_err)?;
+            writer
+                .seek(SeekFrom::Start(offset))
+                .await
+                .map_err(map_io_err)?;
+            reader
+                .seek(SeekFrom::Start(offset))
+                .await
+                .map_err(map_io_err)?;
+            writer
+        };
         copy_counting(&mut reader, &mut writer, progress).await?;
         writer.flush().await.map_err(map_io_err)?;
         Ok(())
@@ -254,10 +288,30 @@ impl RemoteClient for SftpClient {
         local: &Path,
         remote: &RemotePath,
         progress: &TransferProgress,
+        offset: u64,
     ) -> Result<()> {
         let sftp = self.sftp()?;
         let mut reader = tokio::fs::File::open(local).await.map_err(map_io_err)?;
-        let mut writer = sftp.create(remote.as_str()).await.map_err(map_sftp_err)?;
+        // offset 0 truncates/creates; a resume opens the existing remote partial
+        // for writing (no truncate) and seeks both ends to the watermark — the
+        // russh-sftp handle does positioned writes from its seek position.
+        let mut writer = if offset == 0 {
+            sftp.create(remote.as_str()).await.map_err(map_sftp_err)?
+        } else {
+            let mut writer = sftp
+                .open_with_flags(remote.as_str(), OpenFlags::WRITE | OpenFlags::CREATE)
+                .await
+                .map_err(map_sftp_err)?;
+            writer
+                .seek(SeekFrom::Start(offset))
+                .await
+                .map_err(map_io_err)?;
+            reader
+                .seek(SeekFrom::Start(offset))
+                .await
+                .map_err(map_io_err)?;
+            writer
+        };
         copy_counting(&mut reader, &mut writer, progress).await?;
         // Flush + close the remote handle so all queued writes are acknowledged
         // before we report success.
