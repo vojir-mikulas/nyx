@@ -188,11 +188,23 @@ fn tab_strip(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
                     .gap_0p5()
                     .px_2()
                     .child(
-                        IconButton::new("toggle-sidebar", icon("sidebarIc", 15., theme.text_faint))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.sidebar_open = !this.sidebar_open;
-                                cx.notify();
-                            })),
+                        IconButton::new(
+                            "toggle-sidebar",
+                            icon(
+                                "sidebarIc",
+                                15.,
+                                if sidebar_open {
+                                    theme.text
+                                } else {
+                                    theme.text_faint
+                                },
+                            ),
+                        )
+                        .active(sidebar_open)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.sidebar_open = !this.sidebar_open;
+                            cx.notify();
+                        })),
                     )
                     .child(
                         IconButton::new(
@@ -800,13 +812,15 @@ fn drag_chip(row: &VisibleRow, count: usize, theme: &Theme) -> gpui::AnyElement 
                 .flex()
                 .items_center()
                 .justify_center()
-                .min_w(px(18.))
+                .min_w(px(16.))
                 .h(px(16.))
-                .px_1()
-                .rounded(theme.radius_sm)
+                .pl(px(5.))
+                .pr(px(3.))
+                .rounded_full()
                 .bg(theme.accent)
                 .text_color(theme.on_accent)
-                .text_xs()
+                .text_size(px(10.))
+                .line_height(px(16.))
                 .child(format!("{count}")),
         );
     }
