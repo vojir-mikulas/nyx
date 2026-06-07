@@ -40,10 +40,11 @@ jobs:
 
   # Windows: a .zip containing Nyx.exe.
   #
-  # NOTE: this job will fail until the compile-level Windows changes land
-  # (cfg-gated keyring backend + per-target GPUI features). A failure here does
-  # NOT remove the macOS .dmg already attached above — the jobs upload to the
-  # same release independently.
+  # The compile-level blockers are addressed (cfg-gated keyring backend +
+  # per-target GPUI features + Windows-gated exe icon). The remaining unknown is
+  # whether the pinned GPUI rev builds clean on windows-latest — this job is the
+  # first place that gets verified. A failure here does NOT remove the macOS .dmg
+  # already attached above — the jobs upload to the same release independently.
   windows:
     name: Package Windows (.zip)
     runs-on: windows-latest

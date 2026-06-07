@@ -11,6 +11,14 @@ use crate::state::AppState;
 
 use super::{status_dot, titlebar_drag};
 
+/// Left inset of the titlebar strip. On macOS it clears the traffic lights
+/// overlapping this region; on other platforms the native caption bar is
+/// separate, so only normal padding is needed.
+#[cfg(target_os = "macos")]
+const TITLEBAR_LEFT_INSET: f32 = 72.;
+#[cfg(not(target_os = "macos"))]
+const TITLEBAR_LEFT_INSET: f32 = 10.;
+
 /// Render the sidebar.
 pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
@@ -33,8 +41,8 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
         .w(px(244.))
         .bg(theme.bg_panel)
         .child(
-            // Header doubles as the left titlebar; left padding clears the
-            // macOS traffic lights.
+            // Header doubles as the left titlebar; left inset clears the macOS
+            // traffic lights (no-op on platforms with a native caption bar).
             titlebar_drag(
                 div()
                     .id("titlebar-left")
@@ -42,7 +50,7 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                     .items_center()
                     .gap_2()
                     .h(px(38.))
-                    .pl(px(72.))
+                    .pl(px(TITLEBAR_LEFT_INSET))
                     .pr(px(10.))
                     .flex_shrink_0()
                     .child(div().flex_1())
