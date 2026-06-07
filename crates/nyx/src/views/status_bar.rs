@@ -70,17 +70,6 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                     )
                 })
                 .child(item(cx).font_family(mono).child(counts))
-                .child(
-                    item(cx)
-                        .id("sb-dock")
-                        .cursor_pointer()
-                        .hover(|s| s.bg(theme.bg_hover).text_color(theme.text_muted))
-                        .child(icon("panelBottom", 12., theme.text_faint))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.dock_open = !this.dock_open;
-                            cx.notify();
-                        })),
-                )
                 .child(shortcuts_item(cx))
                 .child(
                     item(cx)
