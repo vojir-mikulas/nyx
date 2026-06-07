@@ -184,6 +184,9 @@ impl FileProfileStore {
     fn store(&self, profiles: &[Profile]) -> Result<()> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).map_err(|err| NyxError::Io(err.to_string()))?;
+            // No credentials live here (those are in the keychain), but hostnames,
+            // usernames and key paths do — keep the store owner-only.
+            restrict_to_owner(parent, 0o700);
         }
         let file = ProfilesFile {
             profile: profiles.to_vec(),
@@ -193,10 +196,26 @@ impl FileProfileStore {
 
         let tmp = self.path.with_extension("toml.tmp");
         fs::write(&tmp, serialized).map_err(|err| NyxError::Io(err.to_string()))?;
+        // Tighten the temp before the rename, so the final file is never momentarily
+        // world-readable.
+        restrict_to_owner(&tmp, 0o600);
         fs::rename(&tmp, &self.path).map_err(|err| NyxError::Io(err.to_string()))?;
         Ok(())
     }
 }
+
+/// Best-effort tighten `path` to owner-only (`0600` files / `0700` dirs) on Unix.
+/// A failure here is non-fatal — never block a profile save on a perms quirk — and
+/// it is a no-op on platforms without Unix mode bits (Windows ACLs are out of
+/// scope).
+#[cfg(unix)]
+fn restrict_to_owner(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
+}
+
+#[cfg(not(unix))]
+fn restrict_to_owner(_path: &Path, _mode: u32) {}
 
 impl ProfileStore for FileProfileStore {
     fn list(&self) -> Result<Vec<Profile>> {
@@ -254,6 +273,19 @@ mod tests {
         let (_dir, store) = temp_store();
         assert!(store.list().unwrap().is_empty());
         assert!(store.get("nope").unwrap().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_store_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, mut store) = temp_store();
+        store.save(&sample("a", "alpha")).unwrap();
+        let mode = fs::metadata(store.path()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "profiles.toml must be owner-only, got {mode:o}"
+        );
     }
 
     #[test]

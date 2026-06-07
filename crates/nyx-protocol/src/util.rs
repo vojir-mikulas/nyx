@@ -7,7 +7,7 @@
 
 use std::future::Future;
 
-use nyx_core::{EntryIssue, EntryKind, NyxError, Result, TransferProgress};
+use nyx_core::{is_safe_local_segment, EntryIssue, EntryKind, NyxError, Result, TransferProgress};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{DirWalk, WalkItem};
@@ -136,6 +136,16 @@ where
     let mut stack: Vec<(String, Vec<String>)> = vec![(root.to_string(), Vec::new())];
     while let Some((dir, rel)) = stack.pop() {
         for (name, kind, size) in list_dir(dir.clone()).await? {
+            // A server-supplied name that isn't a single ordinary component (`..`,
+            // an absolute path, a separator) could escape the local destination
+            // when joined — reject it before it becomes a path, and never recurse
+            // into it remotely. Surface it as a skip rather than failing the walk.
+            if !is_safe_local_segment(&name) {
+                let shown = format!("{}/{name}", rel.join("/"));
+                walk.skips
+                    .push(EntryIssue::skipped(shown, "unsafe entry name skipped"));
+                continue;
+            }
             let mut child_rel = rel.clone();
             child_rel.push(name.clone());
             let child_abs = format!("{dir}/{name}");
@@ -250,6 +260,47 @@ mod tests {
             .items
             .iter()
             .any(|i| i.rel == ["sub", "deep"] && i.is_dir));
+    }
+
+    #[test]
+    fn walk_rejects_unsafe_server_names() {
+        use std::collections::HashMap;
+
+        // A hostile server returns `..` and an absolute path as "filenames", plus
+        // a normal file. Only the safe one becomes a copy item; the rest are
+        // skipped and never recursed into.
+        let tree: HashMap<&str, Vec<(&str, EntryKind, u64)>> = HashMap::from([(
+            "/root",
+            vec![
+                ("ok.txt", EntryKind::File, 5),
+                ("..", EntryKind::Directory, 0),
+                ("/etc/passwd", EntryKind::File, 9),
+            ],
+        )]);
+
+        let walk = block_on(plan_walk("/root", |dir| {
+            let tree = &tree;
+            async move {
+                Ok(tree
+                    .get(dir.as_str())
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(n, k, s)| (n.to_string(), k, s))
+                    .collect())
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(walk.items.len(), 1);
+        assert_eq!(walk.items[0].rel, ["ok.txt"]);
+        assert_eq!(walk.skips.len(), 2);
+        assert!(walk
+            .skips
+            .iter()
+            .all(|s| s.reason == "unsafe entry name skipped"));
+        // The traversal name was never followed (no escape, no extra bytes).
+        assert_eq!(walk.total_bytes, 5);
     }
 
     #[test]

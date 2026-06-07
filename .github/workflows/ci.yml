@@ -39,6 +39,16 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # Supply-chain gate: security advisories, license policy, and git-source
+      # allow-list (see deny.toml). High-signal for a network/security tool.
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - name: Cargo deny
+        run: cargo deny check
+
       - name: Test
         run: cargo test --workspace
 

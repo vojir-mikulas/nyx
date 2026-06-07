@@ -113,6 +113,26 @@ impl RemotePath {
     }
 }
 
+/// Whether a server-supplied filename is safe to use as a **single local path
+/// component** when joined onto a download destination.
+///
+/// A recursive download mirrors server-supplied names into local paths; a hostile
+/// or buggy server returning `..`, an absolute path, or a name with a separator
+/// could otherwise escape the chosen folder and overwrite arbitrary files. This
+/// accepts only a name that is exactly one ordinary component — rejecting empty,
+/// `.`, `..`, separators and absolute/prefixed forms — evaluated with the **local
+/// OS's** path semantics (so `\` and drive prefixes are caught on Windows, where
+/// the file is actually written). Names that merely contain dots (`..foo`,
+/// `foo..bar`) are fine.
+pub fn is_safe_local_segment(name: &str) -> bool {
+    use std::path::{Component, Path};
+    let mut comps = Path::new(name).components();
+    matches!(
+        (comps.next(), comps.next()),
+        (Some(Component::Normal(_)), None)
+    )
+}
+
 /// Normalize a path's structure: collapse repeated slashes, drop `.`, resolve
 /// `..` (clamping at root), strip the trailing slash, and root a relative input.
 /// This is the single source of truth the tests pin.
@@ -254,6 +274,32 @@ mod tests {
         assert!(!RemotePath::new("/x").is_within(&base)); // unrelated
                                                           // The root contains everything.
         assert!(RemotePath::new("/a/b").is_within(&RemotePath::root()));
+    }
+
+    #[test]
+    fn safe_local_segment_rejects_traversal_and_separators() {
+        // Ordinary names — accepted, including dotted ones.
+        for ok in ["file.txt", "..foo", "foo..bar", "...", ".hidden", "a b"] {
+            assert!(is_safe_local_segment(ok), "{ok:?} should be safe");
+        }
+        // Traversal / escape attempts — rejected.
+        for bad in [
+            "",
+            ".",
+            "..",
+            "/",
+            "/etc/passwd",
+            "a/b",
+            "../etc",
+            "a/../../x",
+        ] {
+            assert!(!is_safe_local_segment(bad), "{bad:?} should be rejected");
+        }
+        // OS-specific separators: backslash is a separator on Windows only.
+        #[cfg(windows)]
+        for bad in ["a\\b", "C:\\x", "\\\\server\\share"] {
+            assert!(!is_safe_local_segment(bad), "{bad:?} should be rejected");
+        }
     }
 
     #[test]

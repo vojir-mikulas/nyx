@@ -73,14 +73,35 @@ impl KnownHosts {
     pub fn trust(&self, host: &str, fingerprint: &str) -> io::Result<()> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
+            restrict_to_owner(parent, 0o700);
         }
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
+        let mut opts = OpenOptions::new();
+        opts.create(true).append(true);
+        // Create the store owner-only: a fingerprint is public, but the list of
+        // hosts a user connects to is browsing history worth not leaking.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut file = opts.open(&self.path)?;
+        // `mode` only applies when *this* call creates the file; tighten an
+        // already-existing one too (best-effort).
+        restrict_to_owner(&self.path, 0o600);
         writeln!(file, "{host} {fingerprint}")
     }
 }
+
+/// Best-effort tighten `path` to owner-only on Unix; a no-op elsewhere. A failure
+/// is non-fatal — never block recording a trusted host on a perms quirk.
+#[cfg(unix)]
+fn restrict_to_owner(path: &std::path::Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
+}
+
+#[cfg(not(unix))]
+fn restrict_to_owner(_path: &std::path::Path, _mode: u32) {}
 
 #[cfg(test)]
 mod tests {
@@ -114,5 +135,15 @@ mod tests {
             store.check("other.com", "SHA256:aaa"),
             KnownHostStatus::Unknown
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trust_creates_an_owner_only_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let store = temp_store("perms");
+        store.trust("example.com", "SHA256:aaa").unwrap();
+        let mode = fs::metadata(&store.path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "known_hosts must be owner-only, got {mode:o}");
     }
 }

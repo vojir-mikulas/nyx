@@ -11,13 +11,17 @@
 //! A CA-valid chain is accepted silently. Anything else (self-signed, private CA,
 //! pinned) is gated by the SHA-256 fingerprint of the leaf certificate against a
 //! [`KnownHosts`]-backed `known_certs` store: a recorded match is trusted, an
-//! unknown/changed fingerprint prompts the user (the same
-//! [`ServerTrustPrompt`] the SSH path uses, with
-//! [`ServerTrustKind::Certificate`]). Because rustls' verifier is synchronous, we
-//! cannot await the prompt mid-handshake: the verifier instead *captures* the
-//! untrusted fingerprint and fails the handshake; [`connect`] then prompts, and on
-//! acceptance persists the fingerprint and retries (the verifier now finds it
-//! trusted).
+//! *unknown* fingerprint prompts the user (the same [`ServerTrustPrompt`] the SSH
+//! path uses, with [`ServerTrustKind::Certificate`]), and a *changed* fingerprint
+//! — a previously-pinned cert that no longer matches — is **rejected outright**,
+//! never prompted, exactly as the SSH host-key path rejects a changed key. (A
+//! server that legitimately rotated its cert is recovered by removing its line
+//! from the certs store, which makes the next connect a clean first-use prompt.)
+//! Because rustls' verifier is synchronous, we cannot await the prompt
+//! mid-handshake: the verifier instead *captures* the untrusted fingerprint
+//! (tagged unknown vs. changed) and fails the handshake; [`connect`] then prompts
+//! or rejects accordingly, and on acceptance persists the fingerprint and retries
+//! (the verifier now finds it trusted).
 //!
 //! [`connect`]: RemoteClient::connect
 
@@ -97,7 +101,10 @@ impl FtpsClient {
 
     /// Build a rustls TLS connector whose verifier accepts CA-valid chains and,
     /// failing that, captures the leaf fingerprint into `captured` for TOFU.
-    fn connector(&self, captured: Arc<StdMutex<Option<String>>>) -> Result<AsyncRustlsConnector> {
+    fn connector(
+        &self,
+        captured: Arc<StdMutex<Option<CapturedCert>>>,
+    ) -> Result<AsyncRustlsConnector> {
         // Explicit ring provider so we never depend on a process-wide default
         // being installed (none is, in this app).
         let provider = Arc::new(ring::default_provider());
@@ -167,7 +174,7 @@ impl RemoteClient for FtpsClient {
         // the user trusts it we persist the fingerprint and retry (the verifier
         // then finds it trusted). A second untrusted capture is a hard failure.
         for attempt in 0..2 {
-            let captured: Arc<StdMutex<Option<String>>> = Arc::new(StdMutex::new(None));
+            let captured: Arc<StdMutex<Option<CapturedCert>>> = Arc::new(StdMutex::new(None));
             let connector = self.connector(captured.clone())?;
             match self.handshake(connector).await {
                 Ok(stream) => {
@@ -176,9 +183,17 @@ impl RemoteClient for FtpsClient {
                     return Ok(());
                 }
                 Err(err) => {
-                    let fingerprint = captured.lock().unwrap().take();
-                    match (attempt, fingerprint) {
-                        (0, Some(fingerprint)) => {
+                    let captured = captured.lock().unwrap().take();
+                    match (attempt, captured) {
+                        // A changed pin is rejected outright on any attempt — no
+                        // trust prompt, mirroring the SSH host-key path.
+                        (_, Some(CapturedCert::Changed)) => {
+                            return Err(NyxError::HostKey(format!(
+                                "remote host identification has changed for {}",
+                                self.host
+                            )));
+                        }
+                        (0, Some(CapturedCert::Unknown(fingerprint))) => {
                             if self
                                 .prompt
                                 .confirm_unknown(
@@ -312,6 +327,17 @@ async fn assert_data_protection(stream: &mut AsyncRustlsFtpStream) -> Result<()>
     Ok(())
 }
 
+/// What the TOFU verifier saw when it rejected a leaf certificate, handed to
+/// `connect` to act on out-of-band (the synchronous verifier can't await).
+#[derive(Debug)]
+enum CapturedCert {
+    /// First sight of this host — eligible for a trust-on-first-use prompt.
+    Unknown(String),
+    /// A previously-pinned cert that has changed — the classic interception
+    /// signal. Never offered in-band trust; `connect` rejects it outright.
+    Changed,
+}
+
 /// A rustls certificate verifier that accepts a CA-valid chain and otherwise
 /// falls back to trust-on-first-use on the leaf fingerprint.
 #[derive(Debug)]
@@ -320,9 +346,9 @@ struct TofuVerifier {
     provider: Arc<CryptoProvider>,
     known_certs: KnownHosts,
     host: String,
-    /// Set to the leaf fingerprint when an untrusted cert is seen, so `connect`
-    /// can prompt the user out-of-band (the verifier itself can't await).
-    captured: Arc<StdMutex<Option<String>>>,
+    /// Set when an untrusted cert is seen, so `connect` can prompt (unknown) or
+    /// reject (changed) out-of-band.
+    captured: Arc<StdMutex<Option<CapturedCert>>>,
 }
 
 impl ServerCertVerifier for TofuVerifier {
@@ -342,15 +368,18 @@ impl ServerCertVerifier for TofuVerifier {
         {
             return Ok(ServerCertVerified::assertion());
         }
-        // Otherwise gate on the pinned leaf fingerprint (TOFU).
+        // Otherwise gate on the pinned leaf fingerprint (TOFU). A changed pin is
+        // the interception signal — capture it distinctly so `connect` rejects it
+        // outright instead of offering the same first-use trust prompt (mirrors
+        // the SSH host-key path, which never auto-trusts a changed key).
         let fingerprint = fingerprint(end_entity);
-        match self.known_certs.check(&self.host, &fingerprint) {
-            KnownHostStatus::Match => Ok(ServerCertVerified::assertion()),
-            KnownHostStatus::Unknown | KnownHostStatus::Mismatch => {
-                *self.captured.lock().unwrap() = Some(fingerprint);
-                Err(TlsError::General("untrusted server certificate".into()))
-            }
-        }
+        let captured = match self.known_certs.check(&self.host, &fingerprint) {
+            KnownHostStatus::Match => return Ok(ServerCertVerified::assertion()),
+            KnownHostStatus::Unknown => CapturedCert::Unknown(fingerprint),
+            KnownHostStatus::Mismatch => CapturedCert::Changed,
+        };
+        *self.captured.lock().unwrap() = Some(captured);
+        Err(TlsError::General("untrusted server certificate".into()))
     }
 
     fn verify_tls12_signature(
@@ -407,6 +436,86 @@ fn fingerprint(cert: &CertificateDer<'_>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    fn temp_store(name: &str) -> KnownHosts {
+        let mut path = std::env::temp_dir();
+        path.push(format!("nyx-ftps-tofu-test-{name}"));
+        let _ = std::fs::remove_file(&path);
+        KnownHosts::at(path)
+    }
+
+    fn verifier(
+        known_certs: KnownHosts,
+        captured: Arc<StdMutex<Option<CapturedCert>>>,
+    ) -> TofuVerifier {
+        let provider = Arc::new(ring::default_provider());
+        let roots = RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+        };
+        let webpki = WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider.clone())
+            .build()
+            .unwrap();
+        TofuVerifier {
+            webpki,
+            provider,
+            known_certs,
+            host: "example.com".to_string(),
+            captured,
+        }
+    }
+
+    fn verify(v: &TofuVerifier, cert: &CertificateDer<'_>) -> std::result::Result<(), TlsError> {
+        v.verify_server_cert(
+            cert,
+            &[],
+            &ServerName::try_from("example.com").unwrap(),
+            &[],
+            UnixTime::since_unix_epoch(Duration::from_secs(0)),
+        )
+        .map(|_| ())
+    }
+
+    // The leaf bytes are not a CA-valid chain, so the verifier falls through to
+    // the TOFU branch — exactly the path these tests exercise.
+    #[test]
+    fn changed_pin_is_captured_as_changed_and_rejected() {
+        let store = temp_store("changed");
+        // Pin a *different* fingerprint for the host, then present another cert.
+        store.trust("example.com", "SHA256:deadbeef").unwrap();
+        let captured = Arc::new(StdMutex::new(None));
+        let v = verifier(store, captured.clone());
+        let res = verify(&v, &CertificateDer::from(vec![1u8, 2, 3, 4]));
+        assert!(res.is_err());
+        assert!(
+            matches!(*captured.lock().unwrap(), Some(CapturedCert::Changed)),
+            "a changed pin must capture as Changed, never Unknown"
+        );
+    }
+
+    #[test]
+    fn unknown_cert_is_captured_as_unknown() {
+        let store = temp_store("unknown");
+        let captured = Arc::new(StdMutex::new(None));
+        let v = verifier(store, captured.clone());
+        let res = verify(&v, &CertificateDer::from(vec![1u8, 2, 3, 4]));
+        assert!(res.is_err());
+        assert!(matches!(
+            *captured.lock().unwrap(),
+            Some(CapturedCert::Unknown(_))
+        ));
+    }
+
+    #[test]
+    fn matching_pin_is_trusted_without_capture() {
+        let store = temp_store("match");
+        let cert = CertificateDer::from(vec![1u8, 2, 3, 4]);
+        store.trust("example.com", &fingerprint(&cert)).unwrap();
+        let captured = Arc::new(StdMutex::new(None));
+        let v = verifier(store, captured.clone());
+        assert!(verify(&v, &cert).is_ok());
+        assert!(captured.lock().unwrap().is_none());
+    }
 
     #[test]
     fn fingerprint_is_stable_sha256_hex() {

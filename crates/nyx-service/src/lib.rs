@@ -30,8 +30,9 @@ use futures::channel::mpsc::{
     UnboundedSender as FuturesSender,
 };
 use nyx_core::{
-    CollisionChoice, EntryIssue, EntryKind, NyxError, Protocol, RemoteEntry, RemotePath, Secret,
-    ServerTrustKind, TransferDirection, TransferId, TransferKind, TransferReport, TransferStatus,
+    is_safe_local_segment, CollisionChoice, EntryIssue, EntryKind, NyxError, Protocol, RemoteEntry,
+    RemotePath, Secret, ServerTrustKind, TransferDirection, TransferId, TransferKind,
+    TransferReport, TransferStatus,
 };
 use nyx_profile::{AuthMethod, Profile};
 use nyx_protocol::{
@@ -48,6 +49,18 @@ use tracing::{debug, info, warn};
 /// submissions past it wait in the queue. Per-profile / settings caps are
 /// post-MVP.
 const MAX_CONCURRENT_TRANSFERS: usize = 3;
+
+/// The transfer concurrency cap for a protocol. FTP/FTPS keep a single stateful
+/// control connection and serialize every operation over one stream mutex, so
+/// more than one in-flight transfer can't actually run — cap them at 1 to keep
+/// the queue (and the dock) honest rather than showing stalled "running" slots.
+/// SFTP multiplexes channels and gets the full cap.
+fn transfer_cap_for(protocol: Protocol) -> usize {
+    match protocol {
+        Protocol::Sftp => MAX_CONCURRENT_TRANSFERS,
+        Protocol::Ftp | Protocol::Ftps => 1,
+    }
+}
 
 /// How often the dispatcher samples running transfers' byte counters to emit a
 /// throttled [`Event::TransferProgress`]. The fixed interval also serves as the
@@ -464,6 +477,14 @@ impl Drop for ServiceHandle {
 /// (service → UI) the UI drains as a `Stream` on the GPUI foreground executor.
 pub fn spawn() -> (ServiceHandle, FuturesReceiver<Event>) {
     let (cmd_tx, cmd_rx) = unbounded_channel::<Command>();
+    // Unbounded is deliberate and safe here: the only high-frequency producer is
+    // the progress sampler, already coalesced to one `TransferProgress` per running
+    // transfer per `PROGRESS_TICK` (≤ the concurrency cap, so a small constant
+    // rate). Every other event is one-per-user-action or one-per-transfer-terminal
+    // — naturally bounded by what the user did. So the queue can only grow if the
+    // GPUI foreground executor stops draining entirely, which means the UI is
+    // already wedged (a fatal condition, not backpressure to manage). Bounding here
+    // would buy nothing but a risk of dropping a consequential terminal event.
     let (evt_tx, evt_rx) = futures_unbounded::<Event>();
 
     let thread = thread::Builder::new()
@@ -507,6 +528,9 @@ enum TaskOutcome {
     /// A live connect succeeded — the dispatcher takes ownership of the session.
     Connected {
         profile_id: String,
+        /// The connected protocol, so the dispatcher can size the transfer
+        /// concurrency cap (FTP/FTPS serialize over one connection → cap 1).
+        protocol: Protocol,
         client: Box<dyn RemoteClient>,
         /// The resolved default landing directory (home).
         home: RemotePath,
@@ -850,13 +874,17 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                 // Any terminal outcome clears the single-flight slot.
                 in_flight = false;
                 match done {
-                    TaskOutcome::Connected { profile_id, client: session, home } => {
+                    TaskOutcome::Connected { profile_id, protocol, client: session, home } => {
                         // A connect (manual or via the backoff loop) landed; drop
                         // the loop's now-finished handle.
                         reconnector.abort();
                         client = Some(Arc::from(session));
                         active_profile = Some(profile_id.clone());
                         generation += 1;
+                        // Size the concurrency cap to the protocol: FTP/FTPS
+                        // serialize every op over one connection, so admitting more
+                        // than one transfer only stalls them behind the stream lock.
+                        queue.set_cap(transfer_cap_for(protocol));
                         info!(%profile_id, "connected");
                         let _ = events.unbounded_send(Event::Connected { profile_id, home });
                         // Resume any transfers interrupted by the loss, in their
@@ -1420,6 +1448,17 @@ async fn copy_walk_item(
     item: &WalkItem,
     progress: &nyx_core::TransferProgress,
 ) -> Result<(), NyxError> {
+    // Defense in depth: the walker already rejects unsafe names, but never let a
+    // server-derived component reach a local `push` without re-checking — a `..`
+    // or absolute segment must not escape the download destination.
+    if spec.direction == TransferDirection::Download
+        && !item.rel.iter().all(|seg| is_safe_local_segment(seg))
+    {
+        return Err(NyxError::Other(format!(
+            "refusing unsafe destination path for {}",
+            item.rel.join("/")
+        )));
+    }
     let remote = join_remote(&spec.remote, &item.rel);
     let local = join_local(&spec.local, &item.rel);
     match (spec.direction, item.is_dir) {
@@ -1581,12 +1620,17 @@ async fn local_walk(root: &std::path::Path) -> Result<DirWalk, NyxError> {
 /// - it exists and the policy is `Skip`/`Cancel` → the matching terminal.
 ///
 /// Returns `None` to proceed with the copy — either no collision, or the policy
-/// is `Overwrite`. A stat error is treated as "no collision" (proceed): it
-/// mirrors the prior unconditional behavior rather than wedging the transfer.
+/// is `Overwrite`.
+///
+/// A stat **error** (permission denied, transient I/O) is treated as *possibly
+/// present*, not *absent* — so an unreadable destination prompts the user (or
+/// honors a `Skip`) instead of being silently overwritten. Only a definite
+/// `Ok(false)` skips the gate. A genuine `Overwrite` still proceeds regardless,
+/// since the user already sanctioned replacing whatever is there.
 async fn collision_gate(client: &dyn RemoteClient, spec: &TransferSpec) -> Option<TransferOutcome> {
     let exists = match spec.direction {
-        TransferDirection::Download => tokio::fs::try_exists(&spec.local).await.unwrap_or(false),
-        TransferDirection::Upload => client.exists(&spec.remote).await.unwrap_or(false),
+        TransferDirection::Download => treat_as_present(tokio::fs::try_exists(&spec.local).await),
+        TransferDirection::Upload => treat_as_present(client.exists(&spec.remote).await),
     };
     if !exists {
         return None;
@@ -1609,6 +1653,15 @@ async fn collision_gate(client: &dyn RemoteClient, spec: &TransferSpec) -> Optio
         Some(CollisionChoice::Cancel) => Some(TransferOutcome::Cancelled),
         Some(CollisionChoice::Overwrite) => None,
     }
+}
+
+/// How the collision gate reads a destination-existence probe. Only a definite
+/// `Ok(false)` (the destination is absent) skips the gate; an error is treated as
+/// *possibly present* so an unreadable destination is never silently overwritten —
+/// it prompts (or honors `Skip`) instead. Pinned by a test so a future "simplify
+/// to `unwrap_or(false)`" can't quietly reintroduce the blind-overwrite footgun.
+fn treat_as_present<E>(probe: std::result::Result<bool, E>) -> bool {
+    probe.unwrap_or(true)
 }
 
 /// The suffix marking a Nyx partial-transfer temp file. Deterministic and
@@ -1892,6 +1945,7 @@ async fn run_task(
                 .unwrap_or_else(|_| RemotePath::root());
             TaskOutcome::Connected {
                 profile_id,
+                protocol: profile.protocol,
                 client,
                 home,
             }
@@ -2040,6 +2094,7 @@ async fn run_reconnect(
                     .unwrap_or_else(|_| RemotePath::root());
                 let _ = done.send(TaskOutcome::Connected {
                     profile_id,
+                    protocol: profile.protocol,
                     client,
                     home,
                 });
@@ -2289,6 +2344,23 @@ mod tests {
             remote_part_path(&RemotePath::new("/srv/data/foo.txt")),
             RemotePath::new("/srv/data/foo.txt.nyxpart")
         );
+    }
+
+    #[test]
+    fn ftp_protocols_cap_transfers_at_one() {
+        // FTP/FTPS serialize over one connection → cap 1; SFTP gets the full cap.
+        assert_eq!(transfer_cap_for(Protocol::Sftp), MAX_CONCURRENT_TRANSFERS);
+        assert_eq!(transfer_cap_for(Protocol::Ftp), 1);
+        assert_eq!(transfer_cap_for(Protocol::Ftps), 1);
+    }
+
+    #[test]
+    fn stat_error_counts_as_present_not_absent() {
+        // A definite "absent" is the only result that skips the collision gate.
+        assert!(!treat_as_present::<std::io::Error>(Ok(false)));
+        assert!(treat_as_present::<std::io::Error>(Ok(true)));
+        // An error must NOT degrade to "absent" → blind overwrite.
+        assert!(treat_as_present(Err::<bool, _>(std::io::Error::other("x"))));
     }
 
     #[test]

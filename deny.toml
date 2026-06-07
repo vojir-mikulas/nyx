@@ -1,0 +1,70 @@
+# cargo-deny configuration — supply-chain gate for CI.
+# Run locally with `cargo deny check`. See https://embarkstudios.github.io/cargo-deny.
+
+[advisories]
+yanked = "deny"
+# Flag "unmaintained" crates only when WE depend on them directly — the GPUI git
+# tree drags in a few transitively (async-std, instant, paste) that we can't fix
+# and that are not vulnerabilities. A vulnerability anywhere still fails.
+unmaintained = "workspace"
+ignore = [
+    # rsa: Marvin-attack RSA timing sidechannel. No upstream fix exists yet, and
+    # it arrives transitively via `russh` (SSH key exchange). The attack needs an
+    # attacker positioned to observe fine-grained timing of our RSA operations;
+    # tracked, to be dropped the moment russh ships a constant-time rsa. Revisit.
+    "RUSTSEC-2023-0071",
+]
+
+[licenses]
+# Permissive licenses only — anything not listed (or excepted below) fails the
+# build, so a copyleft dep sneaking in is caught.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "NCSA",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CDLA-Permissive-2.0",
+    "Zlib",
+    "bzip2-1.0.6",
+    "MPL-2.0",
+    "CC0-1.0",
+    "OpenSSL",
+]
+confidence-threshold = 0.8
+
+# KNOWN GPL EXPOSURE — scoped to exactly the crates GPUI pulls from the Zed
+# monorepo (gpui → sum_tree → ztracing → zlog). These are GPL-3.0-or-later, which
+# is *not* the "GPUI is Apache-2.0, only the editor is GPL" story. The exception is
+# narrow on purpose: any NEW GPL crate still fails CI. This needs a real licensing
+# decision before public release — see docs/plans/code-review-hardening.md.
+[[licenses.exceptions]]
+name = "zlog"
+allow = ["GPL-3.0-or-later"]
+
+[[licenses.exceptions]]
+name = "ztracing"
+allow = ["GPL-3.0-or-later"]
+
+[[licenses.exceptions]]
+name = "ztracing_macro"
+allow = ["GPL-3.0-or-later"]
+
+[bans]
+# Duplicate versions are unavoidable in a large git dep tree — warn, don't fail.
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# GPUI and its forked wgpu are pinned to git revs (see root Cargo.toml).
+allow-git = [
+    "https://github.com/zed-industries/zed",
+    "https://github.com/zed-industries/wgpu",
+    "https://github.com/zed-industries/font-kit",
+]

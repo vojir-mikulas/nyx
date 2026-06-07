@@ -107,5 +107,13 @@ fn log_dir() -> Option<std::path::PathBuf> {
     let dirs = directories::ProjectDirs::from("dev", "nyx", "Nyx")?;
     let dir = dirs.data_dir().to_path_buf();
     std::fs::create_dir_all(&dir).ok()?;
+    // The daily-rolling appender creates dated files lazily, so we can't chmod the
+    // file up front — instead lock the directory to owner-only on Unix, which
+    // stops other users traversing in regardless of per-file mode. Best-effort.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
     Some(dir)
 }

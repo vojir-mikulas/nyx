@@ -164,6 +164,16 @@ impl TransferQueue {
         }
     }
 
+    /// Set the concurrency cap (clamped to at least 1). The queue stays
+    /// protocol-agnostic; the caller chooses the number — e.g. the service drops
+    /// it to 1 for FTP/FTPS, whose single control connection serializes every op,
+    /// so the queue never starts a transfer that would only stall behind another.
+    /// Lowering the cap below the number already running starts nothing new until
+    /// the running set drains back under it; it never interrupts a live transfer.
+    pub fn set_cap(&mut self, cap: usize) {
+        self.cap = cap.max(1);
+    }
+
     /// Assign an id, lock the spec's paths and push it onto the queue, returning
     /// the new id — unless the remote or local path already has a live transfer,
     /// in which case it is **rejected** with [`PathInUse`] (the path-lock policy).
@@ -518,6 +528,35 @@ mod tests {
     fn cancel_unknown_is_a_noop() {
         let mut q = TransferQueue::new(2);
         assert_eq!(q.cancel(TransferId(99)), CancelOutcome::Unknown);
+    }
+
+    #[test]
+    fn set_cap_gates_admission_without_interrupting_running() {
+        let mut q = TransferQueue::new(3);
+        let a = q.submit(spec(0)).unwrap();
+        let _b = q.submit(spec(1)).unwrap();
+        // One running, then tighten to 1: the queued one must not start, and the
+        // running one is untouched.
+        assert_eq!(q.poll_start().unwrap().id, a);
+        q.set_cap(1);
+        assert!(
+            q.poll_start().is_none(),
+            "cap=1 with one running starts nothing"
+        );
+        // Draining back under the cap lets the queued one through.
+        q.finish(a);
+        assert!(q.poll_start().is_some());
+    }
+
+    #[test]
+    fn set_cap_clamps_to_at_least_one() {
+        let mut q = TransferQueue::new(2);
+        q.set_cap(0);
+        let _a = q.submit(spec(0)).unwrap();
+        let _b = q.submit(spec(1)).unwrap();
+        // Clamped to 1: exactly one starts, the next waits.
+        assert!(q.poll_start().is_some());
+        assert!(q.poll_start().is_none());
     }
 
     #[test]

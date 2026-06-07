@@ -15,8 +15,17 @@ back here.
 
 ## Plans
 
-Sequenced implementation plans live in [`plans/`](plans/).
+Sequenced implementation plans live in `plans/`. **Note:** `plans/` (and
+`design/` below) are local working directories, kept out of version control via
+`.gitignore` — the links in this file resolve only in a working checkout, not on
+the GitHub mirror.
 
+- [`plans/code-review-hardening.md`](plans/code-review-hardening.md) —
+  **active.** Remediation of an external security/robustness review: FTPS
+  changed-cert rejection and SFTP→local path-traversal (the two blockers),
+  collision-gate stat-error handling, restrictive file perms, FTP serialization,
+  channel backpressure, plus cargo-deny/license/doc-link cleanup. Two review
+  findings (atomic overwrite, reconnect race) are already closed.
 - [`plans/post-mvp-hardening.md`](plans/post-mvp-hardening.md) — **active.**
   SFTP V1.1 hardening: path normalization, permissions model, overwrite
   handling, SSH key auth, secret boundary, plus tiered symlink/reconnect/
@@ -53,6 +62,7 @@ Sequenced implementation plans live in [`plans/`](plans/).
 
 ## Visual reference
 
-- [`../design/`](../design/) — an exported design prototype (HTML/CSS/React).
-  **Reference only — not shipped code.** The theme tokens in `design/styles.css`
-  are the source for `crates/nyx-ui/src/tokens.rs`.
+- `../design/` — an exported design prototype (HTML/CSS/React). **Reference only —
+  not shipped code,** and (like `plans/`) a local, `.gitignore`d working directory
+  rather than a committed path. The theme tokens in `design/styles.css` are the
+  source for `crates/nyx-ui/src/tokens.rs`.
