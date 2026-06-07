@@ -6,6 +6,7 @@
 
 mod app;
 mod assets;
+mod drag;
 mod icon;
 mod keymap;
 mod state;

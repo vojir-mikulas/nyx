@@ -8,17 +8,19 @@
 pub mod models;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt;
 use gpui::{
     prelude::*, App, ClipboardItem, Context, Entity, FocusHandle, Focusable, PathPromptOptions,
-    Pixels, Point, SharedString,
+    Pixels, Point, SharedString, Window,
 };
 use nyx_core::{
     CollisionChoice, EntryKind, Protocol, RemotePath, Secret, Transfer, TransferDirection,
     TransferId, TransferStatus,
 };
+use nyx_drag::DragFile;
 use nyx_keyring::{passphrase_account, password_account, CredentialStore, OsKeyring};
 use nyx_profile::{
     AuthMethod, FileProfileStore, FileSettingsStore, Profile, ProfileColor, ProfileStore, Settings,
@@ -28,6 +30,8 @@ use nyx_ui::{ActiveTheme, TextInput, TextInputEvent, Theme, ToastVariant};
 use time::OffsetDateTime;
 
 use models::{AccentKind, ConnectionVm, Density, DockTab, EntryRow, SortKey, TransferVm};
+
+use crate::drag::{DragDownloads, ServiceDragFetch};
 
 /// The keychain service name. Secrets are addressed `("nyx", account)`, where the
 /// account is derived per-profile by [`password_account`] / [`passphrase_account`].
@@ -283,6 +287,9 @@ pub struct AppState {
 
     /// Handle to the backend thread (dropped on app exit → graceful shutdown).
     service: ServiceHandle,
+    /// Correlates drag-out promise downloads with their transfer events. Fed by
+    /// the event loop; awaited off-thread by the drag-promise callback.
+    drag_downloads: DragDownloads,
     /// The profile id of an in-flight connection attempt, if any.
     pub connecting_id: Option<String>,
     /// The profile id whose connect used a *stored* password — set so an auth
@@ -431,6 +438,7 @@ impl AppState {
             settings_store,
             startup_error,
             service,
+            drag_downloads: DragDownloads::new(),
             connecting_id: None,
             used_stored_password: None,
             password_prompt: None,
@@ -1573,6 +1581,57 @@ impl AppState {
         .detach();
     }
 
+    /// Begin an OS drag-out of file rows to Finder/desktop. Drags the whole
+    /// selection when `name` is part of it, otherwise just that row; directories
+    /// are excluded (mirrors download). The drop streams each file through the
+    /// download queue via the promise callback in [`crate::drag`].
+    pub fn start_drag_out(
+        &mut self,
+        name: &SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let names: Vec<SharedString> = if self.selected.contains(name) {
+            self.selected.iter().cloned().collect()
+        } else {
+            vec![name.clone()]
+        };
+        let mut files = Vec::new();
+        let mut remotes = HashMap::new();
+        for n in &names {
+            let Some(row) = self
+                .listing
+                .iter()
+                .find(|row| row.entry.name.as_str() == n.as_ref())
+            else {
+                continue;
+            };
+            if row.entry.is_dir() {
+                continue;
+            }
+            files.push(DragFile {
+                name: n.to_string(),
+                size: Some(row.entry.size),
+            });
+            remotes.insert(n.to_string(), self.cwd.join(n));
+        }
+        if files.is_empty() {
+            return;
+        }
+        let fetch = Arc::new(ServiceDragFetch::new(
+            self.service.commands(),
+            self.drag_downloads.clone(),
+            remotes,
+        ));
+        if let Err(err) = nyx_drag::start_file_drag(window, files, fetch, None) {
+            self.push_toast(
+                format!("Couldn't start drag: {err}"),
+                ToastVariant::Error,
+                cx,
+            );
+        }
+    }
+
     /// Upload one or more chosen local files into the current directory.
     pub fn upload(&mut self, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
@@ -1834,6 +1893,8 @@ impl AppState {
                 remote,
                 local,
             } => {
+                // Link a drag-out promise to its transfer id (no-op otherwise).
+                self.drag_downloads.note_queued(id, &local);
                 self.transfers.push(TransferVm {
                     transfer: Transfer {
                         id,
@@ -1909,6 +1970,10 @@ impl AppState {
                 status,
                 message,
             } => {
+                // Release any drag-out promise waiting on this transfer (no-op
+                // otherwise), unblocking the OS callback that drives the drop.
+                self.drag_downloads
+                    .note_done(id, status, message.as_deref());
                 let cwd = self.cwd.clone();
                 let mut refresh = false;
                 if let Some(vm) = self.transfers.iter_mut().find(|t| t.transfer.id == id) {

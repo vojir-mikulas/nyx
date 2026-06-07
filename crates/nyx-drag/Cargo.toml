@@ -1,0 +1,47 @@
+[package]
+name = "nyx-drag"
+description = "Platform adapter for dragging files OUT of the app to the OS (Finder/Explorer). Domain- and UI-agnostic."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# The one piece GPUI already gives us: a `raw_window_handle`-compatible window
+# handle to anchor the native drag session to. Kept at the same 0.6 line GPUI
+# pins so `&gpui::Window` satisfies `start_file_drag`'s bound after unification.
+raw-window-handle = "0.6"
+thiserror.workspace = true
+
+# macOS promised-files drag-out: vended through the GPUI `NSView` via
+# `NSFilePromiseProvider`. Versions match GPUI's pinned objc2 tree so the whole
+# app shares one objc2 runtime.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSString",
+    "NSArray",
+    "NSURL",
+    "NSOperation",
+    "NSError",
+    "NSDictionary",
+    "NSObject",
+] }
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSApplication",
+    "NSResponder",
+    "NSView",
+    "NSEvent",
+    "NSImage",
+    "NSPasteboard",
+    "NSDragging",
+    "NSDraggingItem",
+    "NSDraggingSession",
+    "NSFilePromiseProvider",
+    "block2",
+] }
+block2 = "0.6"

@@ -344,6 +344,31 @@ impl ServiceHandle {
     pub fn send(&self, command: Command) -> bool {
         self.commands.send(command).is_ok()
     }
+
+    /// A cloneable, `Send + Sync` sender for the command channel.
+    ///
+    /// Lets off-thread code (e.g. an OS drag-promise callback) submit commands
+    /// without borrowing the UI-thread [`ServiceHandle`]. It is the same channel
+    /// [`send`](Self::send) uses, so ordering and shutdown semantics are shared.
+    pub fn commands(&self) -> CommandSender {
+        CommandSender {
+            tx: self.commands.clone(),
+        }
+    }
+}
+
+/// A detached, thread-safe handle to the command channel (see
+/// [`ServiceHandle::commands`]).
+#[derive(Clone)]
+pub struct CommandSender {
+    tx: TokioSender<Command>,
+}
+
+impl CommandSender {
+    /// Send a command to the backend. Returns `false` if the service has gone.
+    pub fn send(&self, command: Command) -> bool {
+        self.tx.send(command).is_ok()
+    }
 }
 
 impl Drop for ServiceHandle {

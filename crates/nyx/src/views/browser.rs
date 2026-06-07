@@ -401,11 +401,19 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
     let rows_for_secondary = rows.clone();
     let rows_for_activate = rows.clone();
     let rows_for_drop = rows.clone();
+    let rows_for_dragout = rows.clone();
     // Directory rows accept an external file drop (upload into that folder).
     let dir_rows: std::collections::HashSet<usize> = rows
         .iter()
         .enumerate()
         .filter(|(_, r)| r.is_dir)
+        .map(|(ix, _)| ix)
+        .collect();
+    // File rows can be dragged out to the OS file manager (download on drop).
+    let file_rows: std::collections::HashSet<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| !r.is_dir)
         .map(|(ix, _)| ix)
         .collect();
     let view = cx.entity();
@@ -480,6 +488,20 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                         let name = row.name.clone();
                         view.update(cx, |this, cx| {
                             this.activate_row(&name, cx);
+                            cx.notify();
+                        });
+                    }
+                }
+            })
+            .draggable_rows(file_rows)
+            .on_row_drag_out({
+                let view = view.clone();
+                let rows = rows_for_dragout;
+                move |ix, window, cx| {
+                    if let Some(row) = rows.get(ix) {
+                        let name = row.name.clone();
+                        view.update(cx, |this, cx| {
+                            this.start_drag_out(&name, window, cx);
                             cx.notify();
                         });
                     }

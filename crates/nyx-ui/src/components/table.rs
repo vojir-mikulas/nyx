@@ -89,6 +89,19 @@ type RowRenderer = Rc<dyn Fn(usize, &mut Window, &mut App) -> Vec<gpui::AnyEleme
 /// domain- and icon-set-free.
 type CaretBuilder = Rc<dyn Fn() -> gpui::AnyElement + 'static>;
 type RowDropHandler = Rc<dyn Fn(usize, &ExternalPaths, &mut Window, &mut App) + 'static>;
+/// Fired when a drag-*out* gesture starts on a row (the owner anchors a native
+/// OS drag to the window). Domain-agnostic: the table only reports the row.
+type RowDragOutHandler = Rc<dyn Fn(usize, &mut Window, &mut App) + 'static>;
+
+/// The (invisible) in-app drag preview. The visible drag image is owned by the
+/// native OS drag the row handler starts, so GPUI's own preview is empty.
+struct DragPreview;
+
+impl Render for DragPreview {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().size_0()
+    }
+}
 
 #[derive(IntoElement)]
 pub struct Table {
@@ -108,6 +121,8 @@ pub struct Table {
     sort_caret_desc: Option<CaretBuilder>,
     on_row_drop: Option<RowDropHandler>,
     droppable_rows: Option<Rc<HashSet<usize>>>,
+    on_row_drag_out: Option<RowDragOutHandler>,
+    draggable_rows: Option<Rc<HashSet<usize>>>,
 }
 
 impl Table {
@@ -129,6 +144,8 @@ impl Table {
             sort_caret_desc: None,
             on_row_drop: None,
             droppable_rows: None,
+            on_row_drag_out: None,
+            draggable_rows: None,
         }
     }
 
@@ -212,6 +229,23 @@ impl Table {
         handler: impl Fn(usize, &ExternalPaths, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_row_drop = Some(Rc::new(handler));
+        self
+    }
+
+    /// Only these rows start a drag-*out* gesture (the owner knows which are
+    /// draggable, e.g. files but not directories).
+    pub fn draggable_rows(mut self, rows: HashSet<usize>) -> Self {
+        self.draggable_rows = Some(Rc::new(rows));
+        self
+    }
+
+    /// Called when a drag-out gesture begins on a [`draggable`](Self::draggable_rows)
+    /// row. The owner anchors a native OS drag to the window here.
+    pub fn on_row_drag_out(
+        mut self,
+        handler: impl Fn(usize, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_row_drag_out = Some(Rc::new(handler));
         self
     }
 
@@ -299,6 +333,8 @@ impl RenderOnce for Table {
         let on_activate = self.on_activate.clone();
         let on_row_drop = self.on_row_drop.clone();
         let droppable_rows = self.droppable_rows.clone();
+        let on_row_drag_out = self.on_row_drag_out.clone();
+        let draggable_rows = self.draggable_rows.clone();
         let selected = self.selected;
         let selected_set = self.selected_set.clone();
         let row_count = self.row_count;
@@ -338,9 +374,12 @@ impl RenderOnce for Table {
                 let on_secondary = on_secondary.clone();
                 let on_activate = on_activate.clone();
                 let on_row_drop = on_row_drop.clone();
+                let on_row_drag_out = on_row_drag_out.clone();
                 let clickable = on_select.is_some() || on_activate.is_some();
                 let is_droppable = droppable_rows.as_ref().is_some_and(|s| s.contains(&ix))
                     && on_row_drop.is_some();
+                let is_draggable_out = draggable_rows.as_ref().is_some_and(|s| s.contains(&ix))
+                    && on_row_drag_out.is_some();
                 rows.push(
                     div()
                         .id(ix)
@@ -380,6 +419,17 @@ impl RenderOnce for Table {
                             this.when_some(on_row_drop, |this, on_row_drop| {
                                 this.on_drop::<ExternalPaths>(move |paths, window, cx| {
                                     on_row_drop(ix, paths, window, cx);
+                                })
+                            })
+                        })
+                        // Drag a file row out to the OS file manager. GPUI's
+                        // `on_drag` is the gesture detector; the row handler starts
+                        // the real (native) drag and we hand GPUI an empty preview.
+                        .when(is_draggable_out, |this| {
+                            this.when_some(on_row_drag_out, |this, on_row_drag_out| {
+                                this.on_drag(ix, move |_ix, _offset, window, cx| {
+                                    on_row_drag_out(ix, window, cx);
+                                    cx.new(|_| DragPreview)
                                 })
                             })
                         })
