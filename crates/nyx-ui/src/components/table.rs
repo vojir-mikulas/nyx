@@ -3,7 +3,6 @@
 //! declares [`Column`]s + a row renderer and owns selection/sort, which the table
 //! renders and reports clicks against.
 
-use std::collections::HashSet;
 use std::rc::Rc;
 
 use gpui::{
@@ -103,6 +102,10 @@ type RowDropItemHandler<D> = Rc<dyn Fn(usize, &D, &mut Window, &mut App) + 'stat
 type RowBoundsHandler = Rc<dyn Fn(usize, Bounds<Pixels>, &mut Window, &mut App) + 'static>;
 
 type PreviewFn = Box<dyn Fn(&mut Window, &mut App) -> gpui::AnyElement + 'static>;
+/// Per-row boolean predicate (selected / draggable / droppable / highlighted).
+/// Queried only for visible rows, so it stays O(1) even for huge listings — the
+/// caller never materializes a set spanning every row.
+type RowPredicate = Rc<dyn Fn(usize) -> bool + 'static>;
 
 /// Wraps a caller-built element as the floating in-app drag preview view —
 /// GPUI's `on_drag` requires an `Entity<impl Render>`, so we box the builder.
@@ -125,7 +128,7 @@ pub struct Table<D: 'static = ()> {
     row_count: usize,
     row_height: Option<Pixels>,
     selected: Option<usize>,
-    selected_set: Option<Rc<HashSet<usize>>>,
+    selected_set: Option<RowPredicate>,
     sort: Option<(usize, bool)>,
     on_select: Option<Rc<RowClickHandler>>,
     on_secondary: Option<Rc<RowSecondaryHandler>>,
@@ -135,13 +138,13 @@ pub struct Table<D: 'static = ()> {
     sort_caret_asc: Option<CaretBuilder>,
     sort_caret_desc: Option<CaretBuilder>,
     on_row_drop: Option<RowDropHandler>,
-    droppable_rows: Option<Rc<HashSet<usize>>>,
+    droppable_rows: Option<RowPredicate>,
     on_row_drag: Option<RowDragValue<D>>,
     drag_preview: Option<DragPreviewBuilder>,
     on_row_drop_item: Option<RowDropItemHandler<D>>,
     on_row_bounds: Option<RowBoundsHandler>,
-    highlighted_rows: Option<Rc<HashSet<usize>>>,
-    draggable_rows: Option<Rc<HashSet<usize>>>,
+    highlighted_rows: Option<RowPredicate>,
+    draggable_rows: Option<RowPredicate>,
 }
 
 impl<D: 'static> Table<D> {
@@ -188,10 +191,11 @@ impl<D: 'static> Table<D> {
         self
     }
 
-    /// Multi-selection: a row highlights when in this set *or* equal to
-    /// [`selected`](Self::selected), so both APIs compose.
-    pub fn selected_set(mut self, selected: HashSet<usize>) -> Self {
-        self.selected_set = Some(Rc::new(selected));
+    /// Multi-selection: a row highlights when this predicate returns `true` *or*
+    /// its index equals [`selected`](Self::selected), so both APIs compose. The
+    /// predicate is queried only for visible rows.
+    pub fn selected_set(mut self, is_selected: impl Fn(usize) -> bool + 'static) -> Self {
+        self.selected_set = Some(Rc::new(is_selected));
         self
     }
 
@@ -240,10 +244,11 @@ impl<D: 'static> Table<D> {
         self
     }
 
-    /// Only these rows highlight on drag-over and dispatch
-    /// [`on_row_drop`](Self::on_row_drop) (the owner knows which are directories).
-    pub fn droppable_rows(mut self, rows: HashSet<usize>) -> Self {
-        self.droppable_rows = Some(Rc::new(rows));
+    /// Rows for which this predicate returns `true` highlight on drag-over and
+    /// dispatch [`on_row_drop`](Self::on_row_drop) (the owner knows which are
+    /// directories). Queried only for visible rows.
+    pub fn droppable_rows(mut self, is_droppable: impl Fn(usize) -> bool + 'static) -> Self {
+        self.droppable_rows = Some(Rc::new(is_droppable));
         self
     }
 
@@ -255,10 +260,10 @@ impl<D: 'static> Table<D> {
         self
     }
 
-    /// Only these rows start an in-app drag gesture (the owner decides which are
-    /// draggable).
-    pub fn draggable_rows(mut self, rows: HashSet<usize>) -> Self {
-        self.draggable_rows = Some(Rc::new(rows));
+    /// Rows for which this predicate returns `true` start an in-app drag gesture
+    /// (the owner decides which are draggable). Queried only for visible rows.
+    pub fn draggable_rows(mut self, is_draggable: impl Fn(usize) -> bool + 'static) -> Self {
+        self.draggable_rows = Some(Rc::new(is_draggable));
         self
     }
 
@@ -300,10 +305,11 @@ impl<D: 'static> Table<D> {
         self
     }
 
-    /// Rows to paint with the drop-target highlight, independent of any active
-    /// GPUI drag. Used to show a target for a platform drag GPUI can't observe.
-    pub fn highlighted_rows(mut self, rows: HashSet<usize>) -> Self {
-        self.highlighted_rows = Some(Rc::new(rows));
+    /// Rows for which this predicate returns `true` paint with the drop-target
+    /// highlight, independent of any active GPUI drag. Used to show a target for a
+    /// platform drag GPUI can't observe. Queried only for visible rows.
+    pub fn highlighted_rows(mut self, is_highlighted: impl Fn(usize) -> bool + 'static) -> Self {
+        self.highlighted_rows = Some(Rc::new(is_highlighted));
         self
     }
 
@@ -411,8 +417,8 @@ impl<D: 'static> RenderOnce for Table<D> {
             let mut rows = Vec::with_capacity(range.len());
             for ix in range {
                 let is_selected =
-                    selected == Some(ix) || selected_set.as_ref().is_some_and(|s| s.contains(&ix));
-                let is_highlighted = highlighted_rows.as_ref().is_some_and(|s| s.contains(&ix));
+                    selected == Some(ix) || selected_set.as_ref().is_some_and(|f| f(ix));
+                let is_highlighted = highlighted_rows.as_ref().is_some_and(|f| f(ix));
                 let cells = render_row
                     .as_ref()
                     .map(|r| r(ix, window, cx))
@@ -442,12 +448,12 @@ impl<D: 'static> RenderOnce for Table<D> {
                 let drag_preview = drag_preview.clone();
                 let on_row_bounds = on_row_bounds.clone();
                 let clickable = on_select.is_some() || on_activate.is_some();
-                let is_droppable = droppable_rows.as_ref().is_some_and(|s| s.contains(&ix))
-                    && on_row_drop.is_some();
-                let is_droppable_item = droppable_rows.as_ref().is_some_and(|s| s.contains(&ix))
-                    && on_row_drop_item.is_some();
-                let is_draggable = draggable_rows.as_ref().is_some_and(|s| s.contains(&ix))
-                    && on_row_drag.is_some();
+                let is_droppable =
+                    droppable_rows.as_ref().is_some_and(|f| f(ix)) && on_row_drop.is_some();
+                let is_droppable_item =
+                    droppable_rows.as_ref().is_some_and(|f| f(ix)) && on_row_drop_item.is_some();
+                let is_draggable =
+                    draggable_rows.as_ref().is_some_and(|f| f(ix)) && on_row_drag.is_some();
                 rows.push(
                     div()
                         .id(ix)

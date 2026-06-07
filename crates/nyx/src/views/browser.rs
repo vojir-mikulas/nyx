@@ -1,14 +1,13 @@
 //! The file browser: tab strip, breadcrumb toolbar, and the remote file table.
 
-use std::rc::Rc;
-
 use gpui::{
-    actions, div, prelude::*, px, radians, Context, DragMoveEvent, ExternalPaths, Hsla,
-    MouseButton, SharedString, Transformation,
+    actions, div, prelude::*, px, radians, Context, DragMoveEvent, ExternalPaths, MouseButton,
+    SharedString, Transformation,
 };
 use nyx_ui::{ActiveTheme, Button, ButtonSize, ButtonVariant, Column, IconButton, Table, Theme};
 
 use crate::icon::icon;
+use crate::state::models::EntryRow;
 use crate::state::AppState;
 use crate::views::titlebar_drag;
 
@@ -379,16 +378,9 @@ fn crumb(
 
 /// One precomputed, owned table row (the `render_row` closure must be `'static`,
 /// so it cannot borrow the listing).
-struct VisibleRow {
-    name: SharedString,
-    is_dir: bool,
-    icon_name: &'static str,
-    icon_color: Hsla,
-    name_color: Hsla,
-    size: SharedString,
-    modified: SharedString,
-    type_label: SharedString,
-    perms: SharedString,
+/// Resolve a table row index (a position in the visible order) to its entry.
+fn row_at<'a>(listing: &'a [EntryRow], order: &[usize], ix: usize) -> Option<&'a EntryRow> {
+    order.get(ix).and_then(|&i| listing.get(i))
 }
 
 fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
@@ -397,40 +389,13 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
     let row_height = state.density.row_height();
     let mono = crate::assets::FONT_MONO;
 
-    // Precompute the visible (filtered + sorted) rows as owned data.
-    let visible = state.visible_entries(cx);
-    let rows: Vec<VisibleRow> = visible
-        .iter()
-        .map(|row| {
-            let (icon_name, icon_color) = row.icon(&theme);
-            VisibleRow {
-                name: row.entry.name.clone().into(),
-                is_dir: row.entry.is_dir(),
-                icon_name,
-                icon_color,
-                name_color: if row.entry.is_dir() {
-                    theme.blue
-                } else {
-                    theme.text
-                },
-                size: row.display_size(),
-                modified: row.display_modified(),
-                type_label: row.type_label.clone(),
-                perms: row.display_perms(),
-            }
-        })
-        .collect();
-    let rows = Rc::new(rows);
-
-    // Indices of selected rows within the visible ordering.
-    let selected_set = rows
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| state.selected.contains(&r.name))
-        .map(|(ix, _)| ix)
-        .collect();
-
-    let is_empty = rows.is_empty();
+    // The listing and its visible order are precomputed and cached on the state;
+    // here we only clone the `Rc`s and hand them to the row closures, so nothing
+    // O(n) runs per frame — rows are formatted lazily for the visible range only.
+    let listing = state.listing.clone();
+    let order = state.view_order();
+    let row_count = order.len();
+    let is_empty = row_count == 0;
     let filter_active = !state.filter_text(cx).trim().is_empty();
 
     // Columns (perms only when toggled on).
@@ -449,15 +414,6 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
     let caret_color = theme.text_muted;
     // Drop-zone tint shown while external files are dragged over the browser.
     let drop_zone = theme.accent_ghost;
-    let rows_for_render = rows.clone();
-    let rows_for_select = rows.clone();
-    let rows_for_secondary = rows.clone();
-    let rows_for_activate = rows.clone();
-    let rows_for_drop = rows.clone();
-    let rows_for_drag = rows.clone();
-    let rows_for_preview = rows.clone();
-    let rows_for_drop_item = rows.clone();
-    let rows_for_bounds = rows.clone();
     // Reset the folder-row rect cache; the table's paint repopulates it. Used to
     // resolve an OS drag-out that returns inside the window (Phase 3 re-entry).
     state.clear_drop_row_bounds();
@@ -467,26 +423,9 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
     let selected_for_drag = state.selected.clone();
     let selected_for_preview = state.selected.clone();
     let chip_theme = theme.clone();
-    // Directory rows accept a dropped item — an external file (upload) or an
-    // in-app selection (move) into that folder.
-    let dir_rows: std::collections::HashSet<usize> = rows
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| r.is_dir)
-        .map(|(ix, _)| ix)
-        .collect();
-    // Every row starts an in-app drag (a move when dropped on a folder, promoted
-    // to a native drag-out when the pointer leaves the window). Symlink rows are
-    // draggable too but both `move_into` and `start_native_drag` no-op on them.
-    let draggable_rows: std::collections::HashSet<usize> = (0..rows.len()).collect();
     // While a native drag-out is back inside the window, highlight the folder
     // under the cursor (the OS cursor can't revert, so this is the drop cue).
-    let highlight_rows: std::collections::HashSet<usize> = state
-        .drag_return_folder
-        .as_ref()
-        .and_then(|folder| rows.iter().position(|r| &r.name == folder))
-        .into_iter()
-        .collect();
+    let drag_return_folder = state.drag_return_folder.clone();
     let view = cx.entity();
 
     let body: gpui::AnyElement = if is_empty {
@@ -499,9 +438,17 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
         .into_any_element()
     } else {
         Table::new("files", columns)
-            .row_count(rows.len())
+            .row_count(row_count)
             .row_height(px(row_height))
-            .selected_set(selected_set)
+            .selected_set({
+                let listing = listing.clone();
+                let order = order.clone();
+                let selected = state.selected.clone();
+                move |ix| {
+                    row_at(&listing, &order, ix)
+                        .is_some_and(|row| selected.contains(row.entry.name.as_str()))
+                }
+            })
             .sort(Some((state.sort.0.column(), state.sort.1)))
             .sort_carets(
                 move || {
@@ -522,17 +469,18 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
             })
             .on_select({
                 let view = view.clone();
-                let rows = rows_for_select;
+                let listing = listing.clone();
+                let order = order.clone();
                 move |ix, event, _window, cx| {
-                    if let Some(row) = rows.get(ix) {
+                    if let Some(row) = row_at(&listing, &order, ix) {
                         let mods = event.modifiers();
                         let additive = mods.platform || mods.control;
-                        let name = row.name.clone();
+                        let name = SharedString::from(row.entry.name.clone());
                         view.update(cx, |this, cx| {
                             // Shift-click extends a range from the anchor; cmd/ctrl
                             // toggles; a plain click replaces.
                             if mods.shift {
-                                this.select_range(name, cx);
+                                this.select_range(name);
                             } else {
                                 this.select(name, additive);
                             }
@@ -543,10 +491,11 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
             })
             .on_secondary({
                 let view = view.clone();
-                let rows = rows_for_secondary;
+                let listing = listing.clone();
+                let order = order.clone();
                 move |ix, pos, _window, cx| {
-                    if let Some(row) = rows.get(ix) {
-                        let name = row.name.clone();
+                    if let Some(row) = row_at(&listing, &order, ix) {
+                        let name = SharedString::from(row.entry.name.clone());
                         view.update(cx, |this, cx| {
                             this.open_file_menu(name, pos);
                             cx.notify();
@@ -556,12 +505,13 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
             })
             .on_activate({
                 let view = view.clone();
-                let rows = rows_for_activate;
+                let listing = listing.clone();
+                let order = order.clone();
                 move |ix, _window, cx| {
-                    if let Some(row) = rows.get(ix) {
+                    if let Some(row) = row_at(&listing, &order, ix) {
                         // A directory opens, a symlink resolves (navigate or
                         // download); a plain file does nothing on double-click.
-                        let name = row.name.clone();
+                        let name = SharedString::from(row.entry.name.clone());
                         view.update(cx, |this, cx| {
                             this.activate_row(&name, cx);
                             cx.notify();
@@ -569,30 +519,44 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                     }
                 }
             })
-            .draggable_rows(draggable_rows)
-            .highlighted_rows(highlight_rows)
+            // Every row starts an in-app drag (a move when dropped on a folder,
+            // promoted to a native drag-out when the pointer leaves the window).
+            .draggable_rows(|_| true)
+            .highlighted_rows({
+                let listing = listing.clone();
+                let order = order.clone();
+                move |ix| {
+                    drag_return_folder.as_ref().is_some_and(|folder| {
+                        row_at(&listing, &order, ix)
+                            .is_some_and(|row| row.entry.name.as_str() == folder.as_ref())
+                    })
+                }
+            })
             // Start an in-app drag: drag the whole selection if the grabbed row is
             // part of it, else just that row.
             .on_row_drag({
-                let rows = rows_for_drag;
+                let listing = listing.clone();
+                let order = order.clone();
                 move |ix| {
-                    rows.get(ix).map(|row| {
-                        let names = if selected_for_drag.contains(&row.name) {
+                    row_at(&listing, &order, ix).map(|row| {
+                        let name = SharedString::from(row.entry.name.clone());
+                        let names = if selected_for_drag.contains(name.as_str()) {
                             selected_for_drag.iter().cloned().collect()
                         } else {
-                            vec![row.name.clone()]
+                            vec![name]
                         };
                         InAppDrag { names }
                     })
                 }
             })
             .drag_preview({
-                let rows = rows_for_preview;
+                let listing = listing.clone();
+                let order = order.clone();
                 move |ix, _window, _cx| {
-                    let Some(row) = rows.get(ix) else {
+                    let Some(row) = row_at(&listing, &order, ix) else {
                         return div().into_any_element();
                     };
-                    let count = if selected_for_preview.contains(&row.name) {
+                    let count = if selected_for_preview.contains(row.entry.name.as_str()) {
                         selected_for_preview.len()
                     } else {
                         1
@@ -600,14 +564,21 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                     drag_chip(row, count, &chip_theme)
                 }
             })
-            .droppable_rows(dir_rows)
+            // Directory rows accept a dropped item — an external file (upload) or
+            // an in-app selection (move) into that folder.
+            .droppable_rows({
+                let listing = listing.clone();
+                let order = order.clone();
+                move |ix| row_at(&listing, &order, ix).is_some_and(|row| row.entry.is_dir())
+            })
             .on_row_drop({
                 let view = view.clone();
-                let rows = rows_for_drop;
+                let listing = listing.clone();
+                let order = order.clone();
                 move |ix, paths, _window, cx| {
-                    if let Some(row) = rows.get(ix) {
-                        if row.is_dir {
-                            let name = row.name.clone();
+                    if let Some(row) = row_at(&listing, &order, ix) {
+                        if row.entry.is_dir() {
+                            let name = SharedString::from(row.entry.name.clone());
                             let files = paths.paths().to_vec();
                             view.update(cx, |this, cx| {
                                 this.upload_paths(files, Some(name), cx);
@@ -620,12 +591,12 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
             // Drop the in-app selection onto a folder row → server-side move.
             .on_row_drop_item({
                 let view = view.clone();
-                let rows = rows_for_drop_item;
+                let listing = listing.clone();
+                let order = order.clone();
                 move |ix, drag: &InAppDrag, _window, cx| {
-                    if let Some(row) = rows.get(ix) {
-                        tracing::info!(ix, is_dir = row.is_dir, name = ?row.name, "in-app drop on row");
-                        if row.is_dir {
-                            let dir = row.name.clone();
+                    if let Some(row) = row_at(&listing, &order, ix) {
+                        if row.entry.is_dir() {
+                            let dir = SharedString::from(row.entry.name.clone());
                             let names = drag.names.clone();
                             view.update(cx, |this, cx| {
                                 this.move_into(&dir, names, cx);
@@ -637,58 +608,76 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
             })
             // Record folder-row rects each paint so a returning OS drag-out can be
             // resolved to the folder under the drop point.
-            .on_row_bounds(move |ix, bounds, _window, _cx| {
-                if let Some(row) = rows_for_bounds.get(ix) {
-                    if row.is_dir {
-                        bounds_sink.borrow_mut().push((row.name.clone(), bounds));
+            .on_row_bounds({
+                let listing = listing.clone();
+                let order = order.clone();
+                move |ix, bounds, _window, _cx| {
+                    if let Some(row) = row_at(&listing, &order, ix) {
+                        if row.entry.is_dir() {
+                            bounds_sink
+                                .borrow_mut()
+                                .push((SharedString::from(row.entry.name.clone()), bounds));
+                        }
                     }
                 }
             })
-            .render_row(move |ix, _window, _cx| {
-                let row = &rows_for_render[ix];
-                let mut cells = vec![
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .min_w_0()
-                        .child(div().text_color(row.icon_color).child(icon(
-                            row.icon_name,
-                            15.,
-                            row.icon_color,
-                        )))
-                        .child(
-                            div()
-                                .truncate()
-                                .text_color(row.name_color)
-                                .child(row.name.clone()),
-                        )
-                        .into_any_element(),
-                    div()
-                        .font_family(mono)
-                        .text_color(muted)
-                        .child(row.size.clone())
-                        .into_any_element(),
-                    div()
-                        .font_family(mono)
-                        .text_color(faint)
-                        .child(row.modified.clone())
-                        .into_any_element(),
-                    div()
-                        .text_color(faint)
-                        .child(row.type_label.clone())
-                        .into_any_element(),
-                ];
-                if show_perms {
-                    cells.push(
+            // Rows are formatted lazily here, for the visible range only.
+            .render_row({
+                let theme = theme.clone();
+                move |ix, _window, _cx| {
+                    let Some(row) = row_at(&listing, &order, ix) else {
+                        return Vec::new();
+                    };
+                    let (icon_name, icon_color) = row.icon(&theme);
+                    let name_color = if row.entry.is_dir() {
+                        theme.blue
+                    } else {
+                        theme.text
+                    };
+                    let mut cells = vec![
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .text_color(icon_color)
+                                    .child(icon(icon_name, 15., icon_color)),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_color(name_color)
+                                    .child(SharedString::from(row.entry.name.clone())),
+                            )
+                            .into_any_element(),
+                        div()
+                            .font_family(mono)
+                            .text_color(muted)
+                            .child(row.display_size())
+                            .into_any_element(),
                         div()
                             .font_family(mono)
                             .text_color(faint)
-                            .child(row.perms.clone())
+                            .child(row.display_modified())
                             .into_any_element(),
-                    );
+                        div()
+                            .text_color(faint)
+                            .child(row.type_label.clone())
+                            .into_any_element(),
+                    ];
+                    if show_perms {
+                        cells.push(
+                            div()
+                                .font_family(mono)
+                                .text_color(faint)
+                                .child(row.display_perms())
+                                .into_any_element(),
+                        );
+                    }
+                    cells
                 }
-                cells
             })
             .into_any_element()
     };
@@ -731,23 +720,23 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                     cx.notify();
                 }))
                 .on_action(cx.listener(|this, _: &SelectUp, _, cx| {
-                    this.move_selection(-1, cx);
+                    this.move_selection(-1);
                     cx.notify();
                 }))
                 .on_action(cx.listener(|this, _: &SelectDown, _, cx| {
-                    this.move_selection(1, cx);
+                    this.move_selection(1);
                     cx.notify();
                 }))
                 .on_action(cx.listener(|this, _: &SelectFirst, _, cx| {
-                    this.select_edge(false, cx);
+                    this.select_edge(false);
                     cx.notify();
                 }))
                 .on_action(cx.listener(|this, _: &SelectLast, _, cx| {
-                    this.select_edge(true, cx);
+                    this.select_edge(true);
                     cx.notify();
                 }))
                 .on_action(cx.listener(|this, _: &SelectAllRows, _, cx| {
-                    this.select_all_visible(cx);
+                    this.select_all_visible();
                     cx.notify();
                 }))
                 .on_action(cx.listener(|this, _: &CopyPath, _, cx| {
@@ -787,7 +776,8 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
 /// The floating preview shown under the cursor during an in-app drag: a small
 /// chip with the grabbed row's icon and name, plus a count badge when more than
 /// one row is being dragged.
-fn drag_chip(row: &VisibleRow, count: usize, theme: &Theme) -> gpui::AnyElement {
+fn drag_chip(row: &EntryRow, count: usize, theme: &Theme) -> gpui::AnyElement {
+    let (icon_name, icon_color) = row.icon(theme);
     let mut chip = div()
         .flex()
         .items_center()
@@ -802,10 +792,15 @@ fn drag_chip(row: &VisibleRow, count: usize, theme: &Theme) -> gpui::AnyElement 
         .text_color(theme.text)
         .child(
             div()
-                .text_color(row.icon_color)
-                .child(icon(row.icon_name, 14., row.icon_color)),
+                .text_color(icon_color)
+                .child(icon(icon_name, 14., icon_color)),
         )
-        .child(div().max_w(px(180.)).truncate().child(row.name.clone()));
+        .child(
+            div()
+                .max_w(px(180.))
+                .truncate()
+                .child(SharedString::from(row.entry.name.clone())),
+        );
     if count > 1 {
         chip = chip.child(
             div()

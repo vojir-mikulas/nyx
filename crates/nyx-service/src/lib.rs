@@ -32,7 +32,7 @@ use futures::channel::mpsc::{
 use nyx_core::{
     is_safe_local_segment, CollisionChoice, EntryIssue, EntryKind, NyxError, Protocol, RemoteEntry,
     RemotePath, Secret, ServerTrustKind, TransferDirection, TransferId, TransferKind,
-    TransferReport, TransferStatus,
+    TransferReport, TransferStatus, LARGE_LISTING_WARN,
 };
 use nyx_profile::{AuthMethod, Profile};
 use nyx_protocol::{
@@ -677,7 +677,11 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                         };
                         match result {
                             Some(Ok(entries)) => {
-                                debug!(%path, count = entries.len(), "listed directory");
+                                let count = entries.len();
+                                debug!(%path, count, "listed directory");
+                                if count >= LARGE_LISTING_WARN {
+                                    warn!(%path, count, "very large directory listing");
+                                }
                                 let _ = events.unbounded_send(Event::DirListing { path, entries });
                             }
                             Some(Err(err)) => report_op_error(

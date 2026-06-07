@@ -239,10 +239,18 @@ pub struct AppState {
     pub history: Vec<RemotePath>,
     /// Cursor into `history`.
     pub history_ix: usize,
-    /// Fixture listing for the current `cwd`.
-    pub listing: Vec<EntryRow>,
+    /// Listing for the current `cwd`. Behind an `Rc` so the browser view can
+    /// hand it to its `'static` row closures without cloning the entries.
+    pub listing: Rc<Vec<EntryRow>>,
+    /// Indices into [`listing`](Self::listing) giving the visible order (filtered
+    /// by [`filter_lower`](Self::filter_lower), then sorted, folders first).
+    /// Rebuilt only when the listing, sort, or filter changes — never per frame.
+    view_order: Rc<Vec<usize>>,
     /// The stateful filter box.
     pub filter: Entity<TextInput>,
+    /// Lower-cased, trimmed filter text, kept in sync with [`filter`](Self::filter)
+    /// so [`rebuild_view_order`](Self::rebuild_view_order) needs no `cx`.
+    filter_lower: String,
     /// Active sort: `(key, ascending)`.
     pub sort: (SortKey, bool),
     /// Selected entry names.
@@ -382,7 +390,11 @@ impl AppState {
                 .with_placeholder("Filter this folder…")
                 .tab_stop(false)
         });
-        cx.observe(&filter, |_, _, cx| cx.notify()).detach();
+        cx.observe(&filter, |this, _, cx| {
+            this.refilter(cx);
+            cx.notify();
+        })
+        .detach();
         // Esc/Enter in the filter hand focus back to the file table (it's out of
         // the Tab ring, so this is the only keyboard way out). The filter text is
         // left intact — Esc exits the field, it doesn't clear the filter.
@@ -451,8 +463,10 @@ impl AppState {
             cwd: RemotePath::root(),
             history: vec![RemotePath::root()],
             history_ix: 0,
-            listing: Vec::new(),
+            listing: Rc::new(Vec::new()),
+            view_order: Rc::new(Vec::new()),
             filter,
+            filter_lower: String::new(),
             sort: (SortKey::Name, true),
             selected: HashSet::new(),
             select_anchor: None,
@@ -2036,7 +2050,7 @@ impl AppState {
         self.transfers.clear();
         self.pending_collisions.clear();
         self.collision_apply_all = false;
-        self.listing.clear();
+        self.set_listing(Vec::new());
         self.selected.clear();
         self.listing_loading = false;
         self.connection_lost = None;
@@ -2184,7 +2198,7 @@ impl AppState {
             Event::DirListing { path, entries } => {
                 // Drop a listing for a directory we've since navigated away from.
                 if path == self.cwd {
-                    self.listing = entries.into_iter().map(EntryRow::new).collect();
+                    self.set_listing(entries.into_iter().map(EntryRow::new).collect());
                     self.listing_loading = false;
                 }
             }
@@ -2498,10 +2512,16 @@ impl AppState {
         self.reload_listing(cx);
     }
 
+    /// Replace the current listing and refresh the cached visible order.
+    fn set_listing(&mut self, listing: Vec<EntryRow>) {
+        self.listing = Rc::new(listing);
+        self.rebuild_view_order();
+    }
+
     /// Request a listing for the current `cwd` from the backend. The result
     /// arrives asynchronously as an [`Event::DirListing`].
     fn reload_listing(&mut self, cx: &mut Context<Self>) {
-        self.listing.clear();
+        self.set_listing(Vec::new());
         self.listing_loading = true;
         if !self.service.send(Command::ListDir {
             path: self.cwd.clone(),
@@ -2591,6 +2611,7 @@ impl AppState {
         } else {
             (key, true)
         };
+        self.rebuild_view_order();
     }
 
     /// The current filter text (lower-cased compare happens in the getter).
@@ -2598,28 +2619,38 @@ impl AppState {
         self.filter.read(cx).content().to_string()
     }
 
-    /// The entries to display: filtered by name, then sorted (folders first).
-    pub fn visible_entries(&self, cx: &App) -> Vec<&EntryRow> {
-        let filter = self.filter_text(cx).trim().to_lowercase();
-        let mut rows: Vec<&EntryRow> = self
+    /// Pull the filter box text into [`filter_lower`](Self::filter_lower) and
+    /// recompute the visible order. Called whenever the filter content changes.
+    fn refilter(&mut self, cx: &App) {
+        self.filter_lower = self.filter.read(cx).content().trim().to_lowercase();
+        self.rebuild_view_order();
+    }
+
+    /// Recompute [`view_order`](Self::view_order) from the current listing, filter
+    /// and sort. This is the one O(n log n) pass; it runs only on a data change,
+    /// never per frame, and reuses each row's precomputed `name_lower` so name
+    /// filtering/sorting allocates nothing.
+    fn rebuild_view_order(&mut self) {
+        let filter = &self.filter_lower;
+        let mut order: Vec<usize> = self
             .listing
             .iter()
-            .filter(|row| filter.is_empty() || row.entry.name.to_lowercase().contains(&filter))
+            .enumerate()
+            .filter(|(_, row)| filter.is_empty() || row.name_lower.contains(filter.as_str()))
+            .map(|(ix, _)| ix)
             .collect();
 
         let (key, asc) = self.sort;
-        rows.sort_by(|a, b| {
+        let listing = &self.listing;
+        order.sort_by(|&a, &b| {
+            let (a, b) = (&listing[a], &listing[b]);
             // Directories always sort before files.
             let dir_order = b.entry.is_dir().cmp(&a.entry.is_dir());
             if dir_order != std::cmp::Ordering::Equal {
                 return dir_order;
             }
             let ord = match key {
-                SortKey::Name => a
-                    .entry
-                    .name
-                    .to_lowercase()
-                    .cmp(&b.entry.name.to_lowercase()),
+                SortKey::Name => a.name_lower.cmp(&b.name_lower),
                 SortKey::Size => a.entry.size.cmp(&b.entry.size),
                 SortKey::Modified => a.entry.modified.cmp(&b.entry.modified),
                 SortKey::Kind => a.type_label.cmp(&b.type_label),
@@ -2630,7 +2661,13 @@ impl AppState {
                 ord.reverse()
             }
         });
-        rows
+        self.view_order = Rc::new(order);
+    }
+
+    /// The indices into [`listing`](Self::listing) in visible order, shareable
+    /// with the browser's `'static` row closures.
+    pub fn view_order(&self) -> Rc<Vec<usize>> {
+        self.view_order.clone()
     }
 
     /// Apply a row click: plain click replaces, cmd/ctrl-click toggles. Either
@@ -2651,8 +2688,8 @@ impl AppState {
     /// clicked row in the current visible order. With no (visible) anchor it
     /// behaves like a plain click. The anchor is left where it was so successive
     /// shift-clicks re-extend from the same origin.
-    pub fn select_range(&mut self, name: SharedString, cx: &App) {
-        let names = self.visible_names(cx);
+    pub fn select_range(&mut self, name: SharedString) {
+        let names = self.visible_names();
         let clicked = names.iter().position(|n| *n == name);
         let anchor = self
             .select_anchor
@@ -2801,17 +2838,17 @@ impl AppState {
     }
 
     /// The visible (filtered + sorted) entry names, in display order.
-    fn visible_names(&self, cx: &App) -> Vec<SharedString> {
-        self.visible_entries(cx)
+    fn visible_names(&self) -> Vec<SharedString> {
+        self.view_order
             .iter()
-            .map(|row| SharedString::from(row.entry.name.clone()))
+            .map(|&ix| SharedString::from(self.listing[ix].entry.name.clone()))
             .collect()
     }
 
     /// Move the single-row selection by `delta` rows (keyboard up/down). With no
     /// selection, down picks the first row and up the last.
-    pub fn move_selection(&mut self, delta: i32, cx: &mut Context<Self>) {
-        let names = self.visible_names(cx);
+    pub fn move_selection(&mut self, delta: i32) {
+        let names = self.visible_names();
         if names.is_empty() {
             return;
         }
@@ -2825,8 +2862,8 @@ impl AppState {
     }
 
     /// Select the first (`last == false`) or last row (Home / End).
-    pub fn select_edge(&mut self, last: bool, cx: &mut Context<Self>) {
-        let names = self.visible_names(cx);
+    pub fn select_edge(&mut self, last: bool) {
+        let names = self.visible_names();
         let Some(target) = (if last { names.last() } else { names.first() }) else {
             return;
         };
@@ -2836,8 +2873,8 @@ impl AppState {
     }
 
     /// Select every visible row (`cmd-a` in the file table).
-    pub fn select_all_visible(&mut self, cx: &mut Context<Self>) {
-        self.selected = self.visible_names(cx).into_iter().collect();
+    pub fn select_all_visible(&mut self) {
+        self.selected = self.visible_names().into_iter().collect();
     }
 
     /// Show a toast that auto-dismisses after a short delay.

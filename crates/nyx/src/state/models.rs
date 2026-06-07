@@ -97,6 +97,9 @@ pub struct EntryRow {
     pub entry: RemoteEntry,
     /// Human type label, e.g. `"Folder"`, `"JavaScript"`, `"PNG image"`.
     pub type_label: SharedString,
+    /// Lower-cased name, precomputed once so filtering and name-sorting a huge
+    /// listing don't re-lowercase on every comparison / keystroke.
+    pub name_lower: String,
 }
 
 impl EntryRow {
@@ -108,7 +111,12 @@ impl EntryRow {
             // `file_kind` adds the extension nuance (e.g. "JavaScript").
             EntryKind::File | EntryKind::Other => file_kind(&entry.name).into(),
         };
-        Self { entry, type_label }
+        let name_lower = entry.name.to_lowercase();
+        Self {
+            entry,
+            type_label,
+            name_lower,
+        }
     }
 
     /// Display size: `"—"` for directories, otherwise a human byte size.

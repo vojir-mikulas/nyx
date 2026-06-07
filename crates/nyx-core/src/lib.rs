@@ -13,7 +13,10 @@ mod transfer;
 
 pub use error::{NyxError, Result};
 pub use path::{is_safe_local_segment, RemotePath, RemotePathError};
-pub use remote::{EntryKind, FtpsMode, Permissions, Protocol, RemoteEntry, Rwx, ServerTrustKind};
+pub use remote::{
+    EntryKind, FtpsMode, Permissions, Protocol, RemoteEntry, Rwx, ServerTrustKind,
+    LARGE_LISTING_WARN,
+};
 pub use secret::Secret;
 pub use transfer::{
     CollisionChoice, EntryIssue, EntryOutcomeKind, SourceMeta, Transfer, TransferDirection,

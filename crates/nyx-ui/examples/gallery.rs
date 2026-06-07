@@ -483,13 +483,7 @@ impl Gallery {
             .filter(|i| i.parent.is_none())
             .cloned()
             .collect();
-        let dir_rows: std::collections::HashSet<usize> = visible
-            .iter()
-            .enumerate()
-            .filter(|(_, i)| i.is_dir)
-            .map(|(ix, _)| ix)
-            .collect();
-        let draggable: std::collections::HashSet<usize> = (0..visible.len()).collect();
+        let rows_droppable = visible.clone();
         let moved = self
             .drag_items
             .iter()
@@ -509,7 +503,7 @@ impl Gallery {
             ],
         )
         .row_count(visible.len())
-        .draggable_rows(draggable)
+        .draggable_rows(|_| true)
         .on_row_drag(move |ix| rows_drag.get(ix).map(|i| vec![i.name.clone()]))
         .drag_preview(move |ix, _window, _cx| match rows_preview.get(ix) {
             Some(item) => div()
@@ -527,7 +521,7 @@ impl Gallery {
                 .into_any_element(),
             None => div().into_any_element(),
         })
-        .droppable_rows(dir_rows)
+        .droppable_rows(move |ix| rows_droppable.get(ix).is_some_and(|i| i.is_dir))
         .on_row_drop_item(move |ix, names: &Vec<SharedString>, _window, cx| {
             let Some(folder) = rows_drop
                 .get(ix)

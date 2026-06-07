@@ -269,6 +269,12 @@ fn triad(rwx: Rwx, special: bool, special_ch: char, out: &mut String) {
     });
 }
 
+/// Listing size past which a directory is treated as "very large": the backend
+/// logs a warning and the UI shows a subtle cue. The listing is still delivered
+/// and rendered in full (rendering is virtualized) — this is a heads-up, not a
+/// hard cap.
+pub const LARGE_LISTING_WARN: usize = 100_000;
+
 /// A single entry in a remote directory listing.
 ///
 /// This is the unit the file browser renders. The UI maps it to its own row

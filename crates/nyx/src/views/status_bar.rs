@@ -1,6 +1,7 @@
 //! The bottom status bar: connection state, host, transfer speed, counts.
 
 use gpui::{div, prelude::*, px, Context};
+use nyx_core::LARGE_LISTING_WARN;
 use nyx_ui::ActiveTheme;
 
 use crate::icon::icon;
@@ -35,6 +36,10 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
             let online = state.online_id.is_some();
             let (_, proto_label) = protocol_badge(conn.profile.protocol);
             let (active_count, speed) = state.active_speed();
+            // A heads-up that this folder is very large; the listing is still
+            // shown in full (rendering is virtualized).
+            let large_listing =
+                state.selected_count() == 0 && state.item_count() >= LARGE_LISTING_WARN;
             let counts = if state.selected_count() > 0 {
                 format!("{} selected", state.selected_count())
             } else {
@@ -69,7 +74,15 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                             .child(format!("{}/s · {active_count} active", fmt_size(speed))),
                     )
                 })
-                .child(item(cx).font_family(mono).child(counts))
+                .child(
+                    item(cx)
+                        .font_family(mono)
+                        .when(large_listing, |this| {
+                            this.text_color(theme.yellow)
+                                .child(icon("alert", 11., theme.yellow))
+                        })
+                        .child(counts),
+                )
                 .child(shortcuts_item(cx))
                 .child(
                     item(cx)
