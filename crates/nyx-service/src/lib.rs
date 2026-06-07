@@ -2326,6 +2326,50 @@ mod tests {
         assert!(!dbg.contains("hunter2"), "{dbg}");
     }
 
+    fn profile_with(protocol: Protocol, auth: AuthMethod) -> Profile {
+        Profile {
+            id: "id".into(),
+            name: "n".into(),
+            protocol,
+            ftps_mode: Default::default(),
+            host: "example.com".into(),
+            port: 21,
+            username: "user".into(),
+            auth,
+            remote_path: None,
+            color: Default::default(),
+            last_connected: None,
+        }
+    }
+
+    #[test]
+    fn anonymous_ftp_login_ignores_username_and_any_secret() {
+        let profile = profile_with(Protocol::Ftp, AuthMethod::Anonymous);
+        let (user, pass) = ftp_credentials(&profile, &Secret::new("ignored"));
+        assert_eq!(user, "anonymous");
+        assert_eq!(pass, ANON_PASSWORD);
+    }
+
+    #[test]
+    fn password_ftp_login_uses_profile_username_and_secret() {
+        let profile = profile_with(Protocol::Ftp, AuthMethod::Password);
+        let (user, pass) = ftp_credentials(&profile, &Secret::new("hunter2"));
+        assert_eq!(user, "user");
+        assert_eq!(pass, "hunter2");
+    }
+
+    #[test]
+    fn anonymous_is_rejected_for_sftp() {
+        let (events_tx, _events_rx) = futures::channel::mpsc::unbounded();
+        let (register_tx, _register_rx) = unbounded_channel();
+        let prompt = Arc::new(host_key::PromptBridge {
+            events: events_tx,
+            register: register_tx,
+        });
+        let profile = profile_with(Protocol::Sftp, AuthMethod::Anonymous);
+        assert!(build_client(&profile, Secret::new(""), prompt).is_err());
+    }
+
     #[test]
     fn backoff_grows_then_caps() {
         // Each attempt's delay (base, before jitter) doubles, then caps at 30s.

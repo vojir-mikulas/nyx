@@ -23,6 +23,9 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
     let color_ix = editor.color.index();
     let is_new = editor.is_new;
     let auth_is_key = editor.auth_is_key;
+    let auth_is_anonymous = editor.auth_is_anonymous;
+    // Password field shows only when the selected method actually sends one.
+    let auth_uses_password = !auth_is_key && !auth_is_anonymous;
     let is_sftp = matches!(editor.protocol, Protocol::Sftp);
     let is_ftp = matches!(editor.protocol, Protocol::Ftp);
     let is_ftps = matches!(editor.protocol, Protocol::Ftps);
@@ -138,7 +141,9 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                                 .child(field("Port", editor.port.clone(), cx)),
                         ),
                 )
-                .child(field("Username", editor.username.clone(), cx))
+                .when(!auth_is_anonymous, |this| {
+                    this.child(field("Username", editor.username.clone(), cx))
+                })
                 .child(field("Remote path", editor.remote_path.clone(), cx))
                 .child(field(
                     "Accent color",
@@ -158,28 +163,26 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                         }),
                     cx,
                 ))
-                .when(is_sftp, |this| {
-                    this.child(field(
-                        "Authentication",
-                        Segmented::new("ce-auth")
-                            .segment("Password")
-                            .segment("Key")
-                            .selected(if auth_is_key { 1 } else { 0 })
-                            .on_select({
-                                let view = view.clone();
-                                move |ix, _window, cx| {
-                                    view.update(cx, |this, cx| {
-                                        this.set_editor_auth(ix);
-                                        cx.notify();
-                                    });
-                                }
-                            }),
-                        cx,
-                    ))
-                })
-                // Password auth: SFTP-with-password, or any FTP/FTPS (which are
-                // username+password only).
-                .when(!auth_is_key, |this| {
+                // Auth selector: SFTP picks Password/Key; FTP/FTPS picks
+                // Password/Anonymous. Index 1 is the protocol's "second" method.
+                .child(field(
+                    "Authentication",
+                    Segmented::new("ce-auth")
+                        .segment("Password")
+                        .segment(if is_sftp { "Key" } else { "Anonymous" })
+                        .selected(if auth_is_key || auth_is_anonymous { 1 } else { 0 })
+                        .on_select({
+                            let view = view.clone();
+                            move |ix, _window, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.set_editor_auth(ix);
+                                    cx.notify();
+                                });
+                            }
+                        }),
+                    cx,
+                ))
+                .when(auth_uses_password, |this| {
                     this.child(field("Password", editor.password.clone(), cx))
                 })
                 .when(is_sftp && auth_is_key, |this| {

@@ -138,8 +138,12 @@ pub struct ConnectionEditor {
     pub remote_path: Entity<TextInput>,
     /// Password field (obscured). On edit, blank means "keep the stored secret".
     pub password: Entity<TextInput>,
-    /// Whether key auth is selected (vs password).
+    /// Whether key auth is selected (vs password). Mutually exclusive with
+    /// `auth_is_anonymous`.
     pub auth_is_key: bool,
+    /// Whether anonymous auth is selected (FTP/FTPS only). Mutually exclusive with
+    /// `auth_is_key`.
+    pub auth_is_anonymous: bool,
     /// Private-key file path field (key auth).
     pub key_path: Entity<TextInput>,
     /// Key passphrase field (obscured, optional). Blank = unencrypted key, or on
@@ -625,6 +629,12 @@ impl AppState {
         let profile = conn.profile.clone();
         self.connecting_id = Some(id.to_string());
 
+        // Anonymous login carries no secret: skip the keychain entirely.
+        if matches!(profile.auth, AuthMethod::Anonymous) {
+            self.send_connect(profile, String::new(), false, cx);
+            return;
+        }
+
         let keyring = self.keyring;
         let account = secret_account(&profile);
         cx.spawn(async move |this, cx| {
@@ -655,7 +665,9 @@ impl AppState {
             // comes back as `KeyLocked` and we prompt for the passphrase then.
             Ok(None) => match profile.auth {
                 AuthMethod::Password => self.show_password_prompt(profile, cx),
-                AuthMethod::Key { .. } => self.send_connect(profile, String::new(), false, cx),
+                AuthMethod::Key { .. } | AuthMethod::Anonymous => {
+                    self.send_connect(profile, String::new(), false, cx)
+                }
             },
             Err(err) => {
                 self.connecting_id = None;
@@ -856,6 +868,7 @@ impl AppState {
             remote_path: cx.new(|cx| TextInput::new(cx).with_placeholder("/var/www  (optional)")),
             password: cx.new(|cx| TextInput::new(cx).with_placeholder("Password").obscured()),
             auth_is_key: false,
+            auth_is_anonymous: false,
             key_path: cx.new(|cx| TextInput::new(cx).with_placeholder("~/.ssh/id_ed25519")),
             passphrase: cx.new(|cx| {
                 TextInput::new(cx)
@@ -881,9 +894,10 @@ impl AppState {
             return;
         };
         let p = conn.profile.clone();
-        let (auth_is_key, key_path_str) = match &p.auth {
-            AuthMethod::Password => (false, String::new()),
-            AuthMethod::Key { path } => (true, path.display().to_string()),
+        let (auth_is_key, auth_is_anonymous, key_path_str) = match &p.auth {
+            AuthMethod::Password => (false, false, String::new()),
+            AuthMethod::Key { path } => (true, false, path.display().to_string()),
+            AuthMethod::Anonymous => (false, true, String::new()),
         };
         self.editor = Some(ConnectionEditor {
             id: p.id.clone(),
@@ -903,6 +917,7 @@ impl AppState {
                     .obscured()
             }),
             auth_is_key,
+            auth_is_anonymous,
             key_path: cx.new(|cx| {
                 TextInput::new(cx)
                     .with_placeholder("~/.ssh/id_ed25519")
@@ -943,10 +958,13 @@ impl AppState {
         }
     }
 
-    /// Switch the editor's auth method (0 = password, 1 = key).
+    /// Switch the editor's auth method. Index 0 is always Password; index 1 is
+    /// Key under SFTP and Anonymous under FTP/FTPS (the two are never both shown).
     pub fn set_editor_auth(&mut self, ix: usize) {
         if let Some(editor) = self.editor.as_mut() {
-            editor.auth_is_key = ix == 1;
+            let second_is_key = editor.protocol == Protocol::Sftp;
+            editor.auth_is_key = ix == 1 && second_is_key;
+            editor.auth_is_anonymous = ix == 1 && !second_is_key;
         }
     }
 
@@ -997,8 +1015,11 @@ impl AppState {
         };
         let old = editor.protocol;
         editor.protocol = new;
-        // Key auth is SFTP-only; leaving SFTP forces password auth.
-        if new != Protocol::Sftp {
+        // Key auth is SFTP-only and anonymous is FTP/FTPS-only; a protocol switch
+        // clears whichever no longer applies, leaving password auth as the default.
+        if new == Protocol::Sftp {
+            editor.auth_is_anonymous = false;
+        } else {
             editor.auth_is_key = false;
         }
         let port_input = editor.port.clone();
@@ -1058,6 +1079,7 @@ impl AppState {
         let remote_path = editor.remote_path.read(cx).content().trim().to_string();
         let password = editor.password.read(cx).content().to_string();
         let auth_is_key = editor.auth_is_key;
+        let auth_is_anonymous = editor.auth_is_anonymous;
         let key_path = editor.key_path.read(cx).content().trim().to_string();
         let passphrase = editor.passphrase.read(cx).content().to_string();
         let protocol = editor.protocol;
@@ -1066,7 +1088,8 @@ impl AppState {
         let id = editor.id.clone();
         let is_new = editor.is_new;
 
-        if name.is_empty() || host.is_empty() || username.is_empty() {
+        // Anonymous login ignores the username; everything else requires one.
+        if name.is_empty() || host.is_empty() || (username.is_empty() && !auth_is_anonymous) {
             self.push_toast(
                 "Name, host and username are required",
                 ToastVariant::Error,
@@ -1078,19 +1101,14 @@ impl AppState {
             self.push_toast("A key file is required", ToastVariant::Error, cx);
             return;
         }
-        let auth = if auth_is_key {
+        let auth = if auth_is_anonymous {
+            AuthMethod::Anonymous
+        } else if auth_is_key {
             AuthMethod::Key {
                 path: key_path.into(),
             }
         } else {
             AuthMethod::Password
-        };
-        // The secret to persist + its keychain account, by method. Blank keeps
-        // whatever is already stored (the field shows "leave blank to keep").
-        let (secret, account) = if auth_is_key {
-            (passphrase, passphrase_account(&id))
-        } else {
-            (password, password_account(&id))
         };
         let port = if port_text.is_empty() {
             protocol.default_port()
@@ -1128,8 +1146,20 @@ impl AppState {
             self.push_toast(err.to_string(), ToastVariant::Error, cx);
             return;
         }
-        if !secret.is_empty() {
-            self.keyring_set_async(account, secret, cx);
+        // Persist the secret by method. Anonymous has none — clear any entry left
+        // from a prior password/key config so switching modes strands nothing.
+        // Blank keeps whatever is already stored (the field shows "leave blank").
+        if auth_is_anonymous {
+            self.keyring_clear_async(id, cx);
+        } else {
+            let (secret, account) = if auth_is_key {
+                (passphrase, passphrase_account(&id))
+            } else {
+                (password, password_account(&id))
+            };
+            if !secret.is_empty() {
+                self.keyring_set_async(account, secret, cx);
+            }
         }
         self.reload_connections(cx);
         self.editor = None;
@@ -1162,6 +1192,18 @@ impl AppState {
         .detach();
     }
 
+    /// Best-effort, idempotent removal of a profile's keychain secrets — both the
+    /// password and the key-passphrase entries (a profile may have written either).
+    fn keyring_clear_async(&self, id: String, cx: &mut Context<Self>) {
+        let keyring = self.keyring;
+        cx.background_executor()
+            .spawn(async move {
+                let _ = keyring.delete_password(KEYCHAIN_SERVICE, &password_account(&id));
+                let _ = keyring.delete_password(KEYCHAIN_SERVICE, &passphrase_account(&id));
+            })
+            .detach();
+    }
+
     /// Send a throwaway `TestConnection` probe for the editor's current form. On
     /// edit with a blank password field, the stored secret is fetched first.
     pub fn test_editor_connection(&mut self, cx: &mut Context<Self>) {
@@ -1175,6 +1217,7 @@ impl AppState {
         let remote_path = editor.remote_path.read(cx).content().trim().to_string();
         let password = editor.password.read(cx).content().to_string();
         let auth_is_key = editor.auth_is_key;
+        let auth_is_anonymous = editor.auth_is_anonymous;
         let key_path = editor.key_path.read(cx).content().trim().to_string();
         let passphrase = editor.passphrase.read(cx).content().to_string();
         let protocol = editor.protocol;
@@ -1182,7 +1225,7 @@ impl AppState {
         let id = editor.id.clone();
         let is_new = editor.is_new;
 
-        if host.is_empty() || username.is_empty() {
+        if host.is_empty() || (username.is_empty() && !auth_is_anonymous) {
             self.set_test_status(false, "Host and username are required");
             return;
         }
@@ -1201,7 +1244,9 @@ impl AppState {
                 }
             }
         };
-        let auth = if auth_is_key {
+        let auth = if auth_is_anonymous {
+            AuthMethod::Anonymous
+        } else if auth_is_key {
             AuthMethod::Key {
                 path: key_path.into(),
             }
@@ -1226,6 +1271,12 @@ impl AppState {
             editor.test_status = None;
         }
 
+        // Anonymous probes with no secret; skip the keychain entirely.
+        if auth_is_anonymous {
+            self.dispatch_test(profile, String::new());
+            cx.notify();
+            return;
+        }
         // The secret to probe with (password or passphrase). On edit with a blank
         // field, fetch whatever is stored under the matching account.
         let (typed_secret, account) = if auth_is_key {
@@ -1321,18 +1372,7 @@ impl AppState {
             self.push_toast(err.to_string(), ToastVariant::Error, cx);
             return;
         }
-        // Best-effort, idempotent keychain cleanup — remove both the password and
-        // the key-passphrase entries (a profile may have written either).
-        let keyring = self.keyring;
-        let id_for_keyring = id.clone();
-        cx.background_executor()
-            .spawn(async move {
-                let _ =
-                    keyring.delete_password(KEYCHAIN_SERVICE, &password_account(&id_for_keyring));
-                let _ =
-                    keyring.delete_password(KEYCHAIN_SERVICE, &passphrase_account(&id_for_keyring));
-            })
-            .detach();
+        self.keyring_clear_async(id.clone(), cx);
         if self.editor.as_ref().is_some_and(|e| e.id == id) {
             self.editor = None;
         }
@@ -2836,6 +2876,8 @@ fn secret_account(profile: &Profile) -> String {
     match profile.auth {
         AuthMethod::Password => password_account(&profile.id),
         AuthMethod::Key { .. } => passphrase_account(&profile.id),
+        // Anonymous has no stored secret; callers short-circuit before reaching here.
+        AuthMethod::Anonymous => password_account(&profile.id),
     }
 }
 
