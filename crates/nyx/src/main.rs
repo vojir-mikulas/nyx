@@ -7,6 +7,7 @@
 mod app;
 mod assets;
 mod icon;
+mod keymap;
 mod state;
 mod views;
 
@@ -24,9 +25,7 @@ fn main() {
         if let Err(err) = Assets::load_fonts(cx) {
             eprintln!("warning: failed to load vendored fonts: {err}");
         }
-        TextInput::bind_keys(cx);
-        crate::views::browser::bind_keys(cx);
-        crate::app::bind_keys(cx);
+        crate::keymap::bind_all(cx);
 
         let bounds = Bounds::centered(None, gpui::size(gpui::px(1100.0), gpui::px(720.0)), cx);
         cx.open_window(

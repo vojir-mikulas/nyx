@@ -3,8 +3,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    actions, div, prelude::*, px, radians, App, Context, ExternalPaths, Hsla, KeyBinding,
-    MouseButton, SharedString, Transformation,
+    actions, div, prelude::*, px, radians, Context, ExternalPaths, Hsla, MouseButton, SharedString,
+    Transformation,
 };
 use nyx_ui::{ActiveTheme, Button, ButtonSize, ButtonVariant, Column, IconButton, Table};
 
@@ -23,22 +23,18 @@ actions!(
         Rename,
         /// Delete the current selection (confirmed).
         Delete,
+        /// Move the selection up one row.
+        SelectUp,
+        /// Move the selection down one row.
+        SelectDown,
+        /// Select the first row.
+        SelectFirst,
+        /// Select the last row.
+        SelectLast,
+        /// Select every visible row.
+        SelectAllRows,
     ]
 );
-
-/// Register the browser's keyboard bindings, scoped to the `"Browser"` key
-/// context so they only fire when the file table (not an input) has focus.
-/// Call once at startup.
-pub fn bind_keys(cx: &mut App) {
-    let ctx = Some("Browser");
-    cx.bind_keys([
-        KeyBinding::new("enter", Open, ctx),
-        KeyBinding::new("backspace", GoUp, ctx),
-        KeyBinding::new("f2", Rename, ctx),
-        KeyBinding::new("delete", Delete, ctx),
-        KeyBinding::new("cmd-backspace", Delete, ctx),
-    ]);
-}
 
 /// Render the browser column (tab strip + toolbar + table).
 pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
@@ -558,10 +554,6 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
         .min_h_0()
         .bg(theme.bg_app)
         .text_sm()
-        // The `"Browser"` key context wraps only the table, not the filter box,
-        // so its keys never fight `TextInput` while the filter is focused. A
-        // click in the table focuses it so the keys dispatch.
-        .key_context("Browser")
         .track_focus(&state.browser_focus)
         .on_mouse_down(
             MouseButton::Left,
@@ -569,22 +561,50 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                 window.focus(&this.browser_focus, cx);
             }),
         )
-        .on_action(cx.listener(|this, _: &Open, _, cx| {
-            this.activate_selection(cx);
-            cx.notify();
-        }))
-        .on_action(cx.listener(|this, _: &GoUp, _, cx| {
-            this.go_up(cx);
-            cx.notify();
-        }))
-        .on_action(cx.listener(|this, _: &Rename, _, cx| {
-            this.rename_selection(cx);
-            cx.notify();
-        }))
-        .on_action(cx.listener(|this, _: &Delete, _, cx| {
-            this.start_delete(cx);
-            cx.notify();
-        }))
+        // The `"Browser"` key context wraps only the table, not the filter box, so
+        // its keys never fight `TextInput` while the filter is focused. A click in
+        // the table focuses it so the keys dispatch. While any overlay is open the
+        // context is dropped so dialog keys (Enter/Esc) route to the modal instead
+        // of leaking to the table beneath it.
+        .when(!state.has_overlay(), |this| {
+            this.key_context("Browser")
+                .on_action(cx.listener(|this, _: &Open, _, cx| {
+                    this.activate_selection(cx);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &GoUp, _, cx| {
+                    this.go_up(cx);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &Rename, _, cx| {
+                    this.rename_selection(cx);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &Delete, _, cx| {
+                    this.start_delete(cx);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &SelectUp, _, cx| {
+                    this.move_selection(-1, cx);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &SelectDown, _, cx| {
+                    this.move_selection(1, cx);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &SelectFirst, _, cx| {
+                    this.select_edge(false, cx);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &SelectLast, _, cx| {
+                    this.select_edge(true, cx);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &SelectAllRows, _, cx| {
+                    this.select_all_visible(cx);
+                    cx.notify();
+                }))
+        })
         // Drag external files into the browser → upload to the current directory
         // (a folder row instead targets that folder, via the row-drop above).
         .drag_over::<ExternalPaths>(move |s, _, _, _| s.bg(drop_zone))

@@ -3,7 +3,7 @@
 //! is its `Render` impl.
 
 use gpui::{
-    actions, anchored, deferred, div, prelude::*, px, Context, FontWeight, MouseButton, Window,
+    anchored, deferred, div, prelude::*, px, Context, Focusable, FontWeight, MouseButton, Window,
 };
 use nyx_core::CollisionChoice;
 use nyx_ui::{
@@ -12,22 +12,13 @@ use nyx_ui::{
 };
 
 use crate::assets::{FONT_MONO, FONT_UI};
+use crate::keymap::{
+    CloseTab, Confirm, Dismiss, FocusFilter, NewConnection, OpenSettings, Refresh, ShowShortcuts,
+    ToggleSidebar,
+};
 use crate::state::models::Density;
 use crate::state::{AppState, View};
 use crate::views;
-
-actions!(
-    nyx_app,
-    [
-        /// Open the connection editor in Create mode (⌘N).
-        NewConnection,
-    ]
-);
-
-/// Register the app-wide keyboard shortcuts. Call once at startup.
-pub fn bind_keys(cx: &mut gpui::App) {
-    cx.bind_keys([gpui::KeyBinding::new("cmd-n", NewConnection, None)]);
-}
 
 impl Render for AppState {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -62,6 +53,9 @@ impl Render for AppState {
             .relative()
             .flex()
             .flex_col()
+            // The root `"App"` context: global keys bind here, so a deeper
+            // `"Browser"` or `"TextInput"` context shadows them when focused.
+            .key_context("App")
             .font_family(FONT_UI)
             .bg(theme.bg_panel_2)
             .text_color(theme.text)
@@ -74,6 +68,47 @@ impl Render for AppState {
                 this.open_editor_create(cx);
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
+                this.toggle_sidebar();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &OpenSettings, _, cx| {
+                this.open_settings();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ShowShortcuts, _, cx| {
+                this.toggle_shortcuts();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &FocusFilter, window, cx| {
+                if this.view == View::Browse && !this.has_overlay() {
+                    let handle = this.filter.read(cx).focus_handle(cx);
+                    window.focus(&handle, cx);
+                    cx.notify();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &Refresh, _, cx| {
+                if this.view == View::Browse {
+                    this.refresh(cx);
+                    cx.notify();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &CloseTab, _, cx| {
+                if this.view == View::Browse && !this.has_overlay() {
+                    this.disconnect();
+                    cx.notify();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &Confirm, _, cx| {
+                if this.confirm_topmost_modal(cx) {
+                    cx.notify();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &Dismiss, _, cx| {
+                if this.dismiss_topmost_overlay(cx) {
+                    cx.notify();
+                }
+            }))
             .child(
                 div()
                     .flex()
@@ -85,6 +120,10 @@ impl Render for AppState {
             .child(views::status_bar::render(self, cx))
             .when(self.tweaks_open, |this| {
                 let modal = tweaks_modal(self, cx);
+                this.child(modal)
+            })
+            .when(self.shortcuts_open, |this| {
+                let modal = shortcuts_modal(self, cx);
                 this.child(modal)
             })
             // The connecting indicator sits under the prompts (mutually exclusive).
@@ -877,6 +916,59 @@ fn tweaks_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElemen
                     })),
             ),
         )
+}
+
+/// The keyboard-shortcuts cheat-sheet, rendered from the keymap table so it can
+/// never drift from the actual bindings.
+fn shortcuts_modal(_state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    let theme = cx.theme().clone();
+    let view = cx.entity();
+
+    let mut body = div().flex().flex_col().gap_4();
+    for (title, rows) in crate::keymap::cheat_sheet() {
+        let mut section = div().flex().flex_col().gap_1p5().child(
+            div()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.text_faint)
+                .child(title),
+        );
+        for (keys, label) in rows {
+            section = section.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_4()
+                    .child(div().text_sm().text_color(theme.text_muted).child(label))
+                    .child(
+                        div()
+                            .font_family(FONT_MONO)
+                            .text_xs()
+                            .text_color(theme.text)
+                            .px_1p5()
+                            .py_0p5()
+                            .rounded(theme.radius_sm)
+                            .bg(theme.bg_input)
+                            .border_1()
+                            .border_color(theme.border)
+                            .child(keys),
+                    ),
+            );
+        }
+        body = body.child(section);
+    }
+
+    Modal::new("shortcuts")
+        .title("Keyboard shortcuts")
+        .width(px(420.))
+        .on_close(move |_window, cx| {
+            view.update(cx, |this, cx| {
+                this.shortcuts_open = false;
+                cx.notify();
+            });
+        })
+        .child(body)
 }
 
 fn field(

@@ -244,6 +244,8 @@ pub struct AppState {
     pub browser_focus: FocusHandle,
     /// Whether the tweaks modal is open.
     pub tweaks_open: bool,
+    /// Whether the keyboard-shortcuts cheat-sheet is open.
+    pub shortcuts_open: bool,
     /// Whether the color-scheme dropdown inside the tweaks modal is open.
     pub theme_select_open: bool,
     /// File-row density (exercises `Table::row_height`).
@@ -376,6 +378,7 @@ impl AppState {
             recent_collapsed: false,
             browser_focus,
             tweaks_open: false,
+            shortcuts_open: false,
             theme_select_open: false,
             density,
             show_perms,
@@ -2076,6 +2079,141 @@ impl AppState {
                 TransferStatus::Running | TransferStatus::Queued | TransferStatus::AwaitingDecision
             )
         });
+    }
+
+    /// Whether any overlay — a modal, prompt, context menu, the cheat-sheet, or
+    /// the connecting spinner — is currently on screen. The browser drops its key
+    /// context while this holds, so global Enter/Esc route to the overlay instead
+    /// of the file table beneath it.
+    pub fn has_overlay(&self) -> bool {
+        self.editor.is_some()
+            || self.password_prompt.is_some()
+            || self.host_key_prompt.is_some()
+            || !self.pending_collisions.is_empty()
+            || self.delete_confirm.is_some()
+            || self.file_delete.is_some()
+            || self.input_prompt.is_some()
+            || self.tweaks_open
+            || self.shortcuts_open
+            || self.row_menu.is_some()
+            || self.file_menu.is_some()
+            || self.connecting_id.is_some()
+    }
+
+    /// Toggle the sidebar's visibility (the `cmd-b` global).
+    pub fn toggle_sidebar(&mut self) {
+        self.sidebar_open = !self.sidebar_open;
+    }
+
+    /// Open the Tweaks (settings) modal (`cmd-,`).
+    pub fn open_settings(&mut self) {
+        self.tweaks_open = true;
+    }
+
+    /// Toggle the keyboard-shortcuts cheat-sheet (`cmd-/`).
+    pub fn toggle_shortcuts(&mut self) {
+        self.shortcuts_open = !self.shortcuts_open;
+    }
+
+    /// Esc handler: dismiss the topmost overlay — menus first, then the cheat
+    /// sheet, then prompts/modals in z-order. Returns whether anything closed.
+    /// Each dismissal is the modal's own cancel (e.g. a collision Skip), never a
+    /// destructive default.
+    pub fn dismiss_topmost_overlay(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.row_menu.is_some() {
+            self.row_menu = None;
+        } else if self.file_menu.is_some() {
+            self.file_menu = None;
+        } else if self.shortcuts_open {
+            self.shortcuts_open = false;
+        } else if self.editor.is_some() {
+            self.close_editor();
+        } else if self.password_prompt.is_some() {
+            self.cancel_password();
+        } else if self.host_key_prompt.is_some() {
+            self.reject_host_key();
+        } else if !self.pending_collisions.is_empty() {
+            self.resolve_collision(CollisionChoice::Skip, cx);
+        } else if self.delete_confirm.is_some() {
+            self.cancel_delete();
+        } else if self.file_delete.is_some() {
+            self.cancel_file_delete();
+        } else if self.input_prompt.is_some() {
+            self.cancel_input();
+        } else if self.tweaks_open {
+            self.tweaks_open = false;
+            self.theme_select_open = false;
+        } else {
+            return false;
+        }
+        true
+    }
+
+    /// Enter handler: trigger the open modal's primary action. The collision
+    /// prompt is deliberately excluded — its primary is a destructive Overwrite,
+    /// too dangerous to fire on a stray Enter. Returns whether anything acted.
+    pub fn confirm_topmost_modal(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.editor.is_some() {
+            self.save_editor(cx);
+        } else if self.password_prompt.is_some() {
+            self.confirm_password(cx);
+        } else if self.host_key_prompt.is_some() {
+            self.trust_host_key();
+        } else if self.delete_confirm.is_some() {
+            self.confirm_delete(cx);
+        } else if self.file_delete.is_some() {
+            self.confirm_file_delete(cx);
+        } else if self.input_prompt.is_some() {
+            self.submit_input(cx);
+        } else if self.shortcuts_open {
+            self.shortcuts_open = false;
+        } else if self.tweaks_open {
+            self.tweaks_open = false;
+            self.theme_select_open = false;
+        } else {
+            return false;
+        }
+        true
+    }
+
+    /// The visible (filtered + sorted) entry names, in display order.
+    fn visible_names(&self, cx: &App) -> Vec<SharedString> {
+        self.visible_entries(cx)
+            .iter()
+            .map(|row| SharedString::from(row.entry.name.clone()))
+            .collect()
+    }
+
+    /// Move the single-row selection by `delta` rows (keyboard up/down). With no
+    /// selection, down picks the first row and up the last.
+    pub fn move_selection(&mut self, delta: i32, cx: &mut Context<Self>) {
+        let names = self.visible_names(cx);
+        if names.is_empty() {
+            return;
+        }
+        let next = match names.iter().position(|n| self.selected.contains(n)) {
+            Some(cur) => (cur as i32 + delta).clamp(0, names.len() as i32 - 1) as usize,
+            None if delta >= 0 => 0,
+            None => names.len() - 1,
+        };
+        self.selected.clear();
+        self.selected.insert(names[next].clone());
+    }
+
+    /// Select the first (`last == false`) or last row (Home / End).
+    pub fn select_edge(&mut self, last: bool, cx: &mut Context<Self>) {
+        let names = self.visible_names(cx);
+        let Some(target) = (if last { names.last() } else { names.first() }) else {
+            return;
+        };
+        let target = target.clone();
+        self.selected.clear();
+        self.selected.insert(target);
+    }
+
+    /// Select every visible row (`cmd-a` in the file table).
+    pub fn select_all_visible(&mut self, cx: &mut Context<Self>) {
+        self.selected = self.visible_names(cx).into_iter().collect();
     }
 
     /// Show a toast that auto-dismisses after a short delay.
