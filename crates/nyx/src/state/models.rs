@@ -99,7 +99,7 @@ impl EntryRow {
     pub fn new(entry: RemoteEntry) -> Self {
         let type_label = match entry.kind {
             EntryKind::Directory => "Folder".into(),
-            EntryKind::Symlink => "Symlink".into(),
+            EntryKind::Symlink => "Link".into(),
             // `file_kind` adds the extension nuance (e.g. "JavaScript").
             EntryKind::File | EntryKind::Other => file_kind(&entry.name).into(),
         };
@@ -134,10 +134,11 @@ impl EntryRow {
 
     /// The icon name + color for this entry, against the active theme.
     pub fn icon(&self, theme: &Theme) -> (&'static str, Hsla) {
-        if self.entry.is_dir() {
-            return ("folder", theme.blue);
+        match self.entry.kind {
+            EntryKind::Directory => ("folder", theme.blue),
+            EntryKind::Symlink => ("link", theme.text_muted),
+            EntryKind::File | EntryKind::Other => file_icon(&self.entry.name, theme),
         }
-        file_icon(&self.entry.name, theme)
     }
 }
 

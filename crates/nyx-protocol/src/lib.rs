@@ -10,7 +10,7 @@
 use std::path::Path;
 
 use async_trait::async_trait;
-use nyx_core::{RemoteEntry, RemotePath, Result, TransferProgress};
+use nyx_core::{EntryKind, RemoteEntry, RemotePath, Result, TransferProgress};
 
 mod host_key;
 mod known_hosts;
@@ -37,7 +37,20 @@ pub trait RemoteClient: Send + Sync {
     async fn default_dir(&self) -> Result<RemotePath>;
 
     /// List the entries of a remote directory.
+    ///
+    /// Symlinks are reported *as* links ([`EntryKind::Symlink`], lstat-style),
+    /// never silently resolved to their target — [`target_kind`] follows a link
+    /// on demand.
+    ///
+    /// [`target_kind`]: RemoteClient::target_kind
     async fn list_dir(&self, path: &RemotePath) -> Result<Vec<RemoteEntry>>;
+
+    /// Follow `path` (resolving a symlink) and report the *target's* kind.
+    ///
+    /// Used to decide, on click, whether a directory symlink should be navigated
+    /// into or treated as a file. One extra round-trip, paid only on activation —
+    /// listing stays lstat-cheap. A broken link (missing target) is an error.
+    async fn target_kind(&self, path: &RemotePath) -> Result<EntryKind>;
 
     /// Whether a remote path already exists. Used by the transfer pre-flight gate
     /// to detect an upload that would overwrite an existing destination. A missing

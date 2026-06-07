@@ -8,11 +8,30 @@
 //! the actual copy tasks), `finish`es them on completion and `cancel`s on
 //! request. Keeping the queue free of I/O makes the policy unit-testable without
 //! a runtime or a server.
+//!
+//! ## Path-lock policy
+//!
+//! Every live transfer (`Queued` / `AwaitingDecision` / `Running`) holds a lock
+//! on **both** its remote and local path. [`submit`](TransferQueue::submit)
+//! **rejects** a second transfer whose remote or local path is already locked,
+//! and [`is_remote_locked`](TransferQueue::is_remote_locked) lets the service
+//! reject a mutating op (`Remove` / `Rename`) against a path with a live
+//! transfer. This is the safe, predictable first cut: a duplicate active op on a
+//! locked path is refused (surfacing the conflict) rather than racing — a
+//! delete-during-download or a double-upload to one path can't corrupt state.
+//! Independent paths still run concurrently up to the cap. Locks release on
+//! every terminal transition (finish / cancel / skip / failed). Richer per-path
+//! queueing (auto-serialize same-path ops instead of rejecting) is deferred.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
 use nyx_core::{CollisionChoice, RemotePath, TransferDirection, TransferId, TransferProgress};
+
+/// A `submit` (or a mutating op against a locked path) was rejected because the
+/// path already has a live transfer. See the crate-level path-lock policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PathInUse;
 
 /// What the service hands in to enqueue a transfer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +100,14 @@ pub struct TransferQueue {
     /// Transfers parked at the pre-flight gate, awaiting a collision decision.
     /// A parked item holds no running slot.
     awaiting: HashMap<TransferId, TransferSpec>,
+    /// Remote paths with a live transfer (the path-lock guard).
+    locked_remote: HashSet<RemotePath>,
+    /// Local paths with a live transfer (the path-lock guard).
+    locked_local: HashSet<PathBuf>,
+    /// Per-transfer record of the paths it locked, so a terminal transition can
+    /// release exactly those (and never another transfer's identical-looking
+    /// path — submit guarantees one live transfer per path).
+    locks: HashMap<TransferId, (RemotePath, PathBuf)>,
 }
 
 impl TransferQueue {
@@ -92,15 +119,47 @@ impl TransferQueue {
             queued: VecDeque::new(),
             running: HashMap::new(),
             awaiting: HashMap::new(),
+            locked_remote: HashSet::new(),
+            locked_local: HashSet::new(),
+            locks: HashMap::new(),
         }
     }
 
-    /// Assign an id and push `spec` onto the queue, returning the new id.
-    pub fn submit(&mut self, spec: TransferSpec) -> TransferId {
+    /// Assign an id, lock the spec's paths and push it onto the queue, returning
+    /// the new id — unless the remote or local path already has a live transfer,
+    /// in which case it is **rejected** with [`PathInUse`] (the path-lock policy).
+    pub fn submit(&mut self, spec: TransferSpec) -> Result<TransferId, PathInUse> {
+        if self.locked_remote.contains(&spec.remote) || self.locked_local.contains(&spec.local) {
+            return Err(PathInUse);
+        }
         let id = TransferId(self.next_id);
         self.next_id += 1;
+        self.lock(id, &spec);
         self.queued.push_back((id, spec));
-        id
+        Ok(id)
+    }
+
+    /// Whether a remote path currently has a live transfer — the service checks
+    /// this to reject a mutating op (`Remove` / `Rename`) that would race a copy.
+    pub fn is_remote_locked(&self, path: &RemotePath) -> bool {
+        self.locked_remote.contains(path)
+    }
+
+    /// Record `spec`'s path locks for `id`.
+    fn lock(&mut self, id: TransferId, spec: &TransferSpec) {
+        self.locked_remote.insert(spec.remote.clone());
+        self.locked_local.insert(spec.local.clone());
+        self.locks
+            .insert(id, (spec.remote.clone(), spec.local.clone()));
+    }
+
+    /// Release `id`'s path locks (a no-op if it held none). Called from every
+    /// terminal transition so a path can never leak a permanent lock.
+    fn release(&mut self, id: TransferId) {
+        if let Some((remote, local)) = self.locks.remove(&id) {
+            self.locked_remote.remove(&remote);
+            self.locked_local.remove(&local);
+        }
     }
 
     /// If a slot is free and a transfer is queued, promote the oldest one into a
@@ -158,8 +217,16 @@ impl TransferQueue {
                     // Re-admit at the front so the resolved item runs next.
                     self.queued.push_front((tid, spec));
                 }
-                CollisionChoice::Skip => out.skipped.push(tid),
-                CollisionChoice::Cancel => out.cancelled.push(tid),
+                // Skip/Cancel terminate the item here (no copy runs) — release
+                // its lock now, since no `finish` will follow.
+                CollisionChoice::Skip => {
+                    self.release(tid);
+                    out.skipped.push(tid);
+                }
+                CollisionChoice::Cancel => {
+                    self.release(tid);
+                    out.cancelled.push(tid);
+                }
             }
         }
         if apply_to_all {
@@ -174,9 +241,11 @@ impl TransferQueue {
         out
     }
 
-    /// Drop a transfer from the running set (it reached a terminal state).
+    /// Drop a transfer from the running set (it reached a terminal state) and
+    /// release its path locks.
     pub fn finish(&mut self, id: TransferId) {
         self.running.remove(&id);
+        self.release(id);
     }
 
     /// Cancel a transfer by id. A queued or parked transfer is dropped
@@ -186,12 +255,16 @@ impl TransferQueue {
     pub fn cancel(&mut self, id: TransferId) -> CancelOutcome {
         if let Some(pos) = self.queued.iter().position(|(qid, _)| *qid == id) {
             self.queued.remove(pos);
+            // Dropped before it started — no `finish` will follow, so unlock now.
+            self.release(id);
             return CancelOutcome::WasQueued;
         }
         if self.awaiting.remove(&id).is_some() {
+            self.release(id);
             return CancelOutcome::WasQueued;
         }
         if let Some((_, progress)) = self.running.get(&id) {
+            // The copy winds down and the service calls `finish`, which unlocks.
             progress.cancel();
             return CancelOutcome::WasRunning;
         }
@@ -208,6 +281,24 @@ impl TransferQueue {
         }
         let mut dropped: Vec<TransferId> = self.queued.drain(..).map(|(id, _)| id).collect();
         dropped.extend(self.awaiting.drain().map(|(id, _)| id));
+        // The dropped queued/parked items get no `finish`, so release their locks
+        // now; the flagged running ones release when the service `finish`es them.
+        for id in &dropped {
+            self.release(*id);
+        }
+        dropped
+    }
+
+    /// Drain the **pending** transfers (queued + parked) without touching the
+    /// running ones, releasing their locks and returning their ids. Used on a
+    /// connection loss: the pending transfers can't run, so the service fails
+    /// them, while the in-flight ones fail on their own next I/O.
+    pub fn fail_pending(&mut self) -> Vec<TransferId> {
+        let mut dropped: Vec<TransferId> = self.queued.drain(..).map(|(id, _)| id).collect();
+        dropped.extend(self.awaiting.drain().map(|(id, _)| id));
+        for id in &dropped {
+            self.release(*id);
+        }
         dropped
     }
 
@@ -236,7 +327,7 @@ mod tests {
     #[test]
     fn cap_is_enforced_and_backfills_on_finish() {
         let mut q = TransferQueue::new(3);
-        let ids: Vec<_> = (0..5).map(|n| q.submit(spec(n))).collect();
+        let ids: Vec<_> = (0..5).map(|n| q.submit(spec(n)).unwrap()).collect();
 
         // Exactly `cap` start, then the queue stalls.
         let started: Vec<_> = std::iter::from_fn(|| q.poll_start()).collect();
@@ -257,8 +348,8 @@ mod tests {
     #[test]
     fn cancel_queued_drops_it_before_it_starts() {
         let mut q = TransferQueue::new(1);
-        let a = q.submit(spec(0));
-        let b = q.submit(spec(1));
+        let a = q.submit(spec(0)).unwrap();
+        let b = q.submit(spec(1)).unwrap();
 
         // `a` is running, `b` is still queued.
         assert_eq!(q.poll_start().unwrap().id, a);
@@ -272,7 +363,7 @@ mod tests {
     #[test]
     fn cancel_running_sets_the_flag() {
         let mut q = TransferQueue::new(1);
-        let a = q.submit(spec(0));
+        let a = q.submit(spec(0)).unwrap();
         let started = q.poll_start().unwrap();
         assert!(!started.progress.is_cancelled());
 
@@ -289,9 +380,9 @@ mod tests {
     #[test]
     fn cancel_all_drains_queue_and_flags_running() {
         let mut q = TransferQueue::new(2);
-        let a = q.submit(spec(0));
-        let b = q.submit(spec(1));
-        let c = q.submit(spec(2));
+        let a = q.submit(spec(0)).unwrap();
+        let b = q.submit(spec(1)).unwrap();
+        let c = q.submit(spec(2)).unwrap();
         let started_a = q.poll_start().unwrap();
         let started_b = q.poll_start().unwrap();
         assert_eq!((started_a.id, started_b.id), (a, b));
@@ -309,7 +400,7 @@ mod tests {
     #[test]
     fn ids_are_monotonic() {
         let mut q = TransferQueue::new(2);
-        let ids: Vec<_> = (0..4).map(|n| q.submit(spec(n))).collect();
+        let ids: Vec<_> = (0..4).map(|n| q.submit(spec(n)).unwrap()).collect();
         assert_eq!(
             ids,
             vec![TransferId(0), TransferId(1), TransferId(2), TransferId(3)]
@@ -319,8 +410,8 @@ mod tests {
     #[test]
     fn park_frees_the_slot_and_resolve_overwrite_runs_next() {
         let mut q = TransferQueue::new(1);
-        let a = q.submit(spec(0));
-        let b = q.submit(spec(1));
+        let a = q.submit(spec(0)).unwrap();
+        let b = q.submit(spec(1)).unwrap();
         // `a` claims the only slot; `b` waits.
         let started_a = q.poll_start().unwrap();
         assert_eq!(started_a.id, a);
@@ -348,8 +439,8 @@ mod tests {
     #[test]
     fn resolve_skip_and_cancel_terminate_without_running() {
         let mut q = TransferQueue::new(2);
-        let a = q.submit(spec(0));
-        let b = q.submit(spec(1));
+        let a = q.submit(spec(0)).unwrap();
+        let b = q.submit(spec(1)).unwrap();
         q.poll_start().unwrap();
         q.poll_start().unwrap();
         q.park(a);
@@ -376,9 +467,9 @@ mod tests {
     #[test]
     fn apply_to_all_stamps_parked_and_queued_items() {
         let mut q = TransferQueue::new(2);
-        let a = q.submit(spec(0));
-        let b = q.submit(spec(1));
-        let c = q.submit(spec(2)); // stays queued (cap is 2)
+        let a = q.submit(spec(0)).unwrap();
+        let b = q.submit(spec(1)).unwrap();
+        let c = q.submit(spec(2)).unwrap(); // stays queued (cap is 2)
         q.poll_start().unwrap();
         q.poll_start().unwrap();
         q.park(a);
@@ -398,7 +489,7 @@ mod tests {
     #[test]
     fn cancel_parked_drops_it() {
         let mut q = TransferQueue::new(1);
-        let a = q.submit(spec(0));
+        let a = q.submit(spec(0)).unwrap();
         q.poll_start().unwrap();
         q.park(a);
         assert_eq!(q.cancel(a), CancelOutcome::WasQueued);
@@ -408,8 +499,8 @@ mod tests {
     #[test]
     fn cancel_all_drains_parked_too() {
         let mut q = TransferQueue::new(2);
-        let a = q.submit(spec(0));
-        let b = q.submit(spec(1));
+        let a = q.submit(spec(0)).unwrap();
+        let b = q.submit(spec(1)).unwrap();
         q.poll_start().unwrap();
         q.poll_start().unwrap();
         q.park(a);
@@ -423,11 +514,101 @@ mod tests {
     #[test]
     fn running_progress_reflects_byte_counter() {
         let mut q = TransferQueue::new(2);
-        q.submit(spec(0));
+        q.submit(spec(0)).unwrap();
         let started = q.poll_start().unwrap();
         started.progress.add(128);
 
         let snapshot: Vec<_> = q.running_progress().collect();
         assert_eq!(snapshot, vec![(started.id, 128)]);
+    }
+
+    #[test]
+    fn second_submit_for_a_live_path_is_rejected_then_freed() {
+        let mut q = TransferQueue::new(2);
+        let a = q.submit(spec(0)).unwrap();
+        // A second transfer for the same paths is rejected while the first lives.
+        assert_eq!(q.submit(spec(0)), Err(PathInUse));
+        // The remote path is reported locked, so a Remove/Rename guard catches it.
+        assert!(q.is_remote_locked(&RemotePath::new("/r/0")));
+        // Once the first reaches a terminal state the path frees up.
+        q.poll_start().unwrap();
+        q.finish(a);
+        assert!(!q.is_remote_locked(&RemotePath::new("/r/0")));
+        assert!(q.submit(spec(0)).is_ok());
+    }
+
+    #[test]
+    fn a_partial_path_overlap_still_collides() {
+        // Same remote but different local (two downloads of one file to two
+        // places) — still a conflict; same local but different remote likewise.
+        let mut q = TransferQueue::new(2);
+        q.submit(spec(0)).unwrap();
+        let same_remote = TransferSpec {
+            local: PathBuf::from("/l/other"),
+            ..spec(0)
+        };
+        assert_eq!(q.submit(same_remote), Err(PathInUse));
+        let same_local = TransferSpec {
+            remote: RemotePath::new("/r/other"),
+            ..spec(0)
+        };
+        assert_eq!(q.submit(same_local), Err(PathInUse));
+    }
+
+    #[test]
+    fn independent_paths_never_collide() {
+        let mut q = TransferQueue::new(3);
+        assert!(q.submit(spec(0)).is_ok());
+        assert!(q.submit(spec(1)).is_ok());
+        assert!(q.submit(spec(2)).is_ok());
+    }
+
+    #[test]
+    fn lock_releases_on_cancel_and_resolve_skip() {
+        // Cancel a queued transfer → its path frees.
+        let mut q = TransferQueue::new(1);
+        let a = q.submit(spec(0)).unwrap();
+        assert_eq!(q.cancel(a), CancelOutcome::WasQueued);
+        assert!(q.submit(spec(0)).is_ok());
+
+        // Skip-resolving a parked transfer → its path frees.
+        let mut q = TransferQueue::new(1);
+        let b = q.submit(spec(1)).unwrap();
+        q.poll_start().unwrap();
+        q.park(b);
+        q.resolve(b, CollisionChoice::Skip, false);
+        assert!(!q.is_remote_locked(&RemotePath::new("/r/1")));
+        assert!(q.submit(spec(1)).is_ok());
+    }
+
+    #[test]
+    fn overwrite_keeps_the_lock_until_finish() {
+        let mut q = TransferQueue::new(1);
+        let a = q.submit(spec(0)).unwrap();
+        q.poll_start().unwrap();
+        q.park(a);
+        // Re-queued for overwrite: the path stays locked (still a live transfer).
+        q.resolve(a, CollisionChoice::Overwrite, false);
+        assert!(q.is_remote_locked(&RemotePath::new("/r/0")));
+        let restarted = q.poll_start().unwrap();
+        q.finish(restarted.id);
+        assert!(!q.is_remote_locked(&RemotePath::new("/r/0")));
+    }
+
+    #[test]
+    fn fail_pending_drops_queued_and_parked_but_not_running() {
+        let mut q = TransferQueue::new(1);
+        let a = q.submit(spec(0)).unwrap(); // will run
+        let b = q.submit(spec(1)).unwrap(); // stays queued
+        let started_a = q.poll_start().unwrap();
+        assert_eq!(started_a.id, a);
+
+        let failed = q.fail_pending();
+        assert_eq!(failed, vec![b]);
+        // The running one keeps its lock until it finishes on its own.
+        assert!(q.is_remote_locked(&RemotePath::new("/r/0")));
+        assert!(!q.is_remote_locked(&RemotePath::new("/r/1")));
+        q.finish(a);
+        assert!(!q.is_remote_locked(&RemotePath::new("/r/0")));
     }
 }

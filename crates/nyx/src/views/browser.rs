@@ -48,8 +48,52 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
         .flex_1()
         .min_h_0()
         .child(tab_strip(state, cx))
+        .when_some(state.connection_lost.clone(), |this, reason| {
+            this.child(connection_lost_banner(reason, cx))
+        })
         .child(toolbar(state, cx))
         .child(file_table(state, cx))
+}
+
+/// The non-modal "connection lost" banner: stays put under the tab strip with a
+/// Reconnect affordance, leaving the last listing visible beneath it.
+fn connection_lost_banner(reason: SharedString, cx: &mut Context<AppState>) -> impl IntoElement {
+    let theme = cx.theme().clone();
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .h(px(34.))
+        .flex_shrink_0()
+        .px_3()
+        .bg(theme.red.opacity(0.10))
+        .border_b_1()
+        .border_color(theme.border_soft)
+        .text_sm()
+        .child(
+            div()
+                .text_color(theme.red)
+                .child(icon("alert", 14., theme.red)),
+        )
+        .child(div().text_color(theme.text).child("Connection lost"))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_xs()
+                .text_color(theme.text_faint)
+                .child(reason),
+        )
+        .child(
+            Button::new("reconnect", "Reconnect")
+                .variant(ButtonVariant::Primary)
+                .size(ButtonSize::Sm)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.reconnect(cx);
+                    cx.notify();
+                })),
+        )
 }
 
 fn tab_strip(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
@@ -431,13 +475,13 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                 let rows = rows_for_activate;
                 move |ix, _window, cx| {
                     if let Some(row) = rows.get(ix) {
-                        if row.is_dir {
-                            let name = row.name.clone();
-                            view.update(cx, |this, cx| {
-                                this.open_dir(&name, cx);
-                                cx.notify();
-                            });
-                        }
+                        // A directory opens, a symlink resolves (navigate or
+                        // download); a plain file does nothing on double-click.
+                        let name = row.name.clone();
+                        view.update(cx, |this, cx| {
+                            this.activate_row(&name, cx);
+                            cx.notify();
+                        });
                     }
                 }
             })

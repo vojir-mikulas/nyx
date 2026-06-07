@@ -20,6 +20,13 @@ pub enum NyxError {
     #[error("connection error: {0}")]
     Connection(String),
 
+    /// An established connection's transport died mid-session (network drop, VPN
+    /// flap, server restart, sleep/wake). Distinct from [`Connection`](Self::Connection)
+    /// (a failed *attempt*) so the service can flip the session to "lost" and the
+    /// UI can offer a reconnect rather than treat it as a generic op failure.
+    #[error("connection lost: {0}")]
+    ConnectionLost(String),
+
     /// Authentication was rejected by the remote host.
     ///
     /// Never embed the offending credential in this (or any) message.

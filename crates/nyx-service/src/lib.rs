@@ -30,8 +30,8 @@ use futures::channel::mpsc::{
     UnboundedSender as FuturesSender,
 };
 use nyx_core::{
-    CollisionChoice, NyxError, RemoteEntry, RemotePath, Secret, TransferDirection, TransferId,
-    TransferStatus,
+    CollisionChoice, EntryKind, NyxError, RemoteEntry, RemotePath, Secret, TransferDirection,
+    TransferId, TransferStatus,
 };
 use nyx_profile::{AuthMethod, Profile};
 use nyx_protocol::{Auth, KnownHosts, RemoteClient, SftpClient};
@@ -90,6 +90,13 @@ pub enum Command {
     /// List a remote directory on the active connection.
     ListDir {
         /// Absolute remote path to list.
+        path: RemotePath,
+    },
+    /// Resolve a symlink on the active connection by following it, so the UI can
+    /// decide on click whether to navigate into it (directory target) or treat it
+    /// as a file (download). Replies with [`Event::SymlinkResolved`].
+    ResolveSymlink {
+        /// Absolute path of the symlink to follow.
         path: RemotePath,
     },
     /// Create a remote directory on the active connection.
@@ -204,6 +211,23 @@ pub enum Event {
         path: RemotePath,
         /// The entries in that directory.
         entries: Vec<RemoteEntry>,
+    },
+    /// The result of a [`Command::ResolveSymlink`]: the followed link's target is
+    /// a directory (navigate into `path`) or not (treat `path` as a file).
+    SymlinkResolved {
+        /// The symlink path that was followed (paths are not secrets).
+        path: RemotePath,
+        /// Whether the link's target is a directory.
+        is_dir: bool,
+    },
+    /// The active connection's transport died mid-session (network drop, VPN flap,
+    /// server restart, sleep/wake). The session is now flipped to "lost": further
+    /// commands fail fast until the UI reconnects. Credential-free.
+    ConnectionLost {
+        /// The profile whose connection was lost.
+        profile_id: String,
+        /// A human-readable, credential-free reason.
+        reason: String,
     },
     /// The outcome of a [`Command::TestConnection`] probe, matched by `profile_id`.
     ///
@@ -406,6 +430,9 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
     // detached task and run concurrently against the one session, without
     // blocking the command loop.
     let mut client: Option<Arc<SftpClient>> = None;
+    // The id of the profile behind the active session, for the `ConnectionLost`
+    // event. Set on connect, cleared on disconnect or a detected loss.
+    let mut active_profile: Option<String> = None;
     // The responder for an in-flight host-key prompt. With the single-flight
     // guard there is at most one connect-like op, hence at most one slot user.
     let mut pending_host_key: Option<oneshot::Sender<bool>> = None;
@@ -478,66 +505,114 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                             warn!("host-key decision with no pending prompt");
                         }
                     }
+                    // The result is computed first so the immutable session borrow
+                    // ends before a `ConnectionLost` error needs `&mut client`.
                     Command::ListDir { path } => {
-                        match client.as_deref() {
-                            Some(session) => match session.list_dir(&path).await {
-                                Ok(entries) => {
-                                    debug!(%path, count = entries.len(), "listed directory");
-                                    let _ = events.unbounded_send(Event::DirListing { path, entries });
-                                }
-                                Err(err) => {
-                                    let _ = events.unbounded_send(Event::Error {
-                                        message: err.to_string(),
-                                    });
-                                }
-                            },
-                            None => {
-                                let _ = events.unbounded_send(Event::Error {
-                                    message: "not connected".into(),
+                        let result = match client.as_deref() {
+                            Some(session) => Some(session.list_dir(&path).await),
+                            None => None,
+                        };
+                        match result {
+                            Some(Ok(entries)) => {
+                                debug!(%path, count = entries.len(), "listed directory");
+                                let _ = events.unbounded_send(Event::DirListing { path, entries });
+                            }
+                            Some(Err(err)) => report_op_error(
+                                err, &mut client, &mut active_profile, &mut queue,
+                                &mut last_bytes, &events,
+                            ),
+                            None => not_connected(&events),
+                        }
+                    }
+                    Command::ResolveSymlink { path } => {
+                        let result = match client.as_deref() {
+                            Some(session) => Some(session.target_kind(&path).await),
+                            None => None,
+                        };
+                        match result {
+                            Some(Ok(kind)) => {
+                                let _ = events.unbounded_send(Event::SymlinkResolved {
+                                    path,
+                                    is_dir: kind == EntryKind::Directory,
                                 });
                             }
+                            Some(Err(err)) => report_op_error(
+                                err, &mut client, &mut active_profile, &mut queue,
+                                &mut last_bytes, &events,
+                            ),
+                            None => not_connected(&events),
                         }
                     }
                     // Quick metadata ops: one SFTP round-trip, awaited inline.
-                    Command::Mkdir { path } => match client.as_deref() {
-                        Some(session) => {
-                            let event = match session.mkdir(&path).await {
-                                Ok(()) => Event::FileOpDone {
+                    Command::Mkdir { path } => {
+                        let result = match client.as_deref() {
+                            Some(session) => Some(session.mkdir(&path).await),
+                            None => None,
+                        };
+                        match result {
+                            Some(Ok(())) => {
+                                let _ = events.unbounded_send(Event::FileOpDone {
                                     op: FileOp::Mkdir,
                                     message: format!("Created “{}”", base_name(&path)),
-                                },
-                                Err(err) => Event::Error { message: err.to_string() },
-                            };
-                            let _ = events.unbounded_send(event);
+                                });
+                            }
+                            Some(Err(err)) => report_op_error(
+                                err, &mut client, &mut active_profile, &mut queue,
+                                &mut last_bytes, &events,
+                            ),
+                            None => not_connected(&events),
                         }
-                        None => not_connected(&events),
-                    },
-                    Command::Rename { from, to } => match client.as_deref() {
-                        Some(session) => {
-                            let event = match session.rename(&from, &to).await {
-                                Ok(()) => Event::FileOpDone {
-                                    op: FileOp::Rename,
-                                    message: format!("Renamed to “{}”", base_name(&to)),
-                                },
-                                Err(err) => Event::Error { message: err.to_string() },
+                    }
+                    Command::Rename { from, to } => {
+                        // Reject a rename that would race a live transfer on either
+                        // endpoint (the path-lock policy).
+                        if queue.is_remote_locked(&from) || queue.is_remote_locked(&to) {
+                            let _ = events.unbounded_send(Event::Error {
+                                message: format!("“{}” has a transfer in progress", base_name(&from)),
+                            });
+                        } else {
+                            let result = match client.as_deref() {
+                                Some(session) => Some(session.rename(&from, &to).await),
+                                None => None,
                             };
-                            let _ = events.unbounded_send(event);
+                            match result {
+                                Some(Ok(())) => {
+                                    let _ = events.unbounded_send(Event::FileOpDone {
+                                        op: FileOp::Rename,
+                                        message: format!("Renamed to “{}”", base_name(&to)),
+                                    });
+                                }
+                                Some(Err(err)) => report_op_error(
+                                    err, &mut client, &mut active_profile, &mut queue,
+                                    &mut last_bytes, &events,
+                                ),
+                                None => not_connected(&events),
+                            }
                         }
-                        None => not_connected(&events),
-                    },
+                    }
                     // Slow ops: spawned against a cloned `Arc` so the loop stays
                     // responsive (and several can run at once); each emits its own
                     // terminal event. A missing session is reported immediately.
-                    Command::Remove { path, is_dir } => match client.clone() {
-                        Some(session) => {
-                            let message = format!("Deleted “{}”", base_name(&path));
-                            spawn_file_op(FileOp::Remove, message, events.clone(), async move {
-                                let _ = is_dir; // protocol re-stats
-                                session.remove(&path).await
+                    Command::Remove { path, is_dir } => {
+                        // Reject a delete that would race a live transfer on the
+                        // same path (the path-lock policy).
+                        if queue.is_remote_locked(&path) {
+                            let _ = events.unbounded_send(Event::Error {
+                                message: format!("“{}” has a transfer in progress", base_name(&path)),
                             });
+                        } else {
+                            match client.clone() {
+                                Some(session) => {
+                                    let message = format!("Deleted “{}”", base_name(&path));
+                                    spawn_file_op(FileOp::Remove, message, events.clone(), async move {
+                                        let _ = is_dir; // protocol re-stats
+                                        session.remove(&path).await
+                                    });
+                                }
+                                None => not_connected(&events),
+                            }
                         }
-                        None => not_connected(&events),
-                    },
+                    }
                     // Transfers go through the queue: submit → announce → try to
                     // start (subject to the cap). The dock row is the feedback —
                     // no `FileOpDone` toast for transfers.
@@ -551,14 +626,18 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                                 local: local.clone(),
                                 on_collision: None,
                             };
-                            let id = queue.submit(spec);
-                            let _ = events.unbounded_send(Event::TransferQueued {
-                                id,
-                                direction: TransferDirection::Download,
-                                remote,
-                                local: local.display().to_string(),
-                            });
-                            try_start(&mut queue, &client, &events, &xfer_done_tx);
+                            match queue.submit(spec) {
+                                Ok(id) => {
+                                    let _ = events.unbounded_send(Event::TransferQueued {
+                                        id,
+                                        direction: TransferDirection::Download,
+                                        remote,
+                                        local: local.display().to_string(),
+                                    });
+                                    try_start(&mut queue, &client, &events, &xfer_done_tx);
+                                }
+                                Err(_) => path_in_use(&events, &remote),
+                            }
                         }
                     }
                     Command::Upload { local, remote } => {
@@ -571,14 +650,18 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                                 local: local.clone(),
                                 on_collision: None,
                             };
-                            let id = queue.submit(spec);
-                            let _ = events.unbounded_send(Event::TransferQueued {
-                                id,
-                                direction: TransferDirection::Upload,
-                                remote,
-                                local: local.display().to_string(),
-                            });
-                            try_start(&mut queue, &client, &events, &xfer_done_tx);
+                            match queue.submit(spec) {
+                                Ok(id) => {
+                                    let _ = events.unbounded_send(Event::TransferQueued {
+                                        id,
+                                        direction: TransferDirection::Upload,
+                                        remote,
+                                        local: local.display().to_string(),
+                                    });
+                                    try_start(&mut queue, &client, &events, &xfer_done_tx);
+                                }
+                                Err(_) => path_in_use(&events, &remote),
+                            }
                         }
                     }
                     Command::CancelTransfer { id } => match queue.cancel(id) {
@@ -621,8 +704,10 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                         try_start(&mut queue, &client, &events, &xfer_done_tx);
                     }
                     Command::Disconnect => {
-                        // A disconnect also clears the single-flight slot.
+                        // A disconnect also clears the single-flight slot and the
+                        // active-profile tracking.
                         in_flight = false;
+                        active_profile = None;
                         // Cancel everything: flag the running transfers (their
                         // tasks wind down and report Cancelled via `xfer_done`)
                         // and drain the queued ones (no task ran, so emit their
@@ -654,6 +739,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                 match done {
                     TaskOutcome::Connected { profile_id, client: session, home } => {
                         client = Some(Arc::from(session));
+                        active_profile = Some(profile_id.clone());
                         info!(%profile_id, "connected");
                         let _ = events.unbounded_send(Event::Connected { profile_id, home });
                     }
@@ -870,6 +956,68 @@ fn not_connected(events: &FuturesSender<Event>) {
     let _ = events.unbounded_send(Event::Error {
         message: "not connected".into(),
     });
+}
+
+/// Emit the path-lock rejection for a transfer whose path already has a live one.
+fn path_in_use(events: &FuturesSender<Event>, remote: &RemotePath) {
+    let _ = events.unbounded_send(Event::Error {
+        message: format!("“{}” already has a transfer in progress", base_name(remote)),
+    });
+}
+
+/// Report an inline op's error: a transport death flips the session to "lost"
+/// (via [`note_connection_lost`]); anything else is a plain [`Event::Error`].
+fn report_op_error(
+    err: NyxError,
+    client: &mut Option<Arc<SftpClient>>,
+    active_profile: &mut Option<String>,
+    queue: &mut TransferQueue,
+    last_bytes: &mut HashMap<TransferId, u64>,
+    events: &FuturesSender<Event>,
+) {
+    if matches!(err, NyxError::ConnectionLost(_)) {
+        note_connection_lost(
+            client,
+            active_profile,
+            queue,
+            last_bytes,
+            events,
+            err.to_string(),
+        );
+    } else {
+        let _ = events.unbounded_send(Event::Error {
+            message: err.to_string(),
+        });
+    }
+}
+
+/// Flip the active session to "lost": drop the client (so later commands fail
+/// fast), emit exactly one [`Event::ConnectionLost`], and fail the **pending**
+/// transfers (queued/parked can't run without a session; in-flight ones fail on
+/// their own next I/O). The `client.take()` guard makes the emission idempotent —
+/// a later op that also sees a transport error finds no client and is a no-op.
+fn note_connection_lost(
+    client: &mut Option<Arc<SftpClient>>,
+    active_profile: &mut Option<String>,
+    queue: &mut TransferQueue,
+    last_bytes: &mut HashMap<TransferId, u64>,
+    events: &FuturesSender<Event>,
+    reason: String,
+) {
+    if client.take().is_none() {
+        return;
+    }
+    let profile_id = active_profile.take().unwrap_or_default();
+    warn!(%profile_id, "connection lost");
+    let _ = events.unbounded_send(Event::ConnectionLost { profile_id, reason });
+    for id in queue.fail_pending() {
+        last_bytes.remove(&id);
+        let _ = events.unbounded_send(Event::TransferDone {
+            id,
+            status: TransferStatus::Failed,
+            message: Some("connection lost".into()),
+        });
+    }
 }
 
 /// The path's final component (the file/folder name) for toast copy, falling

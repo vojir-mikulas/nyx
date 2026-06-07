@@ -212,6 +212,17 @@ impl RemoteClient for SftpClient {
         Ok(entries)
     }
 
+    async fn target_kind(&self, path: &RemotePath) -> Result<EntryKind> {
+        // `metadata` is a follow-stat (`SSH_FXP_STAT`), so a symlink resolves to
+        // its target here; `list_dir` uses the lstat-style readdir attrs instead.
+        let meta = self
+            .sftp()?
+            .metadata(path.as_str())
+            .await
+            .map_err(map_sftp_err)?;
+        Ok(map_kind(meta.file_type()))
+    }
+
     async fn download(
         &self,
         remote: &RemotePath,
@@ -496,6 +507,12 @@ where
 
 /// Map an SFTP protocol error to [`NyxError`]. The SFTP error `Display` carries
 /// only status codes and server messages — no credentials.
+///
+/// Transport-level failures on an established session (the channel I/O died, a
+/// response never came, or the reader task vanished mid-request) map to
+/// [`NyxError::ConnectionLost`] so the service can flip the session to "lost".
+/// Server `Status` packets are *not* a lost connection — they are ordinary op
+/// failures (missing file, permission denied, …).
 fn map_sftp_err(err: russh_sftp::client::error::Error) -> NyxError {
     use russh_sftp::client::error::Error as SftpError;
     match &err {
@@ -504,6 +521,12 @@ fn map_sftp_err(err: russh_sftp::client::error::Error) -> NyxError {
             StatusCode::PermissionDenied => NyxError::Io("permission denied".into()),
             _ => NyxError::Io(err.to_string()),
         },
+        // Channel I/O died, the response timed out, or the session's reader task
+        // ended (surfaced as an `UnexpectedBehavior` RecvError) — the transport
+        // is gone.
+        SftpError::IO(_) | SftpError::Timeout | SftpError::UnexpectedBehavior(_) => {
+            NyxError::ConnectionLost(err.to_string())
+        }
         _ => NyxError::Io(err.to_string()),
     }
 }
@@ -516,6 +539,46 @@ mod tests {
     fn auth_error_has_no_detail() {
         // The opaque auth error must never carry server/credential detail.
         assert_eq!(NyxError::Auth.to_string(), "authentication failed");
+    }
+
+    #[test]
+    fn map_kind_distinguishes_symlinks() {
+        assert_eq!(map_kind(FileType::Symlink), EntryKind::Symlink);
+        assert_eq!(map_kind(FileType::Dir), EntryKind::Directory);
+        assert_eq!(map_kind(FileType::File), EntryKind::File);
+        assert_eq!(map_kind(FileType::Other), EntryKind::Other);
+    }
+
+    #[test]
+    fn transport_failures_map_to_connection_lost() {
+        use russh_sftp::client::error::Error as SftpError;
+        // A dead channel, a timed-out response, or a vanished reader task all mean
+        // the established transport is gone.
+        assert!(matches!(
+            map_sftp_err(SftpError::IO("broken pipe".into())),
+            NyxError::ConnectionLost(_)
+        ));
+        assert!(matches!(
+            map_sftp_err(SftpError::Timeout),
+            NyxError::ConnectionLost(_)
+        ));
+        assert!(matches!(
+            map_sftp_err(SftpError::UnexpectedBehavior("RecvError".into())),
+            NyxError::ConnectionLost(_)
+        ));
+    }
+
+    #[test]
+    fn server_status_is_not_a_lost_connection() {
+        use russh_sftp::client::error::Error as SftpError;
+        use russh_sftp::protocol::Status;
+        let no_such = SftpError::Status(Status {
+            id: 1,
+            status_code: StatusCode::NoSuchFile,
+            error_message: "no such file".into(),
+            language_tag: String::new(),
+        });
+        assert!(matches!(map_sftp_err(no_such), NyxError::NotFound(_)));
     }
 
     /// An encrypted Ed25519 key (OpenSSH format); the passphrase is `blabla`.

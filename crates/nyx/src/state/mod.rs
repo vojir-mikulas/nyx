@@ -16,8 +16,8 @@ use gpui::{
     SharedString,
 };
 use nyx_core::{
-    CollisionChoice, Protocol, RemotePath, Secret, Transfer, TransferDirection, TransferId,
-    TransferStatus,
+    CollisionChoice, EntryKind, Protocol, RemotePath, Secret, Transfer, TransferDirection,
+    TransferId, TransferStatus,
 };
 use nyx_keyring::{passphrase_account, password_account, CredentialStore, OsKeyring};
 use nyx_profile::{
@@ -295,6 +295,10 @@ pub struct AppState {
     pub file_delete: Option<FileDeleteConfirm>,
     /// Whether a directory listing is in flight (drives the loading hint).
     pub listing_loading: bool,
+    /// Set when the active connection's transport dropped: a credential-free
+    /// reason that drives the non-modal "Connection lost — Reconnect" banner.
+    /// `None` while connected. The last listing stays visible underneath.
+    pub connection_lost: Option<SharedString>,
 }
 
 /// Map a persisted theme name to its concrete [`Theme`], defaulting to One Dark
@@ -395,6 +399,7 @@ impl AppState {
             input_prompt: None,
             file_delete: None,
             listing_loading: false,
+            connection_lost: None,
         }
     }
 
@@ -1201,22 +1206,53 @@ impl AppState {
     }
 
     /// Activate the current selection (the browser's Enter key): a single
-    /// selected directory is opened, otherwise the selection is downloaded.
+    /// selected directory is opened, a symlink is resolved (navigate or
+    /// download), otherwise the selection is downloaded.
     pub fn activate_selection(&mut self, cx: &mut Context<Self>) {
         if self.selected.len() == 1 {
             if let Some(name) = self.selected.iter().next().cloned() {
-                let is_dir = self
-                    .listing
-                    .iter()
-                    .find(|row| row.entry.name.as_str() == name.as_ref())
-                    .is_some_and(|row| row.entry.is_dir());
-                if is_dir {
-                    self.open_dir(&name, cx);
-                    return;
+                match self.entry_kind(&name) {
+                    Some(EntryKind::Directory) => {
+                        self.open_dir(&name, cx);
+                        return;
+                    }
+                    Some(EntryKind::Symlink) => {
+                        self.open_symlink(&name, cx);
+                        return;
+                    }
+                    _ => {}
                 }
             }
         }
         self.download_selection(cx);
+    }
+
+    /// Activate one row by name (double-click): open a directory, resolve a
+    /// symlink, or do nothing for a plain file (Enter/menu drive file actions).
+    pub fn activate_row(&mut self, name: &SharedString, cx: &mut Context<Self>) {
+        match self.entry_kind(name) {
+            Some(EntryKind::Directory) => self.open_dir(name, cx),
+            Some(EntryKind::Symlink) => self.open_symlink(name, cx),
+            _ => {}
+        }
+    }
+
+    /// The kind of a listed entry by name, if present.
+    fn entry_kind(&self, name: &SharedString) -> Option<EntryKind> {
+        self.listing
+            .iter()
+            .find(|row| row.entry.name.as_str() == name.as_ref())
+            .map(|row| row.entry.kind)
+    }
+
+    /// Resolve a symlink on click: ask the backend to follow it. The reply
+    /// ([`Event::SymlinkResolved`]) navigates into a directory target or
+    /// downloads a file target — one round-trip, paid only on activation.
+    pub fn open_symlink(&mut self, name: &SharedString, cx: &mut Context<Self>) {
+        let path = self.cwd.join(name);
+        if !self.service.send(Command::ResolveSymlink { path }) {
+            self.push_toast("Backend unavailable", ToastVariant::Error, cx);
+        }
     }
 
     /// Dismiss the input modal without acting.
@@ -1341,23 +1377,10 @@ impl AppState {
         if files.is_empty() {
             return;
         }
-        let dir = default_download_dir();
 
         if files.len() == 1 {
             let (remote, name) = files.into_iter().next().expect("one file");
-            let receiver = cx.prompt_for_new_path(&dir, Some(&name));
-            cx.spawn(async move |this, cx| {
-                if let Ok(Ok(Some(local))) = receiver.await {
-                    this.update(cx, |this, cx| {
-                        if !this.service.send(Command::Download { remote, local }) {
-                            this.push_toast("Backend unavailable", ToastVariant::Error, cx);
-                        }
-                        cx.notify();
-                    })
-                    .ok();
-                }
-            })
-            .detach();
+            self.download_remote_file(remote, name, cx);
         } else {
             let receiver = cx.prompt_for_paths(PathPromptOptions {
                 files: false,
@@ -1389,6 +1412,26 @@ impl AppState {
             })
             .detach();
         }
+    }
+
+    /// Download a single remote file: open a save-as dialog (defaulting to the OS
+    /// Downloads folder + `name`), then issue the `Download`. Shared by the
+    /// single-file selection path and symlink-to-file resolution.
+    fn download_remote_file(&mut self, remote: RemotePath, name: String, cx: &mut Context<Self>) {
+        let dir = default_download_dir();
+        let receiver = cx.prompt_for_new_path(&dir, Some(&name));
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(local))) = receiver.await {
+                this.update(cx, |this, cx| {
+                    if !this.service.send(Command::Download { remote, local }) {
+                        this.push_toast("Backend unavailable", ToastVariant::Error, cx);
+                    }
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
     }
 
     /// Upload one or more chosen local files into the current directory.
@@ -1524,6 +1567,19 @@ impl AppState {
         self.listing.clear();
         self.selected.clear();
         self.listing_loading = false;
+        self.connection_lost = None;
+    }
+
+    /// Reconnect after a connection loss: re-issue the connect for the active
+    /// profile (re-fetching the secret from the keyring as on first connect). The
+    /// connecting overlay covers the banner; the banner stays set underneath so a
+    /// *failed* reconnect leaves it in place to retry. Success
+    /// ([`Event::Connected`]) clears it and re-enters the browser.
+    pub fn reconnect(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.active_id.clone() else {
+            return;
+        };
+        self.open_connection(&id, cx);
     }
 
     /// Cancel a queued or running transfer (the dock's `x` button). The row
@@ -1571,6 +1627,7 @@ impl AppState {
             Event::Connected { profile_id, home } => {
                 self.host_key_prompt = None;
                 self.used_stored_password = None;
+                self.connection_lost = None;
                 // Persist the connect time so "Recent" ordering survives a restart.
                 self.stamp_last_connected(&profile_id, cx);
                 self.enter_browser(profile_id, home, cx);
@@ -1580,6 +1637,31 @@ impl AppState {
                 if path == self.cwd {
                     self.listing = entries.into_iter().map(EntryRow::new).collect();
                     self.listing_loading = false;
+                }
+            }
+            // A clicked symlink was followed: navigate into a directory target,
+            // otherwise treat it as a file and download it.
+            Event::SymlinkResolved { path, is_dir } => {
+                if is_dir {
+                    self.go_to_path(path, true, cx);
+                } else {
+                    let name = path.file_name().unwrap_or("download").to_string();
+                    self.download_remote_file(path, name, cx);
+                }
+            }
+            // The transport dropped: keep the last listing visible, drop the
+            // online state, and show the reconnect banner. In-flight transfers
+            // arrive as their own `TransferDone(Failed)` events.
+            Event::ConnectionLost { profile_id, reason } => {
+                if self.active_id.as_deref() == Some(profile_id.as_str()) {
+                    self.online_id = None;
+                    self.connecting_id = None;
+                    self.listing_loading = false;
+                    self.connection_lost = Some(if reason.is_empty() {
+                        "Connection lost".into()
+                    } else {
+                        reason.into()
+                    });
                 }
             }
             Event::TestResult {
