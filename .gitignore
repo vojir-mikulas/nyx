@@ -11,6 +11,7 @@
 
 /design/
 /docs/plans/
+.claude
 
 # Local Claude/agent settings overrides
 .claude/settings.local.json

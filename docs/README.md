@@ -46,6 +46,10 @@ the GitHub mirror.
   `profile.protocol`, a plain-FTP client and an FTPS client (explicit/implicit
   TLS) with TLS-cert TOFU trust, plus editor wiring. Phase 5 polish
   (anonymous login, server-quirk hardening) is the remaining tail.
+- [`plans/anonymous-ftp-login.md`](plans/anonymous-ftp-login.md) — **proposed.**
+  Add an **Anonymous** auth mode for FTP/FTPS (RFC 959 `anonymous` login) — no
+  stored or prompted credential, modeled as a third `AuthMethod` variant. The
+  remaining useful tail of `ftp-ftps.md` Phase 5.
 - [`plans/auto-reconnect-resume.md`](plans/auto-reconnect-resume.md) — the
   deferred half of T2.2: **auto-reconnect** with backoff, and **transfer resume**
   from an offset after a drop. Detection + manual reconnect already ship.
@@ -59,6 +63,10 @@ the GitHub mirror.
 - [`plans/windows-drag-out.md`](plans/windows-drag-out.md) — **backlog.** Windows
   drag-out parity (COM `IDataObject` delayed rendering) — the unbuilt Phase 3 of
   `drag-out-to-desktop.md`. Pure additive `nyx-drag` module; no app-code changes.
+- [`plans/in-app-drag.md`](plans/in-app-drag.md) — **proposed.** A drag that
+  starts as an in-app **move into folders** and auto-hands-off to the native
+  drag-out only when the pointer leaves the window. Extends
+  `drag-out-to-desktop.md`.
 
 ## Visual reference
 

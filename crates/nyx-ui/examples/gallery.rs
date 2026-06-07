@@ -21,6 +21,15 @@ const ROWS: &[(&str, &str, &str)] = &[
     (".gitignore", "64 B", "2026-05-30 17:30"),
 ];
 
+/// One row in the in-app-drag table demo. `parent` is set once the item is
+/// dragged into a folder, which hides it from the top level.
+#[derive(Clone)]
+struct DragItem {
+    name: SharedString,
+    is_dir: bool,
+    parent: Option<SharedString>,
+}
+
 struct Gallery {
     name_input: Entity<TextInput>,
     host_input: Entity<TextInput>,
@@ -35,6 +44,8 @@ struct Gallery {
     select_open: bool,
     /// The right-clicked row + cursor position for the secondary-click table demo.
     row_menu: Option<(usize, Point<Pixels>)>,
+    /// Backing list for the in-app drag-to-folder table demo.
+    drag_items: Vec<DragItem>,
 }
 
 impl Gallery {
@@ -52,6 +63,33 @@ impl Gallery {
             select: 0,
             select_open: false,
             row_menu: None,
+            drag_items: vec![
+                DragItem {
+                    name: "Documents".into(),
+                    is_dir: true,
+                    parent: None,
+                },
+                DragItem {
+                    name: "Pictures".into(),
+                    is_dir: true,
+                    parent: None,
+                },
+                DragItem {
+                    name: "notes.txt".into(),
+                    is_dir: false,
+                    parent: None,
+                },
+                DragItem {
+                    name: "todo.md".into(),
+                    is_dir: false,
+                    parent: None,
+                },
+                DragItem {
+                    name: "photo.png".into(),
+                    is_dir: false,
+                    parent: None,
+                },
+            ],
         }
     }
 
@@ -288,7 +326,7 @@ impl Gallery {
             .rounded(theme.radius)
             .overflow_hidden()
             .child(
-                Table::new(
+                Table::<()>::new(
                     "files",
                     vec![
                         Column::new("Name").flex().sortable(),
@@ -363,7 +401,7 @@ impl Gallery {
             .rounded(theme.radius)
             .overflow_hidden()
             .child(
-                Table::new(
+                Table::<()>::new(
                     "secondary-files",
                     vec![
                         Column::new("Name").flex(),
@@ -422,6 +460,122 @@ impl Gallery {
                         )),
                 )
             })
+    }
+
+    /// An **in-app drag** table: drag any row onto a folder row to move it in
+    /// (the item then disappears from the top level). Exercises `Table`'s
+    /// `on_row_drag` (payload), `drag_preview` (cursor chip) and
+    /// `on_row_drop_item` (typed in-app drop) — no OS involvement.
+    fn drag_table(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity();
+        let theme = cx.theme();
+        let dir_color = theme.blue;
+        let muted = theme.text_muted;
+        let chip_bg = theme.bg_elevated;
+        let chip_border = theme.border;
+        let chip_text = theme.text;
+        let radius = theme.radius;
+
+        // Top-level rows are the not-yet-moved items.
+        let visible: Vec<DragItem> = self
+            .drag_items
+            .iter()
+            .filter(|i| i.parent.is_none())
+            .cloned()
+            .collect();
+        let dir_rows: std::collections::HashSet<usize> = visible
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| i.is_dir)
+            .map(|(ix, _)| ix)
+            .collect();
+        let draggable: std::collections::HashSet<usize> = (0..visible.len()).collect();
+        let moved = self
+            .drag_items
+            .iter()
+            .filter(|i| i.parent.is_some())
+            .count();
+
+        let rows_render = visible.clone();
+        let rows_drag = visible.clone();
+        let rows_preview = visible.clone();
+        let rows_drop = visible.clone();
+
+        let table = Table::<Vec<SharedString>>::new(
+            "drag-files",
+            vec![
+                Column::new("Name").flex(),
+                Column::new("Kind").width(gpui::px(80.)),
+            ],
+        )
+        .row_count(visible.len())
+        .draggable_rows(draggable)
+        .on_row_drag(move |ix| rows_drag.get(ix).map(|i| vec![i.name.clone()]))
+        .drag_preview(move |ix, _window, _cx| match rows_preview.get(ix) {
+            Some(item) => div()
+                .flex()
+                .items_center()
+                .px_2()
+                .py_1()
+                .rounded(radius)
+                .bg(chip_bg)
+                .border_1()
+                .border_color(chip_border)
+                .text_sm()
+                .text_color(chip_text)
+                .child(item.name.clone())
+                .into_any_element(),
+            None => div().into_any_element(),
+        })
+        .droppable_rows(dir_rows)
+        .on_row_drop_item(move |ix, names: &Vec<SharedString>, _window, cx| {
+            let Some(folder) = rows_drop
+                .get(ix)
+                .filter(|i| i.is_dir)
+                .map(|i| i.name.clone())
+            else {
+                return;
+            };
+            let names = names.clone();
+            view.update(cx, |this, cx| {
+                for item in this.drag_items.iter_mut() {
+                    if item.name != folder && names.contains(&item.name) {
+                        item.parent = Some(folder.clone());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .render_row(move |ix, _window, _cx| {
+            let item = &rows_render[ix];
+            vec![
+                div()
+                    .text_color(if item.is_dir { dir_color } else { muted })
+                    .child(item.name.clone())
+                    .into_any_element(),
+                div()
+                    .text_color(muted)
+                    .child(if item.is_dir { "Folder" } else { "File" })
+                    .into_any_element(),
+            ]
+        });
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .h(gpui::px(200.))
+                    .w_full()
+                    .panel(cx)
+                    .rounded(theme.radius)
+                    .overflow_hidden()
+                    .child(table),
+            )
+            .child(div().text_xs().text_color(muted).child(format!(
+                "Drag a row onto a folder to move it in — {moved} moved."
+            )))
     }
 
     fn modal(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -511,6 +665,7 @@ impl Render for Gallery {
         let tooltip = self.tooltip_demo();
         let table = self.table(cx);
         let secondary_table = self.secondary_table(cx);
+        let drag_table = self.drag_table(cx);
 
         let body = div()
             .id("scroll")
@@ -542,7 +697,8 @@ impl Render for Gallery {
                 ),
             )
             .child(self.section("Table", table, cx))
-            .child(self.section("Table — right-click menu", secondary_table, cx));
+            .child(self.section("Table — right-click menu", secondary_table, cx))
+            .child(self.section("Table — in-app drag to folder", drag_table, cx));
 
         div()
             .size_full()

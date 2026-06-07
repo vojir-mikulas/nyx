@@ -3,10 +3,10 @@
 use std::rc::Rc;
 
 use gpui::{
-    actions, div, prelude::*, px, radians, Context, ExternalPaths, Hsla, MouseButton, SharedString,
-    Transformation,
+    actions, div, prelude::*, px, radians, Context, DragMoveEvent, ExternalPaths, Hsla,
+    MouseButton, SharedString, Transformation,
 };
-use nyx_ui::{ActiveTheme, Button, ButtonSize, ButtonVariant, Column, IconButton, Table};
+use nyx_ui::{ActiveTheme, Button, ButtonSize, ButtonVariant, Column, IconButton, Table, Theme};
 
 use crate::icon::icon;
 use crate::state::AppState;
@@ -37,6 +37,16 @@ actions!(
         CopyPath,
     ]
 );
+
+/// In-app drag payload: the rows being dragged within the browser (the whole
+/// selection when the grabbed row is part of it, otherwise just that row).
+/// Dropped on a folder row it's a server-side move; dragged out of the window it
+/// is promoted to a native OS drag-out. Kept in the app crate so `nyx-ui` stays
+/// domain-agnostic (the table is generic over this payload).
+#[derive(Clone)]
+pub struct InAppDrag {
+    pub names: Vec<SharedString>,
+}
 
 /// Render the browser column (tab strip + toolbar + table).
 pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
@@ -432,18 +442,39 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
     let rows_for_secondary = rows.clone();
     let rows_for_activate = rows.clone();
     let rows_for_drop = rows.clone();
-    let rows_for_dragout = rows.clone();
-    // Directory rows accept an external file drop (upload into that folder).
+    let rows_for_drag = rows.clone();
+    let rows_for_preview = rows.clone();
+    let rows_for_drop_item = rows.clone();
+    let rows_for_bounds = rows.clone();
+    // Reset the folder-row rect cache; the table's paint repopulates it. Used to
+    // resolve an OS drag-out that returns inside the window (Phase 3 re-entry).
+    state.clear_drop_row_bounds();
+    let bounds_sink = state.drop_row_bounds_sink();
+    // Snapshot of the current selection, to mint the drag payload and size the
+    // drag-preview count badge (the drag closures must be `'static`).
+    let selected_for_drag = state.selected.clone();
+    let selected_for_preview = state.selected.clone();
+    let chip_theme = theme.clone();
+    // Directory rows accept a dropped item — an external file (upload) or an
+    // in-app selection (move) into that folder.
     let dir_rows: std::collections::HashSet<usize> = rows
         .iter()
         .enumerate()
         .filter(|(_, r)| r.is_dir)
         .map(|(ix, _)| ix)
         .collect();
-    // Every row (file or folder) can be dragged out to the OS file manager; a
-    // folder drops as a recursive download. Symlink rows are draggable too but
-    // `start_drag_out` no-ops on them.
+    // Every row starts an in-app drag (a move when dropped on a folder, promoted
+    // to a native drag-out when the pointer leaves the window). Symlink rows are
+    // draggable too but both `move_into` and `start_native_drag` no-op on them.
     let draggable_rows: std::collections::HashSet<usize> = (0..rows.len()).collect();
+    // While a native drag-out is back inside the window, highlight the folder
+    // under the cursor (the OS cursor can't revert, so this is the drop cue).
+    let highlight_rows: std::collections::HashSet<usize> = state
+        .drag_return_folder
+        .as_ref()
+        .and_then(|folder| rows.iter().position(|r| &r.name == folder))
+        .into_iter()
+        .collect();
     let view = cx.entity();
 
     let body: gpui::AnyElement = if is_empty {
@@ -527,17 +558,34 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                 }
             })
             .draggable_rows(draggable_rows)
-            .on_row_drag_out({
-                let view = view.clone();
-                let rows = rows_for_dragout;
-                move |ix, window, cx| {
-                    if let Some(row) = rows.get(ix) {
-                        let name = row.name.clone();
-                        view.update(cx, |this, cx| {
-                            this.start_drag_out(&name, window, cx);
-                            cx.notify();
-                        });
-                    }
+            .highlighted_rows(highlight_rows)
+            // Start an in-app drag: drag the whole selection if the grabbed row is
+            // part of it, else just that row.
+            .on_row_drag({
+                let rows = rows_for_drag;
+                move |ix| {
+                    rows.get(ix).map(|row| {
+                        let names = if selected_for_drag.contains(&row.name) {
+                            selected_for_drag.iter().cloned().collect()
+                        } else {
+                            vec![row.name.clone()]
+                        };
+                        InAppDrag { names }
+                    })
+                }
+            })
+            .drag_preview({
+                let rows = rows_for_preview;
+                move |ix, _window, _cx| {
+                    let Some(row) = rows.get(ix) else {
+                        return div().into_any_element();
+                    };
+                    let count = if selected_for_preview.contains(&row.name) {
+                        selected_for_preview.len()
+                    } else {
+                        1
+                    };
+                    drag_chip(row, count, &chip_theme)
                 }
             })
             .droppable_rows(dir_rows)
@@ -554,6 +602,33 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                                 cx.notify();
                             });
                         }
+                    }
+                }
+            })
+            // Drop the in-app selection onto a folder row → server-side move.
+            .on_row_drop_item({
+                let view = view.clone();
+                let rows = rows_for_drop_item;
+                move |ix, drag: &InAppDrag, _window, cx| {
+                    if let Some(row) = rows.get(ix) {
+                        tracing::info!(ix, is_dir = row.is_dir, name = ?row.name, "in-app drop on row");
+                        if row.is_dir {
+                            let dir = row.name.clone();
+                            let names = drag.names.clone();
+                            view.update(cx, |this, cx| {
+                                this.move_into(&dir, names, cx);
+                                cx.notify();
+                            });
+                        }
+                    }
+                }
+            })
+            // Record folder-row rects each paint so a returning OS drag-out can be
+            // resolved to the folder under the drop point.
+            .on_row_bounds(move |ix, bounds, _window, _cx| {
+                if let Some(row) = rows_for_bounds.get(ix) {
+                    if row.is_dir {
+                        bounds_sink.borrow_mut().push((row.name.clone(), bounds));
                     }
                 }
             })
@@ -675,7 +750,67 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
             this.upload_paths(paths.paths().to_vec(), None, cx);
             cx.notify();
         }))
+        // Auto-promote an in-app drag to a native OS drag-out the moment the
+        // pointer crosses out of the window. A small margin keeps a drag hugging
+        // the edge from flickering between the two mechanisms. Capture-phase, so
+        // it fires even while the pointer is over child rows.
+        .on_drag_move(
+            cx.listener(|this, ev: &DragMoveEvent<InAppDrag>, window, cx| {
+                let size = window.viewport_size();
+                let pos = window.mouse_position();
+                let margin = px(2.);
+                let outside = pos.x < margin
+                    || pos.y < margin
+                    || pos.x > size.width - margin
+                    || pos.y > size.height - margin;
+                if outside {
+                    let names = ev.drag(cx).names.clone();
+                    this.handoff_drag_out(names, window, cx);
+                }
+            }),
+        )
         .child(body)
+}
+
+/// The floating preview shown under the cursor during an in-app drag: a small
+/// chip with the grabbed row's icon and name, plus a count badge when more than
+/// one row is being dragged.
+fn drag_chip(row: &VisibleRow, count: usize, theme: &Theme) -> gpui::AnyElement {
+    let mut chip = div()
+        .flex()
+        .items_center()
+        .gap_1p5()
+        .px_2()
+        .py_1()
+        .rounded(theme.radius)
+        .bg(theme.bg_elevated)
+        .border_1()
+        .border_color(theme.border)
+        .text_sm()
+        .text_color(theme.text)
+        .child(
+            div()
+                .text_color(row.icon_color)
+                .child(icon(row.icon_name, 14., row.icon_color)),
+        )
+        .child(div().max_w(px(180.)).truncate().child(row.name.clone()));
+    if count > 1 {
+        chip = chip.child(
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .min_w(px(18.))
+                .h(px(16.))
+                .px_1()
+                .rounded(theme.radius_sm)
+                .bg(theme.accent)
+                .text_color(theme.on_accent)
+                .text_xs()
+                .child(format!("{count}")),
+        );
+    }
+    chip.into_any_element()
 }
 
 fn empty_state(

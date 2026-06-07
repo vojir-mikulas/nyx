@@ -734,21 +734,26 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                                 message: format!("“{}” has a transfer in progress", base_name(&from)),
                             });
                         } else {
+                            tracing::info!(from = %from.as_str(), to = %to.as_str(), "rename: issuing");
                             let result = match client.as_deref() {
                                 Some(session) => Some(session.rename(&from, &to).await),
                                 None => None,
                             };
                             match result {
                                 Some(Ok(())) => {
+                                    tracing::info!(to = %to.as_str(), "rename: ok");
                                     let _ = events.unbounded_send(Event::FileOpDone {
                                         op: FileOp::Rename,
                                         message: format!("Renamed to “{}”", base_name(&to)),
                                     });
                                 }
-                                Some(Err(err)) => report_op_error(
-                                    err, &mut client, &mut active_profile, &mut queue,
-                                    &mut last_bytes, &mut reconnector, &events,
-                                ),
+                                Some(Err(err)) => {
+                                    tracing::warn!(error = %err, "rename: failed");
+                                    report_op_error(
+                                        err, &mut client, &mut active_profile, &mut queue,
+                                        &mut last_bytes, &mut reconnector, &events,
+                                    )
+                                }
                                 None => not_connected(&events),
                             }
                         }
@@ -2174,6 +2179,11 @@ fn build_client(
                         passphrase: (!passphrase.is_empty()).then(|| passphrase.to_string()),
                     }
                 }
+                AuthMethod::Anonymous => {
+                    return Err(NyxError::Other(
+                        "anonymous login is only supported for FTP/FTPS".into(),
+                    ));
+                }
             };
             Ok(Box::new(SftpClient::new(
                 profile.host.clone(),
@@ -2186,25 +2196,41 @@ fn build_client(
         }
         Protocol::Ftp => {
             reject_key_auth(profile)?;
+            let (username, password) = ftp_credentials(profile, &secret);
             Ok(Box::new(FtpClient::new(
                 profile.host.clone(),
                 profile.port,
-                profile.username.clone(),
-                secret.expose().to_string(),
+                username,
+                password,
             )))
         }
         Protocol::Ftps => {
             reject_key_auth(profile)?;
+            let (username, password) = ftp_credentials(profile, &secret);
             Ok(Box::new(FtpsClient::new(
                 profile.host.clone(),
                 profile.port,
-                profile.username.clone(),
-                secret.expose().to_string(),
+                username,
+                password,
                 profile.ftps_mode,
                 KnownHosts::at(known_certs()),
                 prompt,
             )))
         }
+    }
+}
+
+/// Historical anonymous-FTP password convention; sent as `PASS` for an anonymous
+/// login. Empty passwords are rejected by some servers, so use the standard token.
+const ANON_PASSWORD: &str = "anonymous@";
+
+/// Resolve the `(username, password)` an FTP/FTPS login should send. Anonymous
+/// ignores the stored username and any secret; otherwise the profile username and
+/// the exposed secret are used.
+fn ftp_credentials(profile: &Profile, secret: &Secret) -> (String, String) {
+    match profile.auth {
+        AuthMethod::Anonymous => ("anonymous".to_string(), ANON_PASSWORD.to_string()),
+        _ => (profile.username.clone(), secret.expose().to_string()),
     }
 }
 

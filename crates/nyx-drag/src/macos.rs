@@ -10,6 +10,7 @@
 //! `NSOperationQueue`, so the OS calls `writePromiseToURL:` off the main thread —
 //! there [`DragFetch::fetch`] can block on the download without freezing the UI.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -26,7 +27,10 @@ use objc2_foundation::{
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-use crate::{DragError, DragFetch, DragFile, DragIcon, DragSession};
+use crate::{
+    DragEnd, DragEndCallback, DragError, DragFetch, DragFile, DragHandlers, DragIcon,
+    DragMoveCallback, DragSession,
+};
 
 /// Instance data for one file's promise resolver.
 struct PromiseIvars {
@@ -106,12 +110,29 @@ impl PromiseDelegate {
     }
 }
 
-/// Instance data for the dragging source. It exists only to keep the per-file
-/// delegates alive for the duration of the drag: the providers hold weak
-/// references to them, but AppKit retains the *source* until the session ends.
+/// Instance data for the dragging source. It keeps the per-file delegates alive
+/// for the drag's duration (the providers hold only weak references, but AppKit
+/// retains the *source* until the session ends) and carries the originating view
+/// + an end callback so a drop back inside the window can be reported.
 struct SourceIvars {
     #[allow(dead_code)]
     delegates: Vec<Retained<PromiseDelegate>>,
+    /// The originating GPUI view, to map screen points into its space.
+    view: Retained<NSView>,
+    /// Called once when the session ends; `take`n so it fires at most once.
+    on_end: RefCell<Option<DragEndCallback>>,
+    /// Called on every drag move, for live feedback while inside the window.
+    on_move: Option<DragMoveCallback>,
+}
+
+/// Map an AppKit screen point to the view's GPUI coordinate space (logical
+/// pixels, top-left origin), mirroring GPUI's own `convert_mouse_position`
+/// (`y = content_height - window_y`).
+fn screen_to_gpui(view: &NSView, screen_point: NSPoint) -> Option<(f32, f32)> {
+    let window = view.window()?;
+    let win = window.convertPointFromScreen(screen_point);
+    let content_height = window.contentView()?.frame().size.height;
+    Some((win.x as f32, (content_height - win.y) as f32))
 }
 
 define_class!(
@@ -126,7 +147,7 @@ define_class!(
 
     unsafe impl NSObjectProtocol for DragSource {}
 
-    // SAFETY: the selector and signature match `NSDraggingSource`.
+    // SAFETY: the selectors and signatures match `NSDraggingSource`.
     unsafe impl NSDraggingSource for DragSource {
         #[unsafe(method(draggingSession:sourceOperationMaskForDraggingContext:))]
         fn source_operation_mask(
@@ -137,12 +158,45 @@ define_class!(
             // A drag onto the Finder/desktop is a copy (download), never a move.
             NSDragOperation::Copy
         }
+
+        #[unsafe(method(draggingSession:movedToPoint:))]
+        fn moved_to_point(&self, _session: &NSDraggingSession, screen_point: NSPoint) {
+            if let Some(on_move) = self.ivars().on_move.as_ref() {
+                on_move(screen_to_gpui(&self.ivars().view, screen_point));
+            }
+        }
+
+        #[unsafe(method(draggingSession:endedAtPoint:operation:))]
+        fn ended_at_point(
+            &self,
+            _session: &NSDraggingSession,
+            screen_point: NSPoint,
+            operation: NSDragOperation,
+        ) {
+            let Some(callback) = self.ivars().on_end.borrow_mut().take() else {
+                return;
+            };
+            // A non-`None` operation means an external target accepted the drop.
+            let accepted = operation != NSDragOperation::None;
+            let local = screen_to_gpui(&self.ivars().view, screen_point);
+            callback(DragEnd { local, accepted });
+        }
     }
 );
 
 impl DragSource {
-    fn new(mtm: MainThreadMarker, delegates: Vec<Retained<PromiseDelegate>>) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(SourceIvars { delegates });
+    fn new(
+        mtm: MainThreadMarker,
+        delegates: Vec<Retained<PromiseDelegate>>,
+        view: Retained<NSView>,
+        handlers: DragHandlers,
+    ) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(SourceIvars {
+            delegates,
+            view,
+            on_end: RefCell::new(handlers.on_end),
+            on_move: handlers.on_move,
+        });
         unsafe { msg_send![super(this), init] }
     }
 }
@@ -160,6 +214,7 @@ pub fn start_file_drag(
     files: Vec<DragFile>,
     fetch: Arc<dyn DragFetch>,
     icon: Option<DragIcon>,
+    handlers: DragHandlers,
 ) -> Result<DragSession, DragError> {
     let _ = icon; // reserved for a future custom preview
 
@@ -175,6 +230,11 @@ pub fn start_file_drag(
     // SAFETY: GPUI keeps the `NSView` alive for the window's lifetime, and we are
     // on the main thread (we hold a `MainThreadMarker`) for the whole call.
     let view: &NSView = unsafe { &*view_ptr };
+    // Retain the view for the source's lifetime so the end callback can map the
+    // screen drop point back into the view's coordinate space.
+    // SAFETY: `view_ptr` is a valid, non-null `NSView` (checked above).
+    let view_retained = unsafe { Retained::retain(view_ptr) }
+        .ok_or_else(|| DragError::Window("null view".into()))?;
 
     // The drag must be anchored to the event currently being processed (the
     // mouse-down/-drag that triggered this handler).
@@ -220,7 +280,7 @@ pub fn start_file_drag(
         delegates.push(delegate);
     }
 
-    let source = DragSource::new(mtm, delegates);
+    let source = DragSource::new(mtm, delegates, view_retained, handlers);
     let items_array = NSArray::from_retained_slice(&items);
     let _session = view.beginDraggingSessionWithItems_event_source(
         &items_array,

@@ -7,8 +7,8 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use gpui::{
-    div, prelude::*, uniform_list, App, ClickEvent, ExternalPaths, MouseButton, Pixels, Point,
-    SharedString, Styled, Window,
+    canvas, div, prelude::*, uniform_list, App, Bounds, ClickEvent, ExternalPaths, MouseButton,
+    Pixels, Point, SharedString, Styled, Window,
 };
 
 use crate::theme::ActiveTheme;
@@ -89,22 +89,37 @@ type RowRenderer = Rc<dyn Fn(usize, &mut Window, &mut App) -> Vec<gpui::AnyEleme
 /// domain- and icon-set-free.
 type CaretBuilder = Rc<dyn Fn() -> gpui::AnyElement + 'static>;
 type RowDropHandler = Rc<dyn Fn(usize, &ExternalPaths, &mut Window, &mut App) + 'static>;
-/// Fired when a drag-*out* gesture starts on a row (the owner anchors a native
-/// OS drag to the window). Domain-agnostic: the table only reports the row.
-type RowDragOutHandler = Rc<dyn Fn(usize, &mut Window, &mut App) + 'static>;
+/// Produces the in-app drag payload for a row, or `None` if it isn't draggable.
+/// The payload type `D` is the caller's; the table stays domain-agnostic.
+type RowDragValue<D> = Rc<dyn Fn(usize) -> Option<D> + 'static>;
+/// Builds the floating preview shown under the cursor while a row is dragged.
+/// Keyed on the row index so it needs no knowledge of the payload type.
+type DragPreviewBuilder = Rc<dyn Fn(usize, &mut Window, &mut App) -> gpui::AnyElement + 'static>;
+/// Handles an in-app payload `D` dropped onto a row.
+type RowDropItemHandler<D> = Rc<dyn Fn(usize, &D, &mut Window, &mut App) + 'static>;
+/// Reports a row's painted rect (window coordinates) on every paint, for hit
+/// testing a drop that the platform can't route through GPUI (e.g. an OS
+/// drag-out returning inside the window).
+type RowBoundsHandler = Rc<dyn Fn(usize, Bounds<Pixels>, &mut Window, &mut App) + 'static>;
 
-/// The (invisible) in-app drag preview. The visible drag image is owned by the
-/// native OS drag the row handler starts, so GPUI's own preview is empty.
-struct DragPreview;
+type PreviewFn = Box<dyn Fn(&mut Window, &mut App) -> gpui::AnyElement + 'static>;
+
+/// Wraps a caller-built element as the floating in-app drag preview view —
+/// GPUI's `on_drag` requires an `Entity<impl Render>`, so we box the builder.
+struct DragPreview {
+    build: PreviewFn,
+}
 
 impl Render for DragPreview {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_0()
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        (self.build)(window, cx)
     }
 }
 
+/// `D` is the in-app drag payload type a row produces and a drop target
+/// receives. It defaults to `()` for tables that don't use in-app drag.
 #[derive(IntoElement)]
-pub struct Table {
+pub struct Table<D: 'static = ()> {
     id: SharedString,
     columns: Rc<Vec<Column>>,
     row_count: usize,
@@ -121,11 +136,15 @@ pub struct Table {
     sort_caret_desc: Option<CaretBuilder>,
     on_row_drop: Option<RowDropHandler>,
     droppable_rows: Option<Rc<HashSet<usize>>>,
-    on_row_drag_out: Option<RowDragOutHandler>,
+    on_row_drag: Option<RowDragValue<D>>,
+    drag_preview: Option<DragPreviewBuilder>,
+    on_row_drop_item: Option<RowDropItemHandler<D>>,
+    on_row_bounds: Option<RowBoundsHandler>,
+    highlighted_rows: Option<Rc<HashSet<usize>>>,
     draggable_rows: Option<Rc<HashSet<usize>>>,
 }
 
-impl Table {
+impl<D: 'static> Table<D> {
     pub fn new(id: impl Into<SharedString>, columns: Vec<Column>) -> Self {
         Self {
             id: id.into(),
@@ -144,7 +163,11 @@ impl Table {
             sort_caret_desc: None,
             on_row_drop: None,
             droppable_rows: None,
-            on_row_drag_out: None,
+            on_row_drag: None,
+            drag_preview: None,
+            on_row_drop_item: None,
+            on_row_bounds: None,
+            highlighted_rows: None,
             draggable_rows: None,
         }
     }
@@ -232,20 +255,55 @@ impl Table {
         self
     }
 
-    /// Only these rows start a drag-*out* gesture (the owner knows which are
-    /// draggable, e.g. files but not directories).
+    /// Only these rows start an in-app drag gesture (the owner decides which are
+    /// draggable).
     pub fn draggable_rows(mut self, rows: HashSet<usize>) -> Self {
         self.draggable_rows = Some(Rc::new(rows));
         self
     }
 
-    /// Called when a drag-out gesture begins on a [`draggable`](Self::draggable_rows)
-    /// row. The owner anchors a native OS drag to the window here.
-    pub fn on_row_drag_out(
+    /// Produces the in-app drag payload for a [`draggable`](Self::draggable_rows)
+    /// row, or `None` to skip the gesture. The payload flows to a row's
+    /// [`on_row_drop_item`](Self::on_row_drop_item).
+    pub fn on_row_drag(mut self, handler: impl Fn(usize) -> Option<D> + 'static) -> Self {
+        self.on_row_drag = Some(Rc::new(handler));
+        self
+    }
+
+    /// Builds the floating preview shown under the cursor while a row is dragged.
+    pub fn drag_preview(
         mut self,
-        handler: impl Fn(usize, &mut Window, &mut App) + 'static,
+        builder: impl Fn(usize, &mut Window, &mut App) -> gpui::AnyElement + 'static,
     ) -> Self {
-        self.on_row_drag_out = Some(Rc::new(handler));
+        self.drag_preview = Some(Rc::new(builder));
+        self
+    }
+
+    /// Accept an in-app payload `D` dropped onto a [`droppable`](Self::droppable_rows)
+    /// row. Composes with the [`ExternalPaths`] [`on_row_drop`](Self::on_row_drop).
+    pub fn on_row_drop_item(
+        mut self,
+        handler: impl Fn(usize, &D, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_row_drop_item = Some(Rc::new(handler));
+        self
+    }
+
+    /// Report each visible row's painted rect (window coordinates) on every
+    /// paint. Lets the owner hit-test a drop the platform can't deliver through
+    /// GPUI's normal drop path.
+    pub fn on_row_bounds(
+        mut self,
+        handler: impl Fn(usize, Bounds<Pixels>, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_row_bounds = Some(Rc::new(handler));
+        self
+    }
+
+    /// Rows to paint with the drop-target highlight, independent of any active
+    /// GPUI drag. Used to show a target for a platform drag GPUI can't observe.
+    pub fn highlighted_rows(mut self, rows: HashSet<usize>) -> Self {
+        self.highlighted_rows = Some(Rc::new(rows));
         self
     }
 
@@ -258,7 +316,7 @@ impl Table {
     }
 }
 
-impl RenderOnce for Table {
+impl<D: 'static> RenderOnce for Table<D> {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
         let row_height = self.row_height.unwrap_or(theme.row_height);
@@ -333,7 +391,11 @@ impl RenderOnce for Table {
         let on_activate = self.on_activate.clone();
         let on_row_drop = self.on_row_drop.clone();
         let droppable_rows = self.droppable_rows.clone();
-        let on_row_drag_out = self.on_row_drag_out.clone();
+        let on_row_drag = self.on_row_drag.clone();
+        let drag_preview = self.drag_preview.clone();
+        let on_row_drop_item = self.on_row_drop_item.clone();
+        let on_row_bounds = self.on_row_bounds.clone();
+        let highlighted_rows = self.highlighted_rows.clone();
         let draggable_rows = self.draggable_rows.clone();
         let selected = self.selected;
         let selected_set = self.selected_set.clone();
@@ -350,6 +412,7 @@ impl RenderOnce for Table {
             for ix in range {
                 let is_selected =
                     selected == Some(ix) || selected_set.as_ref().is_some_and(|s| s.contains(&ix));
+                let is_highlighted = highlighted_rows.as_ref().is_some_and(|s| s.contains(&ix));
                 let cells = render_row
                     .as_ref()
                     .map(|r| r(ix, window, cx))
@@ -374,12 +437,17 @@ impl RenderOnce for Table {
                 let on_secondary = on_secondary.clone();
                 let on_activate = on_activate.clone();
                 let on_row_drop = on_row_drop.clone();
-                let on_row_drag_out = on_row_drag_out.clone();
+                let on_row_drop_item = on_row_drop_item.clone();
+                let on_row_drag = on_row_drag.clone();
+                let drag_preview = drag_preview.clone();
+                let on_row_bounds = on_row_bounds.clone();
                 let clickable = on_select.is_some() || on_activate.is_some();
                 let is_droppable = droppable_rows.as_ref().is_some_and(|s| s.contains(&ix))
                     && on_row_drop.is_some();
-                let is_draggable_out = draggable_rows.as_ref().is_some_and(|s| s.contains(&ix))
-                    && on_row_drag_out.is_some();
+                let is_droppable_item = droppable_rows.as_ref().is_some_and(|s| s.contains(&ix))
+                    && on_row_drop_item.is_some();
+                let is_draggable = draggable_rows.as_ref().is_some_and(|s| s.contains(&ix))
+                    && on_row_drag.is_some();
                 rows.push(
                     div()
                         .id(ix)
@@ -392,6 +460,9 @@ impl RenderOnce for Table {
                         .text_color(text)
                         .when(is_selected, |this| this.bg(bg_selected))
                         .when(!is_selected, |this| this.hover(move |s| s.bg(bg_hover)))
+                        // A forced drop-target highlight (e.g. a platform drag GPUI
+                        // can't observe) wins over selection/hover.
+                        .when(is_highlighted, |this| this.bg(drop_highlight))
                         .when(clickable || on_secondary.is_some(), |this| {
                             this.cursor_pointer()
                         })
@@ -422,18 +493,54 @@ impl RenderOnce for Table {
                                 })
                             })
                         })
-                        // Drag a file row out to the OS file manager. GPUI's
-                        // `on_drag` is the gesture detector; the row handler starts
-                        // the real (native) drag and we hand GPUI an empty preview.
-                        .when(is_draggable_out, |this| {
-                            this.when_some(on_row_drag_out, |this, on_row_drag_out| {
-                                this.on_drag(ix, move |_ix, _offset, window, cx| {
-                                    on_row_drag_out(ix, window, cx);
-                                    cx.new(|_| DragPreview)
+                        // A row also accepts an in-app `D` drop (e.g. a move into
+                        // this folder), highlighting the same as an external drop.
+                        .when(is_droppable_item, |this| {
+                            let this = this.drag_over::<D>(move |s, _, _, _| s.bg(drop_highlight));
+                            this.when_some(on_row_drop_item, |this, on_row_drop_item| {
+                                this.on_drop::<D>(move |value, window, cx| {
+                                    on_row_drop_item(ix, value, window, cx);
                                 })
                             })
                         })
-                        .children(laid_out),
+                        // Start an in-app drag: the handler mints the payload `D`
+                        // and the caller's `drag_preview` builds the cursor chip.
+                        .when(is_draggable, |this| {
+                            match on_row_drag.as_ref().and_then(|f| f(ix)) {
+                                Some(value) => {
+                                    let drag_preview = drag_preview.clone();
+                                    this.on_drag(value, move |_value, _offset, _window, cx| {
+                                        let drag_preview = drag_preview.clone();
+                                        cx.new(move |_| DragPreview {
+                                            build: Box::new(move |window, cx| {
+                                                drag_preview
+                                                    .as_ref()
+                                                    .map(|f| f(ix, window, cx))
+                                                    .unwrap_or_else(|| {
+                                                        div().size_0().into_any_element()
+                                                    })
+                                            }),
+                                        })
+                                    })
+                                }
+                                None => this,
+                            }
+                        })
+                        .children(laid_out)
+                        // An overlay canvas reports the row's painted rect (it has
+                        // no hitbox, so it doesn't intercept clicks or drops).
+                        .when_some(on_row_bounds, |this, cb| {
+                            this.relative().child(
+                                canvas(
+                                    |_bounds, _window, _cx| (),
+                                    move |bounds, _, window, cx| cb(ix, bounds, window, cx),
+                                )
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .size_full(),
+                            )
+                        }),
                 );
             }
             rows

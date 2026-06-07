@@ -84,6 +84,9 @@ pub enum AuthMethod {
         /// Path to the private key file (non-secret, persisted).
         path: PathBuf,
     },
+    /// Anonymous FTP/FTPS login (RFC 959). No stored or prompted secret; logs in
+    /// as `anonymous`. Not valid for SFTP.
+    Anonymous,
 }
 
 impl Profile {

@@ -86,6 +86,40 @@ pub trait DragFetch: Send + Sync + 'static {
 #[non_exhaustive]
 pub struct DragSession {}
 
+/// Where and how an OS drag-out finished, reported back to the caller so it can
+/// decide what a drop landing **back inside** the originating window means (e.g.
+/// an in-app move instead of a drop-to-local).
+#[derive(Clone, Copy, Debug)]
+pub struct DragEnd {
+    /// The drop point in the originating window's GPUI coordinate space (logical
+    /// pixels, top-left origin), or `None` if it couldn't be mapped.
+    pub local: Option<(f32, f32)>,
+    /// Whether an external target accepted the drop — a real drop-to-local. When
+    /// `false`, the gesture ended without any target taking the files (commonly a
+    /// release back inside the app window).
+    pub accepted: bool,
+}
+
+/// Invoked once, on the UI thread, when the drag session ends. Used to detect a
+/// drop back inside the originating window. Not `Send`: it fires on the main
+/// thread within AppKit's drag machinery.
+pub type DragEndCallback = Box<dyn FnOnce(DragEnd) + 'static>;
+
+/// Invoked on the UI thread as the drag moves, with the cursor in the
+/// originating window's GPUI coordinates (logical pixels, top-left origin), or
+/// `None` when off-window/unmappable. Lets the caller show feedback (e.g.
+/// highlight the folder under the cursor) while the native drag is back inside.
+pub type DragMoveCallback = Box<dyn Fn(Option<(f32, f32)>) + 'static>;
+
+/// Optional feedback hooks for a drag session. Both fire on the UI thread.
+#[derive(Default)]
+pub struct DragHandlers {
+    /// Called once when the gesture ends; see [`DragEnd`].
+    pub on_end: Option<DragEndCallback>,
+    /// Called as the cursor moves; see [`DragMoveCallback`].
+    pub on_move: Option<DragMoveCallback>,
+}
+
 /// Why a drag-out could not start, or a promised fetch failed.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -122,6 +156,9 @@ impl DragError {
 ///
 /// Returns immediately (the OS drives the drag and calls `fetch` lazily at drop
 /// time). `icon` is an optional drag preview (currently advisory on macOS).
+/// `handlers` carries optional UI-thread feedback hooks (drag end / drag move) —
+/// letting the caller turn a drop back inside the window into an in-app action
+/// and show feedback while the drag is inside.
 ///
 /// Must be called on the main/UI thread from within an active mouse handler, so
 /// the platform can anchor the drag to the originating event.
@@ -130,17 +167,18 @@ pub fn start_file_drag(
     files: Vec<DragFile>,
     fetch: Arc<dyn DragFetch>,
     icon: Option<DragIcon>,
+    handlers: DragHandlers,
 ) -> Result<DragSession, DragError> {
     if files.is_empty() {
         return Err(DragError::NoFiles);
     }
     #[cfg(target_os = "macos")]
     {
-        macos::start_file_drag(window, files, fetch, icon)
+        macos::start_file_drag(window, files, fetch, icon, handlers)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (window, files, fetch, icon);
+        let _ = (window, files, fetch, icon, handlers);
         Err(DragError::Unsupported)
     }
 }
