@@ -20,7 +20,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -987,7 +987,7 @@ enum TransferOutcome {
         message: Option<String>,
         report: Option<TransferReport>,
     },
-    /// The copy was cancelled mid-flight (a partial file was cleaned up).
+    /// The copy was cancelled mid-flight (the temp partial was cleaned up).
     Cancelled,
     /// The destination existed and the policy resolved to skip; nothing written.
     Skipped,
@@ -1082,8 +1082,8 @@ fn try_start(
 }
 
 /// Spawn the copy task for a just-started transfer: stat the size, announce the
-/// start, run the protocol copy, clean up any partial file on cancel/fail, and
-/// report the terminal outcome back to the dispatcher.
+/// start, run the protocol copy into a sibling temp, rename it into place on
+/// success (removing the temp on cancel/fail), and report the terminal outcome.
 fn spawn_transfer(
     client: Arc<dyn RemoteClient>,
     started: Started,
@@ -1124,13 +1124,21 @@ async fn copy_file(
     // The fingerprint is carried into a resume to confirm the source is unchanged.
     let source_meta = capture_source_meta(client, spec).await;
 
-    // The effective offset is the **destination's actual on-disk size**, not the
+    // Atomic destination: bytes are written to a sibling temp (`<name>.nyxpart`),
+    // and the final path only ever appears via the atomic rename on success. A
+    // cancelled/failed copy removes the temp; an interrupted one keeps it for the
+    // resume — so the final path is never a half-written file masquerading as
+    // complete, and a cancelled *overwrite* leaves the original intact.
+    let tmp_local = local_part_path(&spec.local);
+    let tmp_remote = remote_part_path(&spec.remote);
+
+    // The effective offset is the **temp partial's actual on-disk size**, not the
     // watermark — the watermark can run ahead of durably-written bytes (an upload's
     // SFTP writes ack lazily), and resuming past the real EOF would leave a gap.
     // Only resume when the client can, the source is verifiably unchanged, and the
     // partial fits within it; otherwise restart from zero.
     let dest_size = if spec.resume_from > 0 {
-        destination_size(client, spec).await
+        partial_temp_size(client, spec, &tmp_local, &tmp_remote).await
     } else {
         None
     };
@@ -1150,35 +1158,51 @@ async fn copy_file(
     let result = match spec.direction {
         TransferDirection::Download => {
             client
-                .download(&spec.remote, &spec.local, progress, offset)
+                .download(&spec.remote, &tmp_local, progress, offset)
                 .await
         }
         TransferDirection::Upload => {
             client
-                .upload(&spec.local, &spec.remote, progress, offset)
+                .upload(&spec.local, &tmp_remote, progress, offset)
                 .await
         }
     };
     match result {
-        Ok(()) => TransferOutcome::Completed {
-            message: None,
-            report: None,
-        },
+        Ok(()) => {
+            // Promote the temp into place. The rename is the overwrite for the
+            // file case, so it fires only after the collision gate sanctioned it.
+            let committed = match spec.direction {
+                TransferDirection::Download => commit_local(&tmp_local, &spec.local).await,
+                TransferDirection::Upload => {
+                    commit_remote(client, &tmp_remote, &spec.remote, may_overwrite(spec)).await
+                }
+            };
+            match committed {
+                Ok(()) => TransferOutcome::Completed {
+                    message: None,
+                    report: None,
+                },
+                Err(err) => {
+                    cleanup_file_temp(client, spec, &tmp_local, &tmp_remote).await;
+                    TransferOutcome::Failed(err.to_string())
+                }
+            }
+        }
         Err(NyxError::Cancelled) => {
-            cleanup_partial(client, spec).await;
+            cleanup_file_temp(client, spec, &tmp_local, &tmp_remote).await;
             TransferOutcome::Cancelled
         }
         Err(err) => {
-            // A transport loss is resumable: keep the partial, hand back the
+            // A transport loss is resumable: keep the temp partial, hand back the
             // watermark + fingerprint. A genuine error (disk full, permissions)
-            // is terminal: clean up. The probe disambiguates the two.
+            // is terminal: clean up the temp. The probe disambiguates the two.
             if is_transport_lost(client, &spec.remote, &err).await {
                 TransferOutcome::Interrupted {
                     transferred: progress.transferred(),
                     source_meta,
                 }
             } else {
-                cleanup_partial(client, spec).await;
+                cleanup_file_temp(client, spec, &tmp_local, &tmp_remote).await;
                 TransferOutcome::Failed(err.to_string())
             }
         }
@@ -1209,13 +1233,19 @@ async fn capture_source_meta(
     }
 }
 
-/// The current size of a copy's **destination** partial — the local file for a
-/// download, the remote file for an upload. This is the source of truth for the
-/// resume offset (the watermark can run ahead of durably-written bytes).
-async fn destination_size(client: &dyn RemoteClient, spec: &TransferSpec) -> Option<u64> {
+/// The current size of a copy's **temp partial** — the local temp for a
+/// download, the remote temp for an upload. This is the source of truth for the
+/// resume offset (the watermark can run ahead of durably-written bytes), and the
+/// partial lives at the temp path, not the final one.
+async fn partial_temp_size(
+    client: &dyn RemoteClient,
+    spec: &TransferSpec,
+    tmp_local: &Path,
+    tmp_remote: &RemotePath,
+) -> Option<u64> {
     match spec.direction {
-        TransferDirection::Download => tokio::fs::metadata(&spec.local).await.ok().map(|m| m.len()),
-        TransferDirection::Upload => client.remote_size(&spec.remote).await,
+        TransferDirection::Download => tokio::fs::metadata(tmp_local).await.ok().map(|m| m.len()),
+        TransferDirection::Upload => client.remote_size(tmp_remote).await,
     }
 }
 
@@ -1269,8 +1299,10 @@ async fn is_transport_lost(client: &dyn RemoteClient, remote: &RemotePath, err: 
 /// Per the settled decisions: collisions merge (each file overwrites in place),
 /// a failed/unreadable file is **skipped and tallied** (one bad file never aborts
 /// the folder), symlinks are skipped during the walk, and empty directories are
-/// created. Cancellation is checked between items; a cancelled or failed folder
-/// leaves its partial tree in place (we never delete a merge destination).
+/// created. Each file rides the atomic temp-then-rename, so the tree never holds a
+/// half-written file — only a subset of complete ones. Cancellation is checked
+/// between items; a cancelled folder keeps the complete files it copied (we never
+/// delete a merge destination), pruning only a root we created and left empty.
 async fn copy_dir(
     client: &dyn RemoteClient,
     spec: &TransferSpec,
@@ -1288,20 +1320,27 @@ async fn copy_dir(
         total: Some(walk.total_bytes),
     });
 
-    // Create the destination root.
-    if let Err(err) = make_root(client, spec).await {
-        return TransferOutcome::Failed(err.to_string());
-    }
+    // Create the destination root, remembering whether it pre-existed: a root we
+    // created (no merge) is safe to prune back if the transfer is cancelled before
+    // any file lands; a pre-existing merge target is the user's data — never touch.
+    let created_root = match make_root(client, spec).await {
+        Ok(created) => created,
+        Err(err) => return TransferOutcome::Failed(err.to_string()),
+    };
 
     let mut failed = 0u64;
     let mut issues: Vec<EntryIssue> = Vec::new();
     for item in &walk.items {
         if progress.is_cancelled() {
+            prune_created_root(client, spec, created_root).await;
             return TransferOutcome::Cancelled;
         }
         match copy_walk_item(client, spec, item, progress).await {
             Ok(()) => {}
-            Err(NyxError::Cancelled) => return TransferOutcome::Cancelled,
+            Err(NyxError::Cancelled) => {
+                prune_created_root(client, spec, created_root).await;
+                return TransferOutcome::Cancelled;
+            }
             Err(err) => {
                 debug!(error = %err, rel = ?item.rel, "skipping unreadable entry in folder transfer");
                 failed += 1;
@@ -1352,17 +1391,29 @@ async fn enumerate_dir(
 }
 
 /// Create the destination root of a directory transfer (idempotent: an existing
-/// root is fine — that is the merge case).
-async fn make_root(client: &dyn RemoteClient, spec: &TransferSpec) -> Result<(), NyxError> {
+/// root is fine — that is the merge case). Returns `true` when the root did **not**
+/// pre-exist (we created it), so a later cancel can safely prune it.
+async fn make_root(client: &dyn RemoteClient, spec: &TransferSpec) -> Result<bool, NyxError> {
     match spec.direction {
-        TransferDirection::Download => tokio::fs::create_dir_all(&spec.local)
-            .await
-            .map_err(|e| NyxError::Io(e.to_string())),
-        TransferDirection::Upload => ensure_remote_dir(client, &spec.remote).await,
+        TransferDirection::Download => {
+            let existed = tokio::fs::try_exists(&spec.local).await.unwrap_or(false);
+            tokio::fs::create_dir_all(&spec.local)
+                .await
+                .map_err(|e| NyxError::Io(e.to_string()))?;
+            Ok(!existed)
+        }
+        TransferDirection::Upload => {
+            let existed = client.exists(&spec.remote).await.unwrap_or(false);
+            ensure_remote_dir(client, &spec.remote).await?;
+            Ok(!existed)
+        }
     }
 }
 
-/// Copy one walk item to its mirrored destination under the transfer's root.
+/// Copy one walk item to its mirrored destination under the transfer's root. File
+/// items go through the atomic temp-then-rename so the tree never holds a
+/// half-written file — only a subset of complete ones. A folder transfer is a
+/// sanctioned merge, so an item may overwrite an existing file in the tree.
 async fn copy_walk_item(
     client: &dyn RemoteClient,
     spec: &TransferSpec,
@@ -1376,10 +1427,53 @@ async fn copy_walk_item(
             .await
             .map_err(|e| NyxError::Io(e.to_string())),
         // Directory transfers don't resume per-item yet — always copy from 0.
-        (TransferDirection::Download, false) => client.download(&remote, &local, progress, 0).await,
+        (TransferDirection::Download, false) => {
+            atomic_download_file(client, &remote, &local, progress).await
+        }
         (TransferDirection::Upload, true) => ensure_remote_dir(client, &remote).await,
-        (TransferDirection::Upload, false) => client.upload(&local, &remote, progress, 0).await,
+        (TransferDirection::Upload, false) => {
+            atomic_upload_file(client, &local, &remote, progress).await
+        }
     }
+}
+
+/// Download one file inside a folder transfer atomically: write to a sibling temp,
+/// rename into place on success, and remove the temp on any error so the tree only
+/// ever holds complete files.
+async fn atomic_download_file(
+    client: &dyn RemoteClient,
+    remote: &RemotePath,
+    local: &Path,
+    progress: &nyx_core::TransferProgress,
+) -> Result<(), NyxError> {
+    let tmp = local_part_path(local);
+    let result = match client.download(remote, &tmp, progress, 0).await {
+        Ok(()) => commit_local(&tmp, local).await,
+        Err(err) => Err(err),
+    };
+    if result.is_err() {
+        remove_local_temp(&tmp).await;
+    }
+    result
+}
+
+/// Upload one file inside a folder transfer atomically (the upload mirror of
+/// [`atomic_download_file`]); the merge permits overwriting an existing file.
+async fn atomic_upload_file(
+    client: &dyn RemoteClient,
+    local: &Path,
+    remote: &RemotePath,
+    progress: &nyx_core::TransferProgress,
+) -> Result<(), NyxError> {
+    let tmp = remote_part_path(remote);
+    let result = match client.upload(local, &tmp, progress, 0).await {
+        Ok(()) => commit_remote(client, &tmp, remote, true).await,
+        Err(err) => Err(err),
+    };
+    if result.is_err() {
+        remove_remote_temp(client, &tmp).await;
+    }
+    result
 }
 
 /// `mkdir` that tolerates an already-existing directory (the merge case).
@@ -1517,30 +1611,142 @@ async fn collision_gate(client: &dyn RemoteClient, spec: &TransferSpec) -> Optio
     }
 }
 
-/// Best-effort removal of the half-written file left by a cancelled/failed
-/// transfer: the local destination for a download, the remote
-/// destination for an upload. Errors are logged at `debug` and never surfaced —
-/// the terminal `TransferDone` already tells the user the real story.
-async fn cleanup_partial(client: &dyn RemoteClient, spec: &TransferSpec) {
-    // A directory transfer may be merging into an existing tree, so deleting the
-    // destination on cancel/fail could destroy pre-existing user data. Leave the
-    // partial tree in place (the dock marks it Cancelled/Failed) and only ever
-    // clean up the single half-written file of a file transfer.
-    if spec.kind == TransferKind::Dir {
+/// The suffix marking a Nyx partial-transfer temp file. Deterministic and
+/// recognizable so a crash-left temp can be identified (and a resume can find the
+/// partial), never mistaken for user data and auto-deleted blindly.
+const PART_SUFFIX: &str = ".nyxpart";
+
+/// Sibling temp path for an atomic local write: `<name>.nyxpart` in the same
+/// directory as `local`, so the rename into place is same-volume (atomic).
+fn local_part_path(local: &Path) -> PathBuf {
+    let mut name = local
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    name.push(PART_SUFFIX);
+    local.with_file_name(name)
+}
+
+/// Sibling temp path for an atomic remote write — the remote mirror of
+/// [`local_part_path`].
+fn remote_part_path(remote: &RemotePath) -> RemotePath {
+    match (remote.parent(), remote.file_name()) {
+        (Some(parent), Some(name)) => parent.join(&format!("{name}{PART_SUFFIX}")),
+        // The root has no name and is never a transfer target; leave it as-is.
+        _ => remote.clone(),
+    }
+}
+
+/// Whether a copy is allowed to replace an existing final destination: only when
+/// the collision gate resolved to `Overwrite` (or a resume re-admitted with it).
+fn may_overwrite(spec: &TransferSpec) -> bool {
+    spec.on_collision == Some(CollisionChoice::Overwrite)
+}
+
+/// Promote a local temp into its final path. The rename atomically replaces any
+/// existing file (same volume), so a cancelled overwrite leaves the original.
+async fn commit_local(tmp: &Path, final_path: &Path) -> Result<(), NyxError> {
+    tokio::fs::rename(tmp, final_path)
+        .await
+        .map_err(|e| NyxError::Io(e.to_string()))
+}
+
+/// Promote a remote temp into its final path. SFTP/FTP `rename` is the atomic
+/// case, but some servers refuse to rename onto an existing path — so when (and
+/// only when) overwriting was sanctioned and the final exists, remove it and
+/// retry. Never a blind delete of a destination the user didn't choose to replace.
+async fn commit_remote(
+    client: &dyn RemoteClient,
+    tmp: &RemotePath,
+    final_path: &RemotePath,
+    may_overwrite: bool,
+) -> Result<(), NyxError> {
+    match client.rename(tmp, final_path).await {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            if may_overwrite && client.exists(final_path).await.unwrap_or(false) {
+                client.remove(final_path).await?;
+                client.rename(tmp, final_path).await
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
+/// Best-effort removal of a cancelled/failed file transfer's temp partial: the
+/// local temp for a download, the remote temp for an upload. The final path was
+/// never touched (only a successful rename creates it), so there is nothing else
+/// to clean. Errors are logged at `debug` — the terminal `TransferDone` tells the
+/// real story.
+async fn cleanup_file_temp(
+    client: &dyn RemoteClient,
+    spec: &TransferSpec,
+    tmp_local: &Path,
+    tmp_remote: &RemotePath,
+) {
+    match spec.direction {
+        TransferDirection::Download => remove_local_temp(tmp_local).await,
+        TransferDirection::Upload => remove_remote_temp(client, tmp_remote).await,
+    }
+}
+
+/// Remove a local temp, ignoring a missing file (a cancel before any byte landed).
+async fn remove_local_temp(tmp: &Path) {
+    match tokio::fs::remove_file(tmp).await {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => debug!(error = %err, "could not remove partial download temp"),
+    }
+}
+
+/// Remove a remote temp (best-effort; a missing temp is fine).
+async fn remove_remote_temp(client: &dyn RemoteClient, tmp: &RemotePath) {
+    if let Err(err) = client.remove(tmp).await {
+        debug!(error = %err, "could not remove partial upload temp");
+    }
+}
+
+/// On a cancelled folder transfer, remove the destination root **only if we
+/// created it** (it didn't pre-exist, so it can't be a merge target holding the
+/// user's data) **and it still holds no files** (every completed file is kept).
+/// Conservative: a read error or any file present leaves the whole tree in place.
+async fn prune_created_root(client: &dyn RemoteClient, spec: &TransferSpec, created_root: bool) {
+    if !created_root {
+        return;
+    }
+    let fileless = match spec.direction {
+        TransferDirection::Download => local_tree_fileless(&spec.local).await,
+        TransferDirection::Upload => remote_tree_fileless(client, &spec.remote).await,
+    };
+    if fileless != Some(true) {
         return;
     }
     match spec.direction {
         TransferDirection::Download => {
-            if let Err(err) = tokio::fs::remove_file(&spec.local).await {
-                debug!(error = %err, "could not remove partial download");
+            if let Err(err) = tokio::fs::remove_dir_all(&spec.local).await {
+                debug!(error = %err, "could not prune empty created download root");
             }
         }
         TransferDirection::Upload => {
             if let Err(err) = client.remove(&spec.remote).await {
-                debug!(error = %err, "could not remove partial upload");
+                debug!(error = %err, "could not prune empty created upload root");
             }
         }
     }
+}
+
+/// Whether a local tree holds only (empty-of-files) directories — `None` on any
+/// read error, so the caller leaves the tree alone when it can't be sure.
+async fn local_tree_fileless(root: &Path) -> Option<bool> {
+    let walk = local_walk(root).await.ok()?;
+    Some(walk.items.iter().all(|i| i.is_dir) && walk.skips.is_empty())
+}
+
+/// The remote mirror of [`local_tree_fileless`].
+async fn remote_tree_fileless(client: &dyn RemoteClient, root: &RemotePath) -> Option<bool> {
+    let walk = client.walk_dir(root).await.ok()?;
+    Some(walk.items.iter().all(|i| i.is_dir) && walk.skips.is_empty())
 }
 
 /// Emit the standard "not connected" error (a file op arrived with no session).
@@ -2068,6 +2274,31 @@ mod tests {
         assert!(!is_transient_connect_error(&NyxError::Auth));
         assert!(!is_transient_connect_error(&NyxError::HostKey("x".into())));
         assert!(!is_transient_connect_error(&NyxError::KeyLocked));
+    }
+
+    #[test]
+    fn part_paths_are_siblings_keeping_the_full_name() {
+        // The temp sits in the same directory (same volume → atomic rename) and
+        // appends — never replaces — the extension, so `foo.txt` stays distinct
+        // from a sibling `foo.tar`.
+        assert_eq!(
+            local_part_path(Path::new("/home/u/foo.txt")),
+            PathBuf::from("/home/u/foo.txt.nyxpart")
+        );
+        assert_eq!(
+            remote_part_path(&RemotePath::new("/srv/data/foo.txt")),
+            RemotePath::new("/srv/data/foo.txt.nyxpart")
+        );
+    }
+
+    #[test]
+    fn may_overwrite_only_on_resolved_overwrite() {
+        assert!(may_overwrite(&resume_spec(0, None)));
+        let mut spec = resume_spec(0, None);
+        spec.on_collision = None;
+        assert!(!may_overwrite(&spec));
+        spec.on_collision = Some(CollisionChoice::Skip);
+        assert!(!may_overwrite(&spec));
     }
 
     fn resume_spec(resume_from: u64, source_meta: Option<nyx_core::SourceMeta>) -> TransferSpec {
