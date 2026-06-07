@@ -27,6 +27,9 @@ pub struct Settings {
     pub density: u8,
     /// Whether the browser's permissions column is shown.
     pub show_perms: bool,
+    /// Whether a dropped session reconnects automatically (with backoff) before
+    /// falling back to a manual reconnect.
+    pub auto_reconnect: bool,
 }
 
 impl Default for Settings {
@@ -35,6 +38,7 @@ impl Default for Settings {
             theme: "One Dark".to_string(),
             density: 1,
             show_perms: true,
+            auto_reconnect: true,
         }
     }
 }
@@ -116,6 +120,7 @@ mod tests {
             theme: "Ayu Dark".to_string(),
             density: 0,
             show_perms: false,
+            auto_reconnect: false,
         };
         store.save(&settings).unwrap();
         assert_eq!(store.load(), settings);

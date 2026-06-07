@@ -54,6 +54,14 @@ const MAX_CONCURRENT_TRANSFERS: usize = 3;
 /// speed denominator, so no `Instant` is needed.
 const PROGRESS_TICK: Duration = Duration::from_millis(150);
 
+/// How many automatic reconnect attempts to make on a transport loss before
+/// giving up and falling back to a manual reconnect.
+const RECONNECT_MAX_ATTEMPTS: u32 = 6;
+
+/// The exponential-backoff cap: the base wait doubles per attempt (1s, 2s, 4s …)
+/// but never exceeds this, with jitter added on top to avoid reconnect storms.
+const RECONNECT_CAP: Duration = Duration::from_secs(30);
+
 /// The per-OS path to the trust-on-first-use `known_hosts` store
 /// (`<data_dir>/known_hosts`, resolved via the `directories` crate).
 ///
@@ -95,6 +103,10 @@ pub enum Command {
         profile: Profile,
         /// The password or key passphrase (redacted in `Debug`).
         secret: Secret,
+        /// Whether to auto-reconnect (with backoff) if this session's transport
+        /// later drops. The profile + secret are cached for the session's
+        /// lifetime so backoff needs no UI round-trip.
+        auto_reconnect: bool,
     },
     /// The user's answer to a pending [`Event::HostKeyPrompt`].
     HostKeyDecision {
@@ -188,6 +200,9 @@ pub enum Command {
         /// Apply this choice to all other pending/queued transfers too.
         apply_to_all: bool,
     },
+    /// Stop an in-progress auto-reconnect backoff loop, leaving the session lost
+    /// (the user can still reconnect manually). A no-op if none is running.
+    CancelReconnect,
     /// Close the active connection.
     Disconnect,
     /// Shut the runtime down and exit the thread.
@@ -248,6 +263,26 @@ pub enum Event {
     /// commands fail fast until the UI reconnects. Credential-free.
     ConnectionLost {
         /// The profile whose connection was lost.
+        profile_id: String,
+        /// A human-readable, credential-free reason.
+        reason: String,
+    },
+    /// An automatic reconnect attempt is underway after a transport loss. Emitted
+    /// once per attempt, before the backoff wait; [`Event::Connected`] is the
+    /// success terminal, [`Event::ReconnectFailed`] the give-up terminal.
+    Reconnecting {
+        /// The profile being reconnected.
+        profile_id: String,
+        /// The 1-based attempt number.
+        attempt: u32,
+        /// How long the backoff waits before this attempt actually dials.
+        next_in: Duration,
+    },
+    /// Auto-reconnect gave up (attempts exhausted, or a non-transport failure such
+    /// as a changed host key). The session stays lost; only a manual reconnect
+    /// remains. Credential-free.
+    ReconnectFailed {
+        /// The profile that could not be reconnected.
         profile_id: String,
         /// A human-readable, credential-free reason.
         reason: String,
@@ -463,6 +498,9 @@ enum TaskOutcome {
     },
     /// A live connect failed with a credential-free message.
     ConnectFailed { message: String },
+    /// An auto-reconnect loop gave up after exhausting its attempts or hitting a
+    /// non-transport failure.
+    ReconnectFailed { profile_id: String, reason: String },
     /// A test probe finished (success or failure).
     TestResult {
         profile_id: String,
@@ -503,6 +541,9 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
     // Internal channel: a finished copy task → dispatcher (mirrors `done`).
     let (xfer_done_tx, mut xfer_done_rx) = unbounded_channel::<(TransferId, TransferOutcome)>();
 
+    // Owns the session credentials cached for auto-reconnect and the backoff loop.
+    let mut reconnector = Reconnector::new(register_tx.clone(), done_tx.clone());
+
     // The throttle ticker for progress sampling. The first tick fires
     // immediately; on an idle loop it samples an empty set (cheap no-op).
     let mut progress_tick = tokio::time::interval(PROGRESS_TICK);
@@ -513,13 +554,17 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                 let Some(command) = maybe_cmd else { break };
                 match command {
                     Command::Shutdown => break,
-                    Command::Connect { profile, secret } => {
+                    Command::Connect { profile, secret, auto_reconnect } => {
                         if in_flight {
                             let _ = events.unbounded_send(Event::Error {
                                 message: "a connection is already in progress".into(),
                             });
                             continue;
                         }
+                        // A manual connect supersedes any backoff loop and re-seeds
+                        // the credentials cached for a later auto-reconnect.
+                        reconnector.abort();
+                        reconnector.set_creds(profile.clone(), secret.clone(), auto_reconnect);
                         // Replace any existing session.
                         client = None;
                         in_flight = true;
@@ -572,7 +617,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                             }
                             Some(Err(err)) => report_op_error(
                                 err, &mut client, &mut active_profile, &mut queue,
-                                &mut last_bytes, &events,
+                                &mut last_bytes, &mut reconnector, &events,
                             ),
                             None => not_connected(&events),
                         }
@@ -591,7 +636,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                             }
                             Some(Err(err)) => report_op_error(
                                 err, &mut client, &mut active_profile, &mut queue,
-                                &mut last_bytes, &events,
+                                &mut last_bytes, &mut reconnector, &events,
                             ),
                             None => not_connected(&events),
                         }
@@ -611,7 +656,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                             }
                             Some(Err(err)) => report_op_error(
                                 err, &mut client, &mut active_profile, &mut queue,
-                                &mut last_bytes, &events,
+                                &mut last_bytes, &mut reconnector, &events,
                             ),
                             None => not_connected(&events),
                         }
@@ -637,7 +682,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                                 }
                                 Some(Err(err)) => report_op_error(
                                     err, &mut client, &mut active_profile, &mut queue,
-                                    &mut last_bytes, &events,
+                                    &mut last_bytes, &mut reconnector, &events,
                                 ),
                                 None => not_connected(&events),
                             }
@@ -720,11 +765,17 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                         }
                         try_start(&mut queue, &client, &events, &xfer_done_tx);
                     }
+                    Command::CancelReconnect => {
+                        // Stop the backoff loop but keep the session credentials —
+                        // a later manual reconnect re-seeds them anyway.
+                        reconnector.abort();
+                    }
                     Command::Disconnect => {
-                        // A disconnect also clears the single-flight slot and the
-                        // active-profile tracking.
+                        // A disconnect also clears the single-flight slot, the
+                        // active-profile tracking and any auto-reconnect state.
                         in_flight = false;
                         active_profile = None;
+                        reconnector.clear();
                         // Cancel everything: flag the running transfers (their
                         // tasks wind down and report Cancelled via `xfer_done`)
                         // and drain the queued ones (no task ran, so emit their
@@ -755,13 +806,23 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                 in_flight = false;
                 match done {
                     TaskOutcome::Connected { profile_id, client: session, home } => {
+                        // A connect (manual or via the backoff loop) landed; drop
+                        // the loop's now-finished handle.
+                        reconnector.abort();
                         client = Some(Arc::from(session));
                         active_profile = Some(profile_id.clone());
                         info!(%profile_id, "connected");
                         let _ = events.unbounded_send(Event::Connected { profile_id, home });
                     }
                     TaskOutcome::ConnectFailed { message } => {
+                        // A failed manual connect holds no session to reconnect to.
+                        reconnector.clear();
                         let _ = events.unbounded_send(Event::Error { message });
+                    }
+                    TaskOutcome::ReconnectFailed { profile_id, reason } => {
+                        reconnector.clear();
+                        warn!(%profile_id, "auto-reconnect gave up");
+                        let _ = events.unbounded_send(Event::ReconnectFailed { profile_id, reason });
                     }
                     TaskOutcome::TestResult { profile_id, ok, message } => {
                         let _ = events.unbounded_send(Event::TestResult { profile_id, ok, message });
@@ -1243,6 +1304,7 @@ fn report_op_error(
     active_profile: &mut Option<String>,
     queue: &mut TransferQueue,
     last_bytes: &mut HashMap<TransferId, u64>,
+    reconnector: &mut Reconnector,
     events: &FuturesSender<Event>,
 ) {
     if matches!(err, NyxError::ConnectionLost(_)) {
@@ -1251,6 +1313,7 @@ fn report_op_error(
             active_profile,
             queue,
             last_bytes,
+            reconnector,
             events,
             err.to_string(),
         );
@@ -1262,15 +1325,18 @@ fn report_op_error(
 }
 
 /// Flip the active session to "lost": drop the client (so later commands fail
-/// fast), emit exactly one [`Event::ConnectionLost`], and fail the **pending**
+/// fast), emit exactly one [`Event::ConnectionLost`], fail the **pending**
 /// transfers (queued/parked can't run without a session; in-flight ones fail on
-/// their own next I/O). The `client.take()` guard makes the emission idempotent —
-/// a later op that also sees a transport error finds no client and is a no-op.
+/// their own next I/O), and kick off an auto-reconnect backoff loop (a no-op when
+/// the setting is off or no credentials are cached). The `client.take()` guard
+/// makes this idempotent — a later op that also sees a transport error finds no
+/// client and is a no-op.
 fn note_connection_lost(
     client: &mut Option<Arc<dyn RemoteClient>>,
     active_profile: &mut Option<String>,
     queue: &mut TransferQueue,
     last_bytes: &mut HashMap<TransferId, u64>,
+    reconnector: &mut Reconnector,
     events: &FuturesSender<Event>,
     reason: String,
 ) {
@@ -1288,6 +1354,7 @@ fn note_connection_lost(
             message: Some("connection lost".into()),
         });
     }
+    reconnector.start(events);
 }
 
 /// The path's final component (the file/folder name) for toast copy, falling
@@ -1386,6 +1453,185 @@ async fn run_task(
         },
     };
     let _ = done.send(outcome);
+}
+
+/// Credentials cached for a live session's lifetime so an automatic reconnect
+/// needs no UI round-trip per attempt. Held only while the session is alive and
+/// dropped — zeroizing the [`Secret`] — on disconnect or when reconnect gives up.
+struct SessionCreds {
+    profile: Profile,
+    secret: Secret,
+    auto_reconnect: bool,
+}
+
+/// Owns the auto-reconnect state: the cached session credentials and the running
+/// backoff task. The connection-loss path asks it to [`start`](Self::start) a
+/// self-contained reconnect loop; the command loop can [`abort`](Self::abort) or
+/// [`clear`](Self::clear) it.
+struct Reconnector {
+    creds: Option<SessionCreds>,
+    task: Option<tokio::task::JoinHandle<()>>,
+    register: TokioSender<oneshot::Sender<bool>>,
+    done: TokioSender<TaskOutcome>,
+}
+
+impl Reconnector {
+    fn new(register: TokioSender<oneshot::Sender<bool>>, done: TokioSender<TaskOutcome>) -> Self {
+        Self {
+            creds: None,
+            task: None,
+            register,
+            done,
+        }
+    }
+
+    /// Cache the credentials for the session being (re)connected.
+    fn set_creds(&mut self, profile: Profile, secret: Secret, auto_reconnect: bool) {
+        self.creds = Some(SessionCreds {
+            profile,
+            secret,
+            auto_reconnect,
+        });
+    }
+
+    /// Abort the running backoff loop, if any (keeps the cached credentials).
+    fn abort(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+
+    /// Abort the loop and drop the cached credentials (zeroizing the secret).
+    fn clear(&mut self) {
+        self.abort();
+        self.creds = None;
+    }
+
+    /// Start a backoff reconnect loop for the lost session — but only when
+    /// auto-reconnect is enabled and credentials are cached. A no-op otherwise,
+    /// leaving the session lost for a manual reconnect.
+    fn start(&mut self, events: &FuturesSender<Event>) {
+        self.abort();
+        let Some(creds) = self.creds.as_ref() else {
+            return;
+        };
+        if !creds.auto_reconnect {
+            return;
+        }
+        let task = tokio::spawn(run_reconnect(
+            creds.profile.clone(),
+            creds.secret.clone(),
+            events.clone(),
+            self.register.clone(),
+            self.done.clone(),
+        ));
+        self.task = Some(task);
+    }
+}
+
+/// Drive the auto-reconnect backoff loop for a lost session.
+///
+/// Each attempt emits [`Event::Reconnecting`], waits the backoff delay, then dials
+/// the profile. A success hands the live session back via [`TaskOutcome::Connected`]
+/// — the same path a manual connect uses. A *transport* failure is retried; an
+/// auth / host-key / locked-key failure is terminal (retrying bad credentials is
+/// pointless and can lock accounts). Exhausting the attempts ends in
+/// [`TaskOutcome::ReconnectFailed`].
+async fn run_reconnect(
+    profile: Profile,
+    secret: Secret,
+    events: FuturesSender<Event>,
+    register: TokioSender<oneshot::Sender<bool>>,
+    done: TokioSender<TaskOutcome>,
+) {
+    let profile_id = profile.id.clone();
+    for attempt in 1..=RECONNECT_MAX_ATTEMPTS {
+        let delay = backoff_delay(attempt);
+        let _ = events.unbounded_send(Event::Reconnecting {
+            profile_id: profile_id.clone(),
+            attempt,
+            next_in: delay,
+        });
+        tokio::time::sleep(delay).await;
+
+        let prompt = Arc::new(host_key::PromptBridge {
+            events: events.clone(),
+            register: register.clone(),
+        });
+        // A construction error (e.g. a misconfigured key) will not heal on retry.
+        let mut client = match build_client(&profile, secret.clone(), prompt) {
+            Ok(client) => client,
+            Err(err) => {
+                let _ = done.send(TaskOutcome::ReconnectFailed {
+                    profile_id,
+                    reason: err.to_string(),
+                });
+                return;
+            }
+        };
+        match client.connect().await {
+            Ok(()) => {
+                let home = client
+                    .default_dir()
+                    .await
+                    .unwrap_or_else(|_| RemotePath::root());
+                let _ = done.send(TaskOutcome::Connected {
+                    profile_id,
+                    client,
+                    home,
+                });
+                return;
+            }
+            Err(err) if is_transient_connect_error(&err) => {
+                warn!(%profile_id, attempt, "auto-reconnect attempt failed; will retry");
+            }
+            Err(err) => {
+                let _ = done.send(TaskOutcome::ReconnectFailed {
+                    profile_id,
+                    reason: err.to_string(),
+                });
+                return;
+            }
+        }
+    }
+    let _ = done.send(TaskOutcome::ReconnectFailed {
+        profile_id,
+        reason: "could not reconnect after several attempts".into(),
+    });
+}
+
+/// Whether a failed connect attempt is worth retrying: a transport / network
+/// failure (the server may still be down) is, but an auth, host-key or locked-key
+/// rejection is not — see [`run_reconnect`].
+fn is_transient_connect_error(err: &NyxError) -> bool {
+    matches!(
+        err,
+        NyxError::Connection(_) | NyxError::ConnectionLost(_) | NyxError::Io(_)
+    )
+}
+
+/// The backoff delay before attempt `n` (1-based): an exponential base (1s, 2s,
+/// 4s … capped at [`RECONNECT_CAP`]) plus up to 50% jitter, so a flapping link or
+/// many clients retrying don't hammer the server in lockstep.
+fn backoff_delay(attempt: u32) -> Duration {
+    let base = RECONNECT_CAP.min(Duration::from_secs(
+        1u64 << attempt.saturating_sub(1).min(5),
+    ));
+    let base_ms = base.as_millis() as u64;
+    Duration::from_millis(base_ms + jitter_ms(base_ms / 2))
+}
+
+/// A cheap, non-cryptographic jitter in `0..max_ms`, seeded from the wall clock —
+/// used only to desynchronize backoff, so randomness quality is irrelevant.
+fn jitter_ms(max_ms: u64) -> u64 {
+    if max_ms == 0 {
+        return 0;
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+    nanos % max_ms
 }
 
 /// Build the protocol client for a profile, keyed on `profile.protocol`.
@@ -1529,9 +1775,41 @@ mod tests {
                 last_connected: None,
             },
             secret: Secret::new("hunter2"),
+            auto_reconnect: true,
         };
         let dbg = format!("{cmd:?}");
         assert!(dbg.contains("***"), "{dbg}");
         assert!(!dbg.contains("hunter2"), "{dbg}");
+    }
+
+    #[test]
+    fn backoff_grows_then_caps() {
+        // Each attempt's delay (base, before jitter) doubles, then caps at 30s.
+        // Jitter is at most +50% of the base, so an upper bound per attempt holds.
+        for (attempt, base) in [(1u32, 1u64), (2, 2), (3, 4), (4, 8), (5, 16), (6, 30)] {
+            let d = backoff_delay(attempt).as_millis() as u64;
+            assert!(d >= base * 1000, "attempt {attempt}: {d} < {}", base * 1000);
+            assert!(
+                d <= base * 1000 + base * 500,
+                "attempt {attempt}: {d} exceeds base+jitter"
+            );
+        }
+        // Past the cap the base stays at 30s.
+        assert!(backoff_delay(9).as_millis() as u64 <= 45_000);
+    }
+
+    #[test]
+    fn only_transport_errors_are_retried() {
+        assert!(is_transient_connect_error(&NyxError::Connection(
+            "x".into()
+        )));
+        assert!(is_transient_connect_error(&NyxError::ConnectionLost(
+            "x".into()
+        )));
+        assert!(is_transient_connect_error(&NyxError::Io("x".into())));
+        // Credential / trust failures must not be retried.
+        assert!(!is_transient_connect_error(&NyxError::Auth));
+        assert!(!is_transient_connect_error(&NyxError::HostKey("x".into())));
+        assert!(!is_transient_connect_error(&NyxError::KeyLocked));
     }
 }

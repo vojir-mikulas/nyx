@@ -332,6 +332,14 @@ pub struct AppState {
     /// reason that drives the non-modal "Connection lost — Reconnect" banner.
     /// `None` while connected. The last listing stays visible underneath.
     pub connection_lost: Option<SharedString>,
+    /// While auto-reconnect is running after a loss: the current attempt number,
+    /// for the banner copy. `None` when not actively auto-reconnecting.
+    pub reconnect_attempt: Option<u32>,
+    /// Set when auto-reconnect gave up: the banner says "Reconnect failed" rather
+    /// than the plain "Connection lost". Both still offer a manual reconnect.
+    pub reconnect_failed: bool,
+    /// Whether a dropped session should auto-reconnect (persisted in `Settings`).
+    pub auto_reconnect: bool,
 }
 
 /// Map a persisted theme name to its concrete [`Theme`], defaulting to One Dark
@@ -405,6 +413,7 @@ impl AppState {
         cx.set_global(theme_from_name(&settings.theme));
         let density = Density::ALL[(settings.density as usize).min(Density::ALL.len() - 1)];
         let show_perms = settings.show_perms;
+        let auto_reconnect = settings.auto_reconnect;
 
         let mut row_focus = HashMap::new();
         row_focus.insert("new".to_string(), cx.focus_handle().tab_stop(true));
@@ -464,6 +473,9 @@ impl AppState {
             file_delete: None,
             listing_loading: false,
             connection_lost: None,
+            reconnect_attempt: None,
+            reconnect_failed: false,
+            auto_reconnect,
         }
     }
 
@@ -474,6 +486,7 @@ impl AppState {
             theme: cx.theme().name.to_string(),
             density: self.density.index() as u8,
             show_perms: self.show_perms,
+            auto_reconnect: self.auto_reconnect,
         };
         if let Err(err) = self.settings_store.save(&settings) {
             tracing::warn!("failed to persist settings: {err}");
@@ -686,6 +699,7 @@ impl AppState {
         let sent = self.service.send(Command::Connect {
             profile,
             secret: Secret::new(secret),
+            auto_reconnect: self.auto_reconnect,
         });
         if !sent {
             self.connecting_id = None;
@@ -1813,6 +1827,8 @@ impl AppState {
         self.selected.clear();
         self.listing_loading = false;
         self.connection_lost = None;
+        self.reconnect_attempt = None;
+        self.reconnect_failed = false;
     }
 
     /// Reconnect after a connection loss: re-issue the connect for the active
@@ -1824,7 +1840,17 @@ impl AppState {
         let Some(id) = self.active_id.clone() else {
             return;
         };
+        self.reconnect_attempt = None;
+        self.reconnect_failed = false;
         self.open_connection(&id, cx);
+    }
+
+    /// Stop the in-progress auto-reconnect backoff loop, leaving the session lost
+    /// with a manual-reconnect affordance (the banner drops its Cancel).
+    pub fn cancel_reconnect(&mut self) {
+        self.service.send(Command::CancelReconnect);
+        self.reconnect_attempt = None;
+        self.reconnect_failed = false;
     }
 
     /// Cancel a queued or running transfer (the dock's `x` button). The row
@@ -1888,6 +1914,8 @@ impl AppState {
                 self.host_key_prompt = None;
                 self.used_stored_password = None;
                 self.connection_lost = None;
+                self.reconnect_attempt = None;
+                self.reconnect_failed = false;
                 // Persist the connect time so "Recent" ordering survives a restart.
                 self.stamp_last_connected(&profile_id, cx);
                 self.enter_browser(profile_id, home, cx);
@@ -1917,6 +1945,37 @@ impl AppState {
                     self.online_id = None;
                     self.connecting_id = None;
                     self.listing_loading = false;
+                    self.reconnect_attempt = None;
+                    self.reconnect_failed = false;
+                    self.connection_lost = Some(if reason.is_empty() {
+                        "Connection lost".into()
+                    } else {
+                        reason.into()
+                    });
+                }
+            }
+            // The service is auto-reconnecting after a loss: reflect the attempt in
+            // the banner (which offers Cancel instead of a manual Reconnect).
+            Event::Reconnecting {
+                profile_id,
+                attempt,
+                next_in: _,
+            } => {
+                if self.active_id.as_deref() == Some(profile_id.as_str()) {
+                    self.reconnect_attempt = Some(attempt);
+                    self.reconnect_failed = false;
+                    self.connecting_id = None;
+                    if self.connection_lost.is_none() {
+                        self.connection_lost = Some("Connection lost".into());
+                    }
+                }
+            }
+            // Auto-reconnect gave up: the banner flips to "Reconnect failed" with a
+            // manual Reconnect.
+            Event::ReconnectFailed { profile_id, reason } => {
+                if self.active_id.as_deref() == Some(profile_id.as_str()) {
+                    self.reconnect_attempt = None;
+                    self.reconnect_failed = true;
                     self.connection_lost = Some(if reason.is_empty() {
                         "Connection lost".into()
                     } else {

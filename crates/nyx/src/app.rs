@@ -829,6 +829,7 @@ fn tweaks_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElemen
     let theme = cx.theme().clone();
     let density_ix = state.density.index();
     let show_perms = state.show_perms;
+    let auto_reconnect = state.auto_reconnect;
     let theme_ix = match cx.theme().name {
         "One Dark" => 0,
         "GitHub Dark" => 1,
@@ -925,6 +926,29 @@ fn tweaks_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElemen
                                 let on = *on;
                                 view.update(cx, |this, cx| {
                                     this.show_perms = on;
+                                    this.save_settings(cx);
+                                    cx.notify();
+                                });
+                            }
+                        })),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(theme.text_muted)
+                                .child("Auto-reconnect"),
+                        )
+                        .child(Toggle::new("tw-auto-reconnect", auto_reconnect).on_change({
+                            let view = view.clone();
+                            move |on, _window, cx| {
+                                let on = *on;
+                                view.update(cx, |this, cx| {
+                                    this.auto_reconnect = on;
                                     this.save_settings(cx);
                                     cx.notify();
                                 });

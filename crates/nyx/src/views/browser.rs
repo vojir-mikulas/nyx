@@ -47,16 +47,56 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
         .min_h_0()
         .child(tab_strip(state, cx))
         .when_some(state.connection_lost.clone(), |this, reason| {
-            this.child(connection_lost_banner(reason, cx))
+            this.child(connection_lost_banner(state, reason, cx))
         })
         .child(toolbar(state, cx))
         .child(file_table(state, cx))
 }
 
-/// The non-modal "connection lost" banner: stays put under the tab strip with a
-/// Reconnect affordance, leaving the last listing visible beneath it.
-fn connection_lost_banner(reason: SharedString, cx: &mut Context<AppState>) -> impl IntoElement {
+/// The non-modal connection banner: stays put under the tab strip, leaving the
+/// last listing visible beneath it. It reflects three states —
+/// auto-reconnecting (title "Reconnecting…", a **Cancel**), gave-up
+/// ("Reconnect failed", a **Reconnect**), and a plain manual loss ("Connection
+/// lost", a **Reconnect**).
+fn connection_lost_banner(
+    state: &AppState,
+    reason: SharedString,
+    cx: &mut Context<AppState>,
+) -> impl IntoElement {
     let theme = cx.theme().clone();
+    let attempt = state.reconnect_attempt;
+    let title = if attempt.is_some() {
+        "Reconnecting…"
+    } else if state.reconnect_failed {
+        "Reconnect failed"
+    } else {
+        "Connection lost"
+    };
+    // While auto-reconnecting, the detail shows the attempt count; otherwise the
+    // credential-free loss reason.
+    let detail: SharedString = match attempt {
+        Some(n) => format!("Attempt {n}").into(),
+        None => reason,
+    };
+    let action = if attempt.is_some() {
+        Button::new("cancel-reconnect", "Cancel")
+            .variant(ButtonVariant::Ghost)
+            .size(ButtonSize::Sm)
+            .focusable(false)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.cancel_reconnect();
+                cx.notify();
+            }))
+    } else {
+        Button::new("reconnect", "Reconnect")
+            .variant(ButtonVariant::Primary)
+            .size(ButtonSize::Sm)
+            .focusable(false)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.reconnect(cx);
+                cx.notify();
+            }))
+    };
     div()
         .flex()
         .items_center()
@@ -73,7 +113,7 @@ fn connection_lost_banner(reason: SharedString, cx: &mut Context<AppState>) -> i
                 .text_color(theme.red)
                 .child(icon("alert", 14., theme.red)),
         )
-        .child(div().text_color(theme.text).child("Connection lost"))
+        .child(div().text_color(theme.text).child(title))
         .child(
             div()
                 .flex_1()
@@ -81,18 +121,9 @@ fn connection_lost_banner(reason: SharedString, cx: &mut Context<AppState>) -> i
                 .truncate()
                 .text_xs()
                 .text_color(theme.text_faint)
-                .child(reason),
+                .child(detail),
         )
-        .child(
-            Button::new("reconnect", "Reconnect")
-                .variant(ButtonVariant::Primary)
-                .size(ButtonSize::Sm)
-                .focusable(false)
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.reconnect(cx);
-                    cx.notify();
-                })),
-        )
+        .child(action)
 }
 
 fn tab_strip(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
