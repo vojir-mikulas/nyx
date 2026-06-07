@@ -88,6 +88,7 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                         Button::new("sb-foot-new", "New")
                             .variant(ButtonVariant::Secondary)
                             .size(ButtonSize::Sm)
+                            .focusable(false)
                             .on_click(footer_new),
                     ),
                 ),

@@ -33,6 +33,8 @@ actions!(
         SelectLast,
         /// Select every visible row.
         SelectAllRows,
+        /// Copy the selected entry's remote path to the clipboard.
+        CopyPath,
     ]
 );
 
@@ -85,6 +87,7 @@ fn connection_lost_banner(reason: SharedString, cx: &mut Context<AppState>) -> i
             Button::new("reconnect", "Reconnect")
                 .variant(ButtonVariant::Primary)
                 .size(ButtonSize::Sm)
+                .focusable(false)
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.reconnect(cx);
                     cx.notify();
@@ -242,6 +245,7 @@ fn toolbar(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
             Button::new("upload", "Upload")
                 .variant(ButtonVariant::Ghost)
                 .size(ButtonSize::Sm)
+                .focusable(false)
                 .icon(icon("upload", 14., theme.text_muted))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.upload(cx);
@@ -602,6 +606,10 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                 }))
                 .on_action(cx.listener(|this, _: &SelectAllRows, _, cx| {
                     this.select_all_visible(cx);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &CopyPath, _, cx| {
+                    this.copy_selection_path(cx);
                     cx.notify();
                 }))
         })

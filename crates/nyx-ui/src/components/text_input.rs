@@ -70,6 +70,7 @@ pub struct TextInput {
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
     obscured: bool,
+    tab_stop: bool,
 }
 
 /// The glyph each character is shown as in an [obscured](TextInput::obscured)
@@ -79,8 +80,7 @@ const OBSCURE_GLYPH: &str = "•";
 impl TextInput {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
-            // Tab stop so `window.focus_next/prev` can walk between form fields.
-            focus_handle: cx.focus_handle().tab_stop(true),
+            focus_handle: cx.focus_handle(),
             content: SharedString::default(),
             placeholder: SharedString::default(),
             selected_range: 0..0,
@@ -90,7 +90,16 @@ impl TextInput {
             last_bounds: None,
             is_selecting: false,
             obscured: false,
+            // Tab stop by default so `window.focus_next/prev` walks form fields.
+            tab_stop: true,
         }
+    }
+
+    /// Whether the field participates in Tab order (default `true`). Disable for
+    /// standalone fields like a search box that shouldn't be in the tab ring.
+    pub fn tab_stop(mut self, tab_stop: bool) -> Self {
+        self.tab_stop = tab_stop;
+        self
     }
 
     pub fn with_placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
@@ -826,6 +835,7 @@ impl Render for TextInput {
             .text_color(cx.theme().text)
             .key_context("TextInput")
             .track_focus(&self.focus_handle(cx))
+            .when(self.tab_stop, |this| this.tab_index(0))
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))

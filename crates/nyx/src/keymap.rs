@@ -12,17 +12,23 @@
 //! in the focused element's stack (root `"App"`, then `"Browser"`, then
 //! `"TextInput"`). Binding a global key under the `"App"` identifier matches at
 //! the shallow root, so a deeper `"Browser"` or `"TextInput"` binding of the same
-//! key shadows it: `enter` is *Open* over the file table, *Submit* in a field,
-//! and the modal *Confirm* only when neither is focused. A `None`-context
-//! binding, by contrast, binds at max depth and fires even inside fields — the
-//! footgun this module exists to avoid.
+//! key shadows it: `enter` is *Open* over the file table and *Submit* in a field.
+//! A `None`-context binding, by contrast, binds at max depth and fires even
+//! inside fields — the footgun this module exists to avoid.
+//!
+//! Modal Enter/Space are *not* bound here: GPUI fires the focused (or autofocused
+//! primary) button's click natively, so a single keystroke can't both activate a
+//! button and run a separate confirm action. Only `escape` (→ [`Dismiss`]) is a
+//! modal-level binding.
 
 use gpui::{App, KeyBinding};
 use nyx_ui::TextInput;
 
 use crate::views::browser::{
-    Delete, GoUp, Open, Rename, SelectAllRows, SelectDown, SelectFirst, SelectLast, SelectUp,
+    CopyPath, Delete, GoUp, Open, Rename, SelectAllRows, SelectDown, SelectFirst, SelectLast,
+    SelectUp,
 };
+use crate::views::welcome::ActivateRow;
 
 gpui::actions!(
     nyx,
@@ -41,8 +47,10 @@ gpui::actions!(
         OpenSettings,
         /// Open the keyboard-shortcuts cheat-sheet.
         ShowShortcuts,
-        /// Trigger the open modal's primary action (Enter).
-        Confirm,
+        /// Move focus to the next focusable item (Tab).
+        FocusNext,
+        /// Move focus to the previous focusable item (Shift-Tab).
+        FocusPrev,
         /// Dismiss the topmost overlay — modal, prompt or menu (Esc).
         Dismiss,
     ]
@@ -92,6 +100,8 @@ const SHORTCUTS: &[Shortcut] = &[
     Shortcut { keys: "cmd-b", label: "Toggle sidebar",     group: Group::Application, context: Some("App"), make: |k, c| KeyBinding::new(k, ToggleSidebar, c) },
     Shortcut { keys: "cmd-,", label: "Settings",           group: Group::Application, context: Some("App"), make: |k, c| KeyBinding::new(k, OpenSettings, c) },
     Shortcut { keys: "cmd-/", label: "Keyboard shortcuts", group: Group::Application, context: Some("App"), make: |k, c| KeyBinding::new(k, ShowShortcuts, c) },
+    Shortcut { keys: "tab",       label: "Next item",     group: Group::Application, context: Some("App"), make: |k, c| KeyBinding::new(k, FocusNext, c) },
+    Shortcut { keys: "shift-tab", label: "Previous item", group: Group::Application, context: Some("App"), make: |k, c| KeyBinding::new(k, FocusPrev, c) },
 
     // Browser — navigation/global (App context so they don't fight text fields)
     Shortcut { keys: "cmd-f", label: "Filter folder",      group: Group::Browser, context: Some("App"), make: |k, c| KeyBinding::new(k, FocusFilter, c) },
@@ -107,10 +117,10 @@ const SHORTCUTS: &[Shortcut] = &[
     Shortcut { keys: "home",      label: "First item",      group: Group::Browser, context: Some("Browser"), make: |k, c| KeyBinding::new(k, SelectFirst, c) },
     Shortcut { keys: "end",       label: "Last item",       group: Group::Browser, context: Some("Browser"), make: |k, c| KeyBinding::new(k, SelectLast, c) },
     Shortcut { keys: "cmd-a",     label: "Select all",      group: Group::Browser, context: Some("Browser"), make: |k, c| KeyBinding::new(k, SelectAllRows, c) },
+    Shortcut { keys: "cmd-c",     label: "Copy path",       group: Group::Browser, context: Some("Browser"), make: |k, c| KeyBinding::new(k, CopyPath, c) },
 
     // Dialogs
-    Shortcut { keys: "enter",  label: "Confirm", group: Group::Dialogs, context: Some("App"), make: |k, c| KeyBinding::new(k, Confirm, c) },
-    Shortcut { keys: "escape", label: "Cancel",  group: Group::Dialogs, context: Some("App"), make: |k, c| KeyBinding::new(k, Dismiss, c) },
+    Shortcut { keys: "escape", label: "Cancel", group: Group::Dialogs, context: Some("App"), make: |k, c| KeyBinding::new(k, Dismiss, c) },
 ];
 
 /// Alias keystrokes that are bound but kept out of the cheat-sheet to avoid
@@ -118,6 +128,9 @@ const SHORTCUTS: &[Shortcut] = &[
 #[rustfmt::skip]
 const ALIASES: &[(&str, Option<&str>, MakeFn)] = &[
     ("cmd-backspace", Some("Browser"), |k, c| KeyBinding::new(k, Delete, c)),
+    // Activate the focused welcome-list row (Enter); shadows the App-level Confirm
+    // because the row's `"ConnRow"` context is deeper.
+    ("enter", Some("ConnRow"), |k, c| KeyBinding::new(k, ActivateRow, c)),
 ];
 
 /// Register every keyboard binding. Call once at startup.
@@ -144,11 +157,17 @@ pub fn cheat_sheet() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
     Group::ALL
         .iter()
         .map(|group| {
-            let rows = SHORTCUTS
+            let mut rows: Vec<(String, &'static str)> = SHORTCUTS
                 .iter()
                 .filter(|s| s.group == *group)
                 .map(|s| (display_keys(s.keys), s.label))
                 .collect();
+            // Enter is handled natively by the focused/primary button (no binding
+            // to list), so surface it here for discoverability.
+            if *group == Group::Dialogs {
+                rows.insert(0, (display_keys("enter"), "Confirm / activate"));
+                rows.push((display_keys("space"), "Activate focused"));
+            }
             (group.title(), rows)
         })
         .collect()

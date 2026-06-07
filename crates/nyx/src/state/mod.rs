@@ -7,13 +7,13 @@
 
 pub mod models;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use futures::StreamExt;
 use gpui::{
-    prelude::*, App, ClipboardItem, Context, Entity, FocusHandle, PathPromptOptions, Pixels, Point,
-    SharedString,
+    prelude::*, App, ClipboardItem, Context, Entity, FocusHandle, Focusable, PathPromptOptions,
+    Pixels, Point, SharedString,
 };
 use nyx_core::{
     CollisionChoice, EntryKind, Protocol, RemotePath, Secret, Transfer, TransferDirection,
@@ -242,6 +242,20 @@ pub struct AppState {
     /// Focus target for the file browser's `"Browser"` key context
     /// (Enter / Backspace / F2 / Delete).
     pub browser_focus: FocusHandle,
+    /// Always-focusable root. Keeps the `"App"` key context in the dispatch path
+    /// so global shortcuts and modal Enter/Esc fire even when nothing else holds
+    /// focus (GPUI only dispatches keys along the focused element's ancestry).
+    pub root_focus: FocusHandle,
+    /// A focus target to apply on the next render — modal autofocus, focusing the
+    /// file table on connect, etc. Consumed once.
+    pending_focus: Option<FocusHandle>,
+    /// Handle for the open modal's primary button. Field-less modals autofocus it
+    /// so Enter activates the default action (GPUI fires the focused button's
+    /// click natively — no separate confirm action that would double-fire).
+    pub modal_primary_focus: FocusHandle,
+    /// Stable per-row focus handles for Tab navigation of the welcome connection
+    /// list, keyed `"card:<id>"`, `"recent:<id>"`, and `"new"`.
+    row_focus: HashMap<String, FocusHandle>,
     /// Whether the tweaks modal is open.
     pub tweaks_open: bool,
     /// Whether the keyboard-shortcuts cheat-sheet is open.
@@ -316,9 +330,25 @@ pub fn theme_from_name(name: &str) -> Theme {
 impl AppState {
     /// Build the initial state: welcome screen, connections loaded, nothing open.
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let filter = cx.new(|cx| TextInput::new(cx).with_placeholder("Filter this folder…"));
+        // Not in the Tab ring — reachable via cmd-f, and keeping it out lets a
+        // modal trap focus among its own fields/buttons.
+        let filter = cx.new(|cx| {
+            TextInput::new(cx)
+                .with_placeholder("Filter this folder…")
+                .tab_stop(false)
+        });
         cx.observe(&filter, |_, _, cx| cx.notify()).detach();
+        // Esc/Enter in the filter hand focus back to the file table (it's out of
+        // the Tab ring, so this is the only keyboard way out). The filter text is
+        // left intact — Esc exits the field, it doesn't clear the filter.
+        cx.subscribe(&filter, |this, _input, _event: &TextInputEvent, cx| {
+            this.arm_focus(this.browser_focus.clone());
+            cx.notify();
+        })
+        .detach();
         let browser_focus = cx.focus_handle();
+        let root_focus = cx.focus_handle();
+        let modal_primary_focus = cx.focus_handle().tab_stop(true);
 
         // Spawn the backend thread and drain its events into this entity. The
         // drain runs on the GPUI foreground executor: `next().await` yields, so it
@@ -359,6 +389,14 @@ impl AppState {
         let density = Density::ALL[(settings.density as usize).min(Density::ALL.len() - 1)];
         let show_perms = settings.show_perms;
 
+        let mut row_focus = HashMap::new();
+        row_focus.insert("new".to_string(), cx.focus_handle().tab_stop(true));
+        for conn in &connections {
+            let id = &conn.profile.id;
+            row_focus.insert(format!("card:{id}"), cx.focus_handle().tab_stop(true));
+            row_focus.insert(format!("recent:{id}"), cx.focus_handle().tab_stop(true));
+        }
+
         Self {
             view: View::Welcome,
             connections,
@@ -377,6 +415,10 @@ impl AppState {
             sidebar_open: true,
             recent_collapsed: false,
             browser_focus,
+            root_focus,
+            pending_focus: None,
+            modal_primary_focus,
+            row_focus,
             tweaks_open: false,
             shortcuts_open: false,
             theme_select_open: false,
@@ -438,8 +480,79 @@ impl AppState {
                     .into_iter()
                     .map(ConnectionVm::from_profile)
                     .collect();
+                self.sync_row_focus(cx);
             }
             Err(err) => self.push_toast(err.to_string(), ToastVariant::Error, cx),
+        }
+    }
+
+    /// Ensure every connection row (and the New button) has a stable Tab-stop
+    /// focus handle. Idempotent; called whenever the connection list changes.
+    fn sync_row_focus(&mut self, cx: &mut Context<Self>) {
+        self.row_focus
+            .entry("new".to_string())
+            .or_insert_with(|| cx.focus_handle().tab_stop(true));
+        let ids: Vec<String> = self
+            .connections
+            .iter()
+            .map(|c| c.profile.id.clone())
+            .collect();
+        for id in ids {
+            self.row_focus
+                .entry(format!("card:{id}"))
+                .or_insert_with(|| cx.focus_handle().tab_stop(true));
+            self.row_focus
+                .entry(format!("recent:{id}"))
+                .or_insert_with(|| cx.focus_handle().tab_stop(true));
+        }
+    }
+
+    /// A stable focus handle for a welcome-list row, if one exists.
+    pub fn row_focus(&self, key: &str) -> Option<FocusHandle> {
+        self.row_focus.get(key).cloned()
+    }
+
+    /// Take the focus target queued for this render (modal autofocus, etc.).
+    pub fn take_pending_focus(&mut self) -> Option<FocusHandle> {
+        self.pending_focus.take()
+    }
+
+    /// The element that should hold focus when nothing else does: the file table
+    /// while browsing (so arrow keys work), otherwise the root.
+    pub fn default_focus(&self) -> FocusHandle {
+        if self.view == View::Browse && !self.has_overlay() {
+            self.browser_focus.clone()
+        } else {
+            self.root_focus.clone()
+        }
+    }
+
+    /// Queue `handle` to receive focus on the next render.
+    fn arm_focus(&mut self, handle: FocusHandle) {
+        self.pending_focus = Some(handle);
+    }
+
+    /// Queue the root for focus on the next render. Used for overlays with no
+    /// primary button (menus, the cheat-sheet) so Esc still routes via `"App"`.
+    fn arm_root_focus(&mut self) {
+        self.pending_focus = Some(self.root_focus.clone());
+    }
+
+    /// Queue the open modal's primary button for focus, so it shows the focus ring
+    /// and Enter/Space activate it. Used for field-less confirmation modals.
+    fn arm_primary_focus(&mut self) {
+        self.pending_focus = Some(self.modal_primary_focus.clone());
+    }
+
+    /// Queue a text field to receive focus on the next render (modal autofocus).
+    fn arm_input_focus(&mut self, input: &Entity<TextInput>, cx: &App) {
+        self.pending_focus = Some(input.read(cx).focus_handle(cx));
+    }
+
+    /// Queue the editor's name field for focus on the next render.
+    fn arm_editor_focus(&mut self, cx: &App) {
+        if let Some(name) = self.editor.as_ref().map(|e| e.name.clone()) {
+            self.arm_input_focus(&name, cx);
         }
     }
 
@@ -529,6 +642,7 @@ impl AppState {
         };
         let input = cx.new(|cx| TextInput::new(cx).with_placeholder(placeholder).obscured());
         self.wire_input(&input, cx);
+        self.arm_input_focus(&input, cx);
         self.password_prompt = Some(PasswordPrompt {
             profile_id: profile.id.clone(),
             profile_name: profile.name.clone().into(),
@@ -703,6 +817,7 @@ impl AppState {
             testing: false,
         });
         self.wire_editor_inputs(cx);
+        self.arm_editor_focus(cx);
     }
 
     /// Open the editor in **Edit** mode, prefilled from an existing profile. The
@@ -752,6 +867,7 @@ impl AppState {
             testing: false,
         });
         self.wire_editor_inputs(cx);
+        self.arm_editor_focus(cx);
     }
 
     /// Wire every editor field's submit/cancel events (Enter saves, Esc closes).
@@ -1084,6 +1200,7 @@ impl AppState {
             profile_name,
             position,
         });
+        self.arm_root_focus();
     }
 
     /// Dismiss the row context menu.
@@ -1098,6 +1215,7 @@ impl AppState {
             profile_id,
             profile_name,
         });
+        self.arm_primary_focus();
     }
 
     /// Dismiss the delete confirmation without deleting.
@@ -1150,6 +1268,7 @@ impl AppState {
             is_dir,
             position,
         });
+        self.arm_root_focus();
     }
 
     /// Dismiss the file-row context menu.
@@ -1163,6 +1282,7 @@ impl AppState {
         let input = cx.new(|cx| TextInput::new(cx).with_placeholder("Folder name"));
         cx.observe(&input, |_, _, cx| cx.notify()).detach();
         self.wire_input(&input, cx);
+        self.arm_input_focus(&input, cx);
         self.input_prompt = Some(InputPrompt {
             title: "New folder".into(),
             label: "Name".into(),
@@ -1199,6 +1319,7 @@ impl AppState {
         let input = cx.new(|cx| TextInput::new(cx).with_content(name.clone()));
         cx.observe(&input, |_, _, cx| cx.notify()).detach();
         self.wire_input(&input, cx);
+        self.arm_input_focus(&input, cx);
         self.input_prompt = Some(InputPrompt {
             title: "Rename".into(),
             label: "New name".into(),
@@ -1316,6 +1437,7 @@ impl AppState {
             return;
         }
         self.file_delete = Some(FileDeleteConfirm { entries });
+        self.arm_primary_focus();
     }
 
     /// Dismiss the file-delete confirmation without deleting.
@@ -1341,6 +1463,20 @@ impl AppState {
         if !ok {
             self.push_toast("Backend unavailable", ToastVariant::Error, cx);
         }
+    }
+
+    /// Copy the single-selected entry's absolute remote path to the clipboard
+    /// (keyboard `cmd-c`, mirroring the row menu's Copy path).
+    pub fn copy_selection_path(&mut self, cx: &mut Context<Self>) {
+        if self.selected.len() != 1 {
+            return;
+        }
+        let Some(name) = self.selected.iter().next().cloned() else {
+            return;
+        };
+        let path = self.cwd.join(&name);
+        cx.write_to_clipboard(ClipboardItem::new_string(path.as_str().to_string()));
+        self.push_toast("Path copied", ToastVariant::Success, cx);
     }
 
     /// Copy the clicked entry's absolute remote path to the clipboard.
@@ -1626,6 +1762,7 @@ impl AppState {
                     host: host.into(),
                     fingerprint: fingerprint.into(),
                 });
+                self.arm_primary_focus();
             }
             Event::Connected { profile_id, home } => {
                 self.host_key_prompt = None;
@@ -1743,6 +1880,7 @@ impl AppState {
                     path: path.into(),
                     existing_size,
                 });
+                self.arm_primary_focus();
             }
             Event::TransferStarted { id, total } => {
                 if let Some(vm) = self.transfers.iter_mut().find(|t| t.transfer.id == id) {
@@ -1876,6 +2014,8 @@ impl AppState {
         self.transfers = Vec::new();
         self.pending_collisions.clear();
         self.collision_apply_all = false;
+        // Focus the file table so keyboard navigation works the moment we land.
+        self.arm_focus(self.browser_focus.clone());
         self.reload_listing(cx);
     }
 
@@ -2108,11 +2248,15 @@ impl AppState {
     /// Open the Tweaks (settings) modal (`cmd-,`).
     pub fn open_settings(&mut self) {
         self.tweaks_open = true;
+        self.arm_primary_focus();
     }
 
     /// Toggle the keyboard-shortcuts cheat-sheet (`cmd-/`).
     pub fn toggle_shortcuts(&mut self) {
         self.shortcuts_open = !self.shortcuts_open;
+        if self.shortcuts_open {
+            self.arm_root_focus();
+        }
     }
 
     /// Esc handler: dismiss the topmost overlay — menus first, then the cheat
@@ -2140,33 +2284,6 @@ impl AppState {
             self.cancel_file_delete();
         } else if self.input_prompt.is_some() {
             self.cancel_input();
-        } else if self.tweaks_open {
-            self.tweaks_open = false;
-            self.theme_select_open = false;
-        } else {
-            return false;
-        }
-        true
-    }
-
-    /// Enter handler: trigger the open modal's primary action. The collision
-    /// prompt is deliberately excluded — its primary is a destructive Overwrite,
-    /// too dangerous to fire on a stray Enter. Returns whether anything acted.
-    pub fn confirm_topmost_modal(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.editor.is_some() {
-            self.save_editor(cx);
-        } else if self.password_prompt.is_some() {
-            self.confirm_password(cx);
-        } else if self.host_key_prompt.is_some() {
-            self.trust_host_key();
-        } else if self.delete_confirm.is_some() {
-            self.confirm_delete(cx);
-        } else if self.file_delete.is_some() {
-            self.confirm_file_delete(cx);
-        } else if self.input_prompt.is_some() {
-            self.submit_input(cx);
-        } else if self.shortcuts_open {
-            self.shortcuts_open = false;
         } else if self.tweaks_open {
             self.tweaks_open = false;
             self.theme_select_open = false;

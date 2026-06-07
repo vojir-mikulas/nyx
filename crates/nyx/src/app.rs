@@ -13,15 +13,25 @@ use nyx_ui::{
 
 use crate::assets::{FONT_MONO, FONT_UI};
 use crate::keymap::{
-    CloseTab, Confirm, Dismiss, FocusFilter, NewConnection, OpenSettings, Refresh, ShowShortcuts,
-    ToggleSidebar,
+    CloseTab, Dismiss, FocusFilter, FocusNext, FocusPrev, NewConnection, OpenSettings, Refresh,
+    ShowShortcuts, ToggleSidebar,
 };
 use crate::state::models::Density;
 use crate::state::{AppState, View};
 use crate::views;
 
 impl Render for AppState {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Keep something focused so global keys and modal Enter/Esc dispatch: honor
+        // a queued focus target (modal autofocus), else fall back to a sensible
+        // default when focus was lost (e.g. after a click on empty space).
+        if let Some(handle) = self.take_pending_focus() {
+            window.focus(&handle, cx);
+        } else if window.focused(cx).is_none() {
+            let handle = self.default_focus();
+            window.focus(&handle, cx);
+        }
+
         let theme = cx.theme().clone();
 
         let sidebar = self.sidebar_open.then(|| views::sidebar::render(self, cx));
@@ -55,15 +65,17 @@ impl Render for AppState {
             .flex_col()
             // The root `"App"` context: global keys bind here, so a deeper
             // `"Browser"` or `"TextInput"` context shadows them when focused.
+            // `track_focus` makes the root itself focusable: clicking empty space
+            // auto-focuses it (innermost focusable wins, so fields still focus on
+            // their own click), keeping the `"App"` context in the dispatch path.
             .key_context("App")
+            .track_focus(&self.root_focus)
             .font_family(FONT_UI)
             .bg(theme.bg_panel_2)
             .text_color(theme.text)
             .text_sm()
-            // Blur on click-away: GPUI keeps focus until another focusable
-            // element takes it. Capture phase (root first) so a click landing on
-            // a field still focuses it on the way down.
-            .capture_any_mouse_down(|_, window, _| window.blur())
+            .on_action(cx.listener(|_, _: &FocusNext, window, cx| window.focus_next(cx)))
+            .on_action(cx.listener(|_, _: &FocusPrev, window, cx| window.focus_prev(cx)))
             .on_action(cx.listener(|this, _: &NewConnection, _, cx| {
                 this.open_editor_create(cx);
                 cx.notify();
@@ -96,11 +108,6 @@ impl Render for AppState {
             .on_action(cx.listener(|this, _: &CloseTab, _, cx| {
                 if this.view == View::Browse && !this.has_overlay() {
                     this.disconnect();
-                    cx.notify();
-                }
-            }))
-            .on_action(cx.listener(|this, _: &Confirm, _, cx| {
-                if this.confirm_topmost_modal(cx) {
                     cx.notify();
                 }
             }))
@@ -325,6 +332,7 @@ fn host_key_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElem
                 .child(
                     Button::new("hk-trust", "Trust & connect")
                         .variant(ButtonVariant::Primary)
+                        .focus_handle(state.modal_primary_focus.clone())
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.trust_host_key();
                             cx.notify();
@@ -444,6 +452,7 @@ fn collision_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoEle
                 .child(
                     Button::new("collision-skip", "Skip")
                         .variant(ButtonVariant::Secondary)
+                        .focus_handle(state.modal_primary_focus.clone())
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.resolve_collision(CollisionChoice::Skip, cx);
                             cx.notify();
@@ -499,6 +508,7 @@ fn delete_confirm_modal(state: &AppState, cx: &mut Context<AppState>) -> impl In
                 .child(
                     Button::new("del-remove", "Remove")
                         .variant(ButtonVariant::Danger)
+                        .focus_handle(state.modal_primary_focus.clone())
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.confirm_delete(cx);
                             cx.notify();
@@ -744,6 +754,7 @@ fn file_delete_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoE
                 .child(
                     Button::new("file-del-remove", "Delete")
                         .variant(ButtonVariant::Danger)
+                        .focus_handle(state.modal_primary_focus.clone())
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.confirm_file_delete(cx);
                             cx.notify();
@@ -909,6 +920,7 @@ fn tweaks_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElemen
             div().flex().w_full().justify_end().child(
                 Button::new("tw-done", "Done")
                     .variant(ButtonVariant::Primary)
+                    .focus_handle(state.modal_primary_focus.clone())
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.tweaks_open = false;
                         this.theme_select_open = false;
@@ -919,56 +931,79 @@ fn tweaks_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElemen
 }
 
 /// The keyboard-shortcuts cheat-sheet, rendered from the keymap table so it can
-/// never drift from the actual bindings.
+/// never drift from the actual bindings. Groups are spread across two balanced
+/// columns to keep the dialog short.
 fn shortcuts_modal(_state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
     let view = cx.entity();
 
-    let mut body = div().flex().flex_col().gap_4();
+    let mut col_a = div().flex().flex_col().gap_4().flex_1().min_w_0();
+    let mut col_b = div().flex().flex_col().gap_4().flex_1().min_w_0();
+    let (mut rows_a, mut rows_b) = (0usize, 0usize);
+
+    // Greedily place each group in the currently-shorter column (groups are kept
+    // whole, never split across columns).
     for (title, rows) in crate::keymap::cheat_sheet() {
-        let mut section = div().flex().flex_col().gap_1p5().child(
-            div()
-                .text_xs()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.text_faint)
-                .child(title),
-        );
-        for (keys, label) in rows {
-            section = section.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_4()
-                    .child(div().text_sm().text_color(theme.text_muted).child(label))
-                    .child(
-                        div()
-                            .font_family(FONT_MONO)
-                            .text_xs()
-                            .text_color(theme.text)
-                            .px_1p5()
-                            .py_0p5()
-                            .rounded(theme.radius_sm)
-                            .bg(theme.bg_input)
-                            .border_1()
-                            .border_color(theme.border)
-                            .child(keys),
-                    ),
-            );
+        let n = rows.len();
+        let section = shortcuts_section(title, rows, &theme);
+        if rows_a <= rows_b {
+            col_a = col_a.child(section);
+            rows_a += n;
+        } else {
+            col_b = col_b.child(section);
+            rows_b += n;
         }
-        body = body.child(section);
     }
 
     Modal::new("shortcuts")
         .title("Keyboard shortcuts")
-        .width(px(420.))
+        .width(px(620.))
         .on_close(move |_window, cx| {
             view.update(cx, |this, cx| {
                 this.shortcuts_open = false;
                 cx.notify();
             });
         })
-        .child(body)
+        .child(div().flex().gap_8().child(col_a).child(col_b))
+}
+
+/// One titled group of shortcut rows for the cheat-sheet.
+fn shortcuts_section(
+    title: &'static str,
+    rows: Vec<(String, &'static str)>,
+    theme: &Theme,
+) -> impl IntoElement {
+    let mut section = div().flex().flex_col().gap_1p5().child(
+        div()
+            .text_xs()
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(theme.text_faint)
+            .child(title),
+    );
+    for (keys, label) in rows {
+        section = section.child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_4()
+                .child(div().text_sm().text_color(theme.text_muted).child(label))
+                .child(
+                    div()
+                        .font_family(FONT_MONO)
+                        .text_xs()
+                        .text_color(theme.text)
+                        .px_1p5()
+                        .py_0p5()
+                        .rounded(theme.radius_sm)
+                        .bg(theme.bg_input)
+                        .border_1()
+                        .border_color(theme.border)
+                        .child(keys),
+                ),
+        );
+    }
+    section
 }
 
 fn field(

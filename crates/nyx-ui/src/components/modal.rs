@@ -95,7 +95,10 @@ impl RenderOnce for Modal {
                         .hover(|s| s.bg(theme.bg_hover).text_color(theme.text))
                         .child("✕")
                         .when_some(close, |this, close| {
-                            this.on_click(move |_, window, cx| close(window, cx))
+                            // Focusable so Tab reaches it and Enter/Space close.
+                            this.tab_index(0)
+                                .focus(|s| s.bg(theme.bg_hover).text_color(theme.text))
+                                .on_click(move |_, window, cx| close(window, cx))
                         }),
                 )
         });

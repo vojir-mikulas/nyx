@@ -1,7 +1,10 @@
 //! `Button` — the reference component for the variant API. Stateless
 //! [`RenderOnce`]; an id is required so the click handler can be attached.
 
-use gpui::{div, prelude::*, AnyElement, App, ClickEvent, ElementId, Hsla, SharedString, Window};
+use gpui::{
+    div, point, prelude::*, px, AnyElement, App, BoxShadow, ClickEvent, ElementId, FocusHandle,
+    Hsla, SharedString, Window,
+};
 
 use crate::theme::ActiveTheme;
 
@@ -31,6 +34,8 @@ pub struct Button {
     variant: ButtonVariant,
     size: ButtonSize,
     disabled: bool,
+    focusable: bool,
+    focus_handle: Option<FocusHandle>,
     on_click: Option<ClickHandler>,
 }
 
@@ -43,8 +48,27 @@ impl Button {
             variant: ButtonVariant::default(),
             size: ButtonSize::default(),
             disabled: false,
+            // Keyboard-focusable by default so Tab reaches buttons (e.g. modal
+            // footers) and Enter/Space activate them. Opt out for chrome buttons
+            // that should stay out of the tab order.
+            focusable: true,
+            focus_handle: None,
             on_click: None,
         }
+    }
+
+    /// Whether the button participates in keyboard focus / tab order.
+    pub fn focusable(mut self, focusable: bool) -> Self {
+        self.focusable = focusable;
+        self
+    }
+
+    /// Drive the button's focus with a caller-owned handle (so the owner can
+    /// autofocus it, e.g. a modal's primary action). Implies focusable.
+    pub fn focus_handle(mut self, handle: FocusHandle) -> Self {
+        self.focus_handle = Some(handle);
+        self.focusable = true;
+        self
     }
 
     /// Leading icon — any `impl IntoElement`, never an icon enum (domain-free).
@@ -124,11 +148,34 @@ impl RenderOnce for Button {
             .when_some(self.icon, |this, icon| this.child(icon))
             .child(self.label);
 
+        let ring = theme.accent;
+        let glow = theme.accent_ghost;
+
         let interactive = if self.disabled {
             base.opacity(0.5)
         } else {
-            base.cursor_pointer()
-                .hover(move |s| s.bg(hover_bg).border_color(hover_bg))
+            let base = base
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover_bg).border_color(hover_bg));
+            if self.focusable {
+                // GPUI fires `on_click` on Enter/Space when a focusable element is
+                // focused, so the tab stop alone makes the button keyboard-operable.
+                let base = base.tab_index(0).focus(move |s| {
+                    s.border_color(ring).shadow(vec![BoxShadow {
+                        color: glow,
+                        offset: point(px(0.), px(0.)),
+                        blur_radius: px(0.),
+                        spread_radius: px(2.),
+                        inset: false,
+                    }])
+                });
+                match self.focus_handle {
+                    Some(handle) => base.track_focus(&handle),
+                    None => base,
+                }
+            } else {
+                base
+            }
         };
 
         match (self.disabled, self.on_click) {

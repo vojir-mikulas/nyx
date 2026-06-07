@@ -1,12 +1,21 @@
 //! The welcome / connection-manager screen (shown when nothing is open).
 
-use gpui::{div, prelude::*, px, svg, Context, FontWeight};
+use gpui::{actions, div, prelude::*, px, svg, Context, FontWeight};
 use nyx_core::Protocol;
 use nyx_ui::{ActiveTheme, Badge, IconButton, IconButtonSize};
 
 use crate::icon::icon;
 use crate::state::models::{protocol_badge, ConnectionVm};
 use crate::state::AppState;
+
+actions!(
+    nyx_welcome,
+    [
+        /// Activate the focused welcome-list row (open the connection, or create
+        /// a new one for the New button).
+        ActivateRow,
+    ]
+);
 
 /// Render the welcome screen.
 pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
@@ -15,19 +24,14 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
     let cards = state
         .connections
         .iter()
-        .map(|conn| card(conn, cx))
+        .map(|conn| card(state, conn, cx))
         .collect::<Vec<_>>();
     let recents = state
         .recent_connections()
         .into_iter()
         .take(3)
-        .map(|conn| recent_row(conn, cx))
+        .map(|conn| recent_row(state, conn, cx))
         .collect::<Vec<_>>();
-
-    let new_conn = cx.listener(|this, _, _, cx| {
-        this.open_editor_create(cx);
-        cx.notify();
-    });
 
     div()
         .id("welcome")
@@ -63,7 +67,7 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                 )
                 .child(section_label("Saved connections", cx))
                 .child(div().flex().flex_col().gap_1p5().children(cards))
-                .child(new_button(new_conn, cx))
+                .child(new_button(state, cx))
                 .when(!recents.is_empty(), |this| {
                     this.child(section_label("Recent", cx))
                         .child(div().flex().flex_col().gap_1p5().children(recents))
@@ -100,9 +104,14 @@ fn section_label(label: &'static str, cx: &Context<AppState>) -> impl IntoElemen
         .child(div().flex_1().h(px(1.)).bg(theme.border_soft))
 }
 
-fn card(conn: &ConnectionVm, cx: &mut Context<AppState>) -> impl IntoElement {
+fn card(state: &AppState, conn: &ConnectionVm, cx: &mut Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
     let id = conn.profile.id.clone();
+    // Out of the tab ring while a modal is open, so focus stays trapped in it.
+    let focus = (!state.has_overlay())
+        .then(|| state.row_focus(&format!("card:{id}")))
+        .flatten();
+    let activate_id = id.clone();
     let (badge_variant, badge_label) = protocol_badge(conn.profile.protocol);
     let glyph = if conn.profile.protocol == Protocol::Sftp {
         "server"
@@ -140,6 +149,15 @@ fn card(conn: &ConnectionVm, cx: &mut Context<AppState>) -> impl IntoElement {
         .border_color(theme.border)
         .cursor_pointer()
         .hover(|s| s.border_color(theme.border_strong).bg(theme.bg_active))
+        .when_some(focus, |this, handle| {
+            this.track_focus(&handle)
+                .key_context("ConnRow")
+                .focus(|s| s.border_color(theme.accent))
+                .on_action(cx.listener(move |this, _: &ActivateRow, _, cx| {
+                    this.open_connection(&activate_id, cx);
+                    cx.notify();
+                }))
+        })
         .child(
             div()
                 .flex()
@@ -249,9 +267,17 @@ fn card(conn: &ConnectionVm, cx: &mut Context<AppState>) -> impl IntoElement {
         )
 }
 
-fn recent_row(conn: &ConnectionVm, cx: &mut Context<AppState>) -> impl IntoElement {
+fn recent_row(
+    state: &AppState,
+    conn: &ConnectionVm,
+    cx: &mut Context<AppState>,
+) -> impl IntoElement {
     let theme = cx.theme().clone();
     let id = conn.profile.id.clone();
+    let focus = (!state.has_overlay())
+        .then(|| state.row_focus(&format!("recent:{id}")))
+        .flatten();
+    let activate_id = id.clone();
     div()
         .id(gpui::SharedString::from(format!("wm-rc-{id}")))
         .flex()
@@ -265,6 +291,15 @@ fn recent_row(conn: &ConnectionVm, cx: &mut Context<AppState>) -> impl IntoEleme
         .border_color(theme.border)
         .cursor_pointer()
         .hover(|s| s.border_color(theme.border_strong).bg(theme.bg_active))
+        .when_some(focus, |this, handle| {
+            this.track_focus(&handle)
+                .key_context("ConnRow")
+                .focus(|s| s.border_color(theme.accent))
+                .on_action(cx.listener(move |this, _: &ActivateRow, _, cx| {
+                    this.open_connection(&activate_id, cx);
+                    cx.notify();
+                }))
+        })
         .child(
             div()
                 .flex()
@@ -301,11 +336,11 @@ fn recent_row(conn: &ConnectionVm, cx: &mut Context<AppState>) -> impl IntoEleme
         }))
 }
 
-fn new_button(
-    handler: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
-    cx: &Context<AppState>,
-) -> impl IntoElement {
+fn new_button(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
+    let focus = (!state.has_overlay())
+        .then(|| state.row_focus("new"))
+        .flatten();
     div()
         .id("wm-new")
         .flex()
@@ -327,6 +362,15 @@ fn new_button(
                 .text_color(theme.text)
                 .bg(theme.accent_ghost)
         })
+        .when_some(focus, |this, handle| {
+            this.track_focus(&handle)
+                .key_context("ConnRow")
+                .focus(|s| s.border_color(theme.accent))
+                .on_action(cx.listener(|this, _: &ActivateRow, _, cx| {
+                    this.open_editor_create(cx);
+                    cx.notify();
+                }))
+        })
         .child(icon("plus", 15., theme.text_muted))
         .child("New connection")
         .child(
@@ -342,5 +386,8 @@ fn new_button(
                 .font_family(crate::assets::FONT_MONO)
                 .child("⌘N"),
         )
-        .on_click(handler)
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.open_editor_create(cx);
+            cx.notify();
+        }))
 }

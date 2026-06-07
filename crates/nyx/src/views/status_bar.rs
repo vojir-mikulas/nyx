@@ -81,6 +81,7 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                             cx.notify();
                         })),
                 )
+                .child(shortcuts_item(cx))
                 .child(
                     item(cx)
                         .id("sb-settings")
@@ -99,6 +100,7 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
     )
     .child(div().flex_1())
     .child(item(cx).font_family(mono).child("Nyx 0.1.0"))
+    .child(shortcuts_item(cx))
     .child(
         item(cx)
             .id("sb-settings")
@@ -107,6 +109,20 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
             .child(icon("settings", 12., theme.text_faint))
             .on_click(toggle_settings),
     )
+}
+
+/// The "?" status-bar button that opens the keyboard-shortcuts cheat-sheet.
+fn shortcuts_item(cx: &mut Context<AppState>) -> gpui::Stateful<gpui::Div> {
+    let theme = cx.theme().clone();
+    item(cx)
+        .id("sb-shortcuts")
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.bg_hover).text_color(theme.text_muted))
+        .child("?")
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.toggle_shortcuts();
+            cx.notify();
+        }))
 }
 
 fn item(_cx: &Context<AppState>) -> gpui::Div {
