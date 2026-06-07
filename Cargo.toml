@@ -13,10 +13,13 @@ authors = ["vojir-mikulas <vojir.mikulas@gmail.com>"]
 [workspace.dependencies]
 # --- GPUI (pinned to a specific Zed revision for reproducible builds) ---
 # At this rev GPUI is split: `gpui` (core) + `gpui_platform` (`application()`,
-# platform dispatch) + `gpui_macros` (transitive). On macOS we enable `font-kit`
-# and deliberately leave the Linux-only `x11`/`wayland` features OFF.
-gpui = { git = "https://github.com/zed-industries/zed", rev = "137e677a0561eb7284cfad1bedccea70155e2473", default-features = false, features = ["font-kit"] }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "137e677a0561eb7284cfad1bedccea70155e2473", default-features = false, features = ["font-kit"] }
+# platform dispatch) + `gpui_macros` (transitive). Platform features are NOT set
+# here: Cargo features are additive, so a per-OS choice (`font-kit` on macOS;
+# `gpui_platform` auto-selects the D3D/DirectWrite backend on Windows via its own
+# target deps) must live in the *consuming* crates, not in this shared dep. We
+# also deliberately leave the Linux-only `x11`/`wayland` features OFF.
+gpui = { git = "https://github.com/zed-industries/zed", rev = "137e677a0561eb7284cfad1bedccea70155e2473", default-features = false }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "137e677a0561eb7284cfad1bedccea70155e2473", default-features = false }
 
 # --- Async / backend ---
 tokio = { version = "1", default-features = false }

@@ -29,3 +29,19 @@ futures.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender.workspace = true
+
+# macOS uses font-kit (CoreText) for font loading; Windows renders via GPUI's
+# DirectWrite backend, which `gpui_platform` selects automatically by target and
+# needs no extra feature here. Features are additive, so this only adds to the
+# base (feature-less) workspace deps above.
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui = { workspace = true, features = ["font-kit"] }
+gpui_platform = { workspace = true, features = ["font-kit"] }
+
+# Windows: embed the exe icon + version metadata at build time (see build.rs).
+# Host-gated, not target-gated: the build script runs on the host, and the
+# release exe is produced by a native Windows runner (host == target).
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+ico = "0.4"
+image = { version = "0.25", default-features = false, features = ["png"] }

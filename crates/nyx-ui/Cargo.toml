@@ -15,10 +15,18 @@ gpui.workspace = true
 # Grapheme-aware cursor movement in TextInput (same crate GPUI's text uses).
 unicode-segmentation = "1"
 
+# macOS font loading goes through font-kit; other targets use GPUI's own backend.
+# Selected per-OS because Cargo features are additive (see root Cargo.toml).
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui = { workspace = true, features = ["font-kit"] }
+
 # Dev-only: the gallery example needs `application()` to open a window. This is a
 # dev-dependency, so the *library* still depends on `gpui` alone.
 [dev-dependencies]
 gpui_platform.workspace = true
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+gpui_platform = { workspace = true, features = ["font-kit"] }
 
 [[example]]
 name = "gallery"

@@ -10,6 +10,15 @@ authors.workspace = true
 
 [dependencies]
 nyx-core.workspace = true
-# Platform-native keychain backend. macOS uses `apple-native`; a Linux build
-# later swaps this for `sync-secret-service` (a one-line change, see plan D3).
+
+# Platform-native keychain backend, selected per-OS. Cargo features are additive,
+# so the backend feature must be chosen here per target (not in the workspace dep
+# where it would leak to every platform). The public API is backend-agnostic
+# (`keyring::Entry` is identical across backends), so call sites are unaffected.
+# macOS → Keychain; Windows → Credential Manager; Linux later → Secret Service
+# (`sync-secret-service`, see plan D3).
+[target.'cfg(target_os = "macos")'.dependencies]
 keyring = { workspace = true, features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { workspace = true, features = ["windows-native"] }

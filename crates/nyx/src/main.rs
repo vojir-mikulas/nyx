@@ -32,13 +32,7 @@ fn main() {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(gpui::size(gpui::px(720.), gpui::px(480.))),
-                // Seamless titlebar: hide the native bar, inset the macOS traffic
-                // lights into the top-left strip.
-                titlebar: Some(TitlebarOptions {
-                    title: None,
-                    appears_transparent: true,
-                    traffic_light_position: Some(gpui::point(gpui::px(13.), gpui::px(13.))),
-                }),
+                titlebar: Some(titlebar_options()),
                 ..Default::default()
             },
             |_, cx| cx.new(AppState::new),
@@ -55,6 +49,29 @@ fn main() {
 
         cx.activate(true);
     });
+}
+
+/// macOS: seamless titlebar — hide the native bar and inset the traffic lights
+/// into our top-left strip (the sidebar header doubles as the drag region).
+#[cfg(target_os = "macos")]
+fn titlebar_options() -> TitlebarOptions {
+    TitlebarOptions {
+        title: None,
+        appears_transparent: true,
+        traffic_light_position: Some(gpui::point(gpui::px(13.), gpui::px(13.))),
+    }
+}
+
+/// Non-macOS (Windows): keep the native caption bar so min/max/close work out of
+/// the box. `traffic_light_position` is macOS-only and ignored here. The seamless
+/// client-side-decoration polish can come after first launch.
+#[cfg(not(target_os = "macos"))]
+fn titlebar_options() -> TitlebarOptions {
+    TitlebarOptions {
+        title: Some("Nyx".into()),
+        appears_transparent: false,
+        traffic_light_position: None,
+    }
 }
 
 /// Must outlive every log call: dropping the guard flushes and stops the
