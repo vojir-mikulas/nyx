@@ -76,4 +76,9 @@ Outputs land under `target/macos/` (gitignored): `Nyx.app` and
 
 ## License
 
-[Apache-2.0](LICENSE) © 2026 vojir-mikulas
+[GPL-3.0-or-later](LICENSE) © 2026 vojir-mikulas
+
+Nyx builds on [GPUI](https://github.com/zed-industries/zed) (Apache-2.0), whose
+dependency tree includes GPL-3.0-or-later utility crates from the Zed repo
+(`zlog`, `ztracing`). The distributed Nyx binary is therefore licensed under the
+GPL-3.0-or-later; see [`NOTICE`](NOTICE) for the third-party attributions.

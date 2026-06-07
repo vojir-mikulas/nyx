@@ -20,7 +20,8 @@ Claude Design prototype in HTML/CSS/React — reference only, not shipped code).
   from domain logic.
 - **Own our UI layer.** A house-built component library (`nyx-ui`, later
   extracted as **Flint**) on top of raw GPUI — no third-party widget dependency.
-- **Open-source**, Apache-2.0, owner `vojir-mikulas`.
+- **Open-source**, GPL-3.0-or-later (GPUI's tree links GPL-3.0 crates from the
+  Zed repo — see [`../NOTICE`](../NOTICE)), owner `vojir-mikulas`.
 - **Performance & simplicity** as first principles.
 
 ## Tech stack
@@ -35,7 +36,7 @@ Claude Design prototype in HTML/CSS/React — reference only, not shipped code).
 | FTP / FTPS | `suppaftp` (Tokio) + `tokio-rustls` (ring) | FTPS cert trust via TOFU (`webpki-roots`, `sha2`) |
 | Credentials | OS keychain (`keyring` crate) | never logged, never in profile files |
 | Profiles | local persisted store | shareable with future apps |
-| License | Apache-2.0 | |
+| License | GPL-3.0-or-later | forced by GPL-3.0 crates in GPUI's tree; see `NOTICE` |
 
 ## Architecture at a glance
 

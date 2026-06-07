@@ -16,9 +16,14 @@ ignore = [
 ]
 
 [licenses]
-# Permissive licenses only — anything not listed (or excepted below) fails the
-# build, so a copyleft dep sneaking in is caught.
+# Nyx is licensed GPL-3.0-or-later (see LICENSE / NOTICE): GPUI's tree pulls in
+# GPL-3.0-or-later utility crates from the Zed repo (zlog, ztracing,
+# ztracing_macro via sum_tree), and Nyx's own crates inherit that license to
+# match. Everything else is the permissive set GPUI + the dependency graph use.
+# Anything NOT listed (a stricter copyleft like AGPL, an unknown license) still
+# fails the build.
 allow = [
+    "GPL-3.0-or-later",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "MIT",
@@ -36,23 +41,6 @@ allow = [
     "OpenSSL",
 ]
 confidence-threshold = 0.8
-
-# KNOWN GPL EXPOSURE — scoped to exactly the crates GPUI pulls from the Zed
-# monorepo (gpui → sum_tree → ztracing → zlog). These are GPL-3.0-or-later, which
-# is *not* the "GPUI is Apache-2.0, only the editor is GPL" story. The exception is
-# narrow on purpose: any NEW GPL crate still fails CI. This needs a real licensing
-# decision before public release — see docs/plans/code-review-hardening.md.
-[[licenses.exceptions]]
-name = "zlog"
-allow = ["GPL-3.0-or-later"]
-
-[[licenses.exceptions]]
-name = "ztracing"
-allow = ["GPL-3.0-or-later"]
-
-[[licenses.exceptions]]
-name = "ztracing_macro"
-allow = ["GPL-3.0-or-later"]
 
 [bans]
 # Duplicate versions are unavoidable in a large git dep tree — warn, don't fail.

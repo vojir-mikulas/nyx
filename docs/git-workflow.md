@@ -70,7 +70,7 @@ The community-standard set, kept light for a small project:
 | File | Purpose |
 |---|---|
 | `README.md` | Pitch + install/build/run. Keep commands in sync with `CLAUDE.md`. |
-| `LICENSE` | Apache-2.0 (or dual MIT OR Apache-2.0 — the Rust norm). |
+| `LICENSE` | GPL-3.0-or-later (forced by GPL-3.0 crates in GPUI's dep tree; see `NOTICE`). |
 | `CONTRIBUTING.md` | How to build, test, and submit a PR. Links here. |
 | `CODE_OF_CONDUCT.md` | Contributor Covenant. |
 | `CHANGELOG.md` | Keep a Changelog, or `git-cliff`-generated. |
