@@ -113,19 +113,20 @@ impl DragDownloads {
     }
 }
 
-/// The [`DragFetch`] that streams a dragged-out file through the download queue.
+/// The [`DragFetch`] that streams a dragged-out file or folder through the
+/// download queue.
 pub struct ServiceDragFetch {
     commands: CommandSender,
     downloads: DragDownloads,
-    /// File name → its remote source path, for this drag.
-    remotes: HashMap<String, RemotePath>,
+    /// File name → `(remote source path, is_dir)`, for this drag.
+    remotes: HashMap<String, (RemotePath, bool)>,
 }
 
 impl ServiceDragFetch {
     pub fn new(
         commands: CommandSender,
         downloads: DragDownloads,
-        remotes: HashMap<String, RemotePath>,
+        remotes: HashMap<String, (RemotePath, bool)>,
     ) -> Self {
         Self {
             commands,
@@ -137,7 +138,7 @@ impl ServiceDragFetch {
 
 impl DragFetch for ServiceDragFetch {
     fn fetch(&self, file: &DragFile, dest: &Path) -> Result<(), DragError> {
-        let remote = self
+        let (remote, is_dir) = self
             .remotes
             .get(&file.name)
             .ok_or_else(|| DragError::fetch(format!("no remote source for “{}”", file.name)))?
@@ -147,6 +148,7 @@ impl DragFetch for ServiceDragFetch {
         if !self.commands.send(Command::Download {
             remote,
             local: dest.to_path_buf(),
+            is_dir,
         }) {
             self.downloads.unregister(&key);
             return Err(DragError::fetch("backend unavailable"));

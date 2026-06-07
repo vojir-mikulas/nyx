@@ -409,13 +409,10 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
         .filter(|(_, r)| r.is_dir)
         .map(|(ix, _)| ix)
         .collect();
-    // File rows can be dragged out to the OS file manager (download on drop).
-    let file_rows: std::collections::HashSet<usize> = rows
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| !r.is_dir)
-        .map(|(ix, _)| ix)
-        .collect();
+    // Every row (file or folder) can be dragged out to the OS file manager; a
+    // folder drops as a recursive download. Symlink rows are draggable too but
+    // `start_drag_out` no-ops on them.
+    let draggable_rows: std::collections::HashSet<usize> = (0..rows.len()).collect();
     let view = cx.entity();
 
     let body: gpui::AnyElement = if is_empty {
@@ -458,7 +455,13 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                         let additive = mods.platform || mods.control;
                         let name = row.name.clone();
                         view.update(cx, |this, cx| {
-                            this.select(name, additive);
+                            // Shift-click extends a range from the anchor; cmd/ctrl
+                            // toggles; a plain click replaces.
+                            if mods.shift {
+                                this.select_range(name, cx);
+                            } else {
+                                this.select(name, additive);
+                            }
                             cx.notify();
                         });
                     }
@@ -470,9 +473,8 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                 move |ix, pos, _window, cx| {
                     if let Some(row) = rows.get(ix) {
                         let name = row.name.clone();
-                        let is_dir = row.is_dir;
                         view.update(cx, |this, cx| {
-                            this.open_file_menu(name, is_dir, pos);
+                            this.open_file_menu(name, pos);
                             cx.notify();
                         });
                     }
@@ -493,7 +495,7 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                     }
                 }
             })
-            .draggable_rows(file_rows)
+            .draggable_rows(draggable_rows)
             .on_row_drag_out({
                 let view = view.clone();
                 let rows = rows_for_dragout;

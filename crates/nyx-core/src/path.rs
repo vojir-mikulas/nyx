@@ -100,6 +100,17 @@ impl RemotePath {
     pub fn is_root(&self) -> bool {
         self.0 == "/"
     }
+
+    /// Whether `self` is `base` itself or a descendant of it, comparing whole
+    /// path components (so `/a/b` is within `/a` but `/ab` is not). The root
+    /// contains everything. Used by the transfer path-lock to make a directory
+    /// transfer cover its subtree.
+    pub fn is_within(&self, base: &RemotePath) -> bool {
+        if base.is_root() {
+            return true;
+        }
+        self.0 == base.0 || self.0.starts_with(&format!("{}/", base.0))
+    }
 }
 
 /// Normalize a path's structure: collapse repeated slashes, drop `.`, resolve
@@ -230,6 +241,19 @@ mod tests {
         let p = RemotePath::new("/var/www/html");
         let comps: Vec<&str> = p.components().collect();
         assert_eq!(comps, vec!["var", "www", "html"]);
+    }
+
+    #[test]
+    fn is_within_compares_whole_components() {
+        let base = RemotePath::new("/a/b");
+        assert!(RemotePath::new("/a/b").is_within(&base)); // self
+        assert!(RemotePath::new("/a/b/c").is_within(&base)); // descendant
+        assert!(RemotePath::new("/a/b/c/d").is_within(&base)); // deep descendant
+        assert!(!RemotePath::new("/a").is_within(&base)); // ancestor
+        assert!(!RemotePath::new("/a/bc").is_within(&base)); // sibling prefix
+        assert!(!RemotePath::new("/x").is_within(&base)); // unrelated
+                                                          // The root contains everything.
+        assert!(RemotePath::new("/a/b").is_within(&RemotePath::root()));
     }
 
     #[test]

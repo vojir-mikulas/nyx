@@ -274,9 +274,20 @@ fn host_key_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElem
     let theme = cx.theme().clone();
     let view = cx.entity();
     let prompt = state.host_key_prompt.as_ref().expect("host-key prompt set");
+    let (title, saved_to) = if matches!(prompt.kind, nyx_core::ServerTrustKind::Certificate) {
+        (
+            "Verify certificate",
+            "Trust this certificate and continue? It will be saved to known_certs.",
+        )
+    } else {
+        (
+            "Verify host key",
+            "Trust this key and continue? It will be saved to known_hosts.",
+        )
+    };
 
     Modal::new("host-key")
-        .title("Verify host key")
+        .title(title)
         .width(px(470.))
         .on_close({
             // Dismissing the prompt is a rejection.
@@ -309,12 +320,7 @@ fn host_key_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElem
                         .text_color(theme.text)
                         .child(prompt.fingerprint.clone()),
                 )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.text_faint)
-                        .child("Trust this key and continue? It will be saved to known_hosts."),
-                ),
+                .child(div().text_xs().text_color(theme.text_faint).child(saved_to)),
         )
         .footer(
             div()
@@ -361,13 +367,19 @@ fn collision_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoEle
         TransferDirection::Upload => "remote",
         TransferDirection::Download => "local",
     };
+    let noun = if info.is_dir { "folder" } else { "file" };
     let size_label = info
         .existing_size
         .map(|n| format!("Existing {side} file · {}", fmt_size(n)))
-        .unwrap_or_else(|| format!("Existing {side} file"));
+        .unwrap_or_else(|| format!("Existing {side} {noun}"));
+    let title = if info.is_dir {
+        "Folder already exists"
+    } else {
+        "File already exists"
+    };
 
     Modal::new("collision")
-        .title("File already exists")
+        .title(title)
         .width(px(460.))
         .on_close({
             // Dismissing the prompt skips this transfer (never overwrites).
@@ -460,12 +472,17 @@ fn collision_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoEle
                         })),
                 )
                 .child(
-                    Button::new("collision-overwrite", "Overwrite")
-                        .variant(ButtonVariant::Danger)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.resolve_collision(CollisionChoice::Overwrite, cx);
-                            cx.notify();
-                        })),
+                    // A folder merges into the existing tree (overwriting clashing
+                    // files); a file is overwritten outright.
+                    Button::new(
+                        "collision-overwrite",
+                        if info.is_dir { "Merge" } else { "Overwrite" },
+                    )
+                    .variant(ButtonVariant::Danger)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.resolve_collision(CollisionChoice::Overwrite, cx);
+                        cx.notify();
+                    })),
                 ),
         )
 }
@@ -577,17 +594,15 @@ fn row_context_menu(state: &AppState, cx: &mut Context<AppState>) -> impl IntoEl
 fn file_context_menu(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let menu = state.file_menu.as_ref().expect("file menu set");
     let position = menu.position;
-    // Directory download is not yet supported: disable Download on a folder row.
-    let download_disabled = menu.is_dir;
 
     let surface = ContextMenu::new("file-ctx")
         .item(
-            ContextMenuItem::new("file-download", "Download")
-                .disabled(download_disabled)
-                .on_click(cx.listener(|this, _, _, cx| {
+            ContextMenuItem::new("file-download", "Download").on_click(cx.listener(
+                |this, _, _, cx| {
                     this.download_selection(cx);
                     cx.notify();
-                })),
+                },
+            )),
         )
         .item(
             ContextMenuItem::new("file-rename", "Rename").on_click(cx.listener(

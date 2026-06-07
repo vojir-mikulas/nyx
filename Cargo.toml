@@ -34,6 +34,20 @@ futures = { version = "0.3", default-features = false, features = ["std"] }
 russh = "0.61"
 russh-sftp = "2.3"
 
+# --- FTP / FTPS ---
+# `suppaftp` is the FTP client (tokio backend); FTPS rides tokio-rustls (ring).
+# `deprecated` enables implicit-FTPS connect. It re-exports `tokio_rustls` (and
+# thus `rustls` 0.23) so our cert verifier links the exact same TLS types.
+suppaftp = { version = "8", default-features = false, features = [
+    "tokio",
+    "tokio-rustls-ring",
+    "deprecated",
+] }
+# Mozilla root store (pure data) so a normal CA-valid FTPS chain needs no prompt.
+webpki-roots = "0.26"
+# Leaf-certificate SHA-256 fingerprints for the FTPS trust-on-first-use store.
+sha2 = "0.10"
+
 # --- Serialization ---
 serde = { version = "1", features = ["derive"] }
 # Profile store on-disk format (a single `profiles.toml` table-array).

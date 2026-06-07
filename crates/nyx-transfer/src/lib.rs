@@ -23,10 +23,12 @@
 //! every terminal transition (finish / cancel / skip / failed). Richer per-path
 //! queueing (auto-serialize same-path ops instead of rejecting) is deferred.
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::collections::{HashMap, VecDeque};
+use std::path::{Path, PathBuf};
 
-use nyx_core::{CollisionChoice, RemotePath, TransferDirection, TransferId, TransferProgress};
+use nyx_core::{
+    CollisionChoice, RemotePath, TransferDirection, TransferId, TransferKind, TransferProgress,
+};
 
 /// A `submit` (or a mutating op against a locked path) was rejected because the
 /// path already has a live transfer. See the crate-level path-lock policy.
@@ -38,6 +40,9 @@ pub struct PathInUse;
 pub struct TransferSpec {
     /// Upload or download.
     pub direction: TransferDirection,
+    /// A single file or a whole directory tree. A `Dir` lock covers the root and
+    /// every path beneath it (the path-lock policy).
+    pub kind: TransferKind,
     /// The remote-side path.
     pub remote: RemotePath,
     /// The local-side path.
@@ -100,14 +105,36 @@ pub struct TransferQueue {
     /// Transfers parked at the pre-flight gate, awaiting a collision decision.
     /// A parked item holds no running slot.
     awaiting: HashMap<TransferId, TransferSpec>,
-    /// Remote paths with a live transfer (the path-lock guard).
-    locked_remote: HashSet<RemotePath>,
-    /// Local paths with a live transfer (the path-lock guard).
-    locked_local: HashSet<PathBuf>,
-    /// Per-transfer record of the paths it locked, so a terminal transition can
-    /// release exactly those (and never another transfer's identical-looking
-    /// path — submit guarantees one live transfer per path).
-    locks: HashMap<TransferId, (RemotePath, PathBuf)>,
+    /// Per-transfer record of the paths it locked (and the kind, which decides
+    /// whether the lock covers a subtree), so a terminal transition releases
+    /// exactly those. The conflict checks iterate these directly.
+    locks: HashMap<TransferId, LockEntry>,
+}
+
+/// One live transfer's path lock. A `Dir` lock covers its root **and every
+/// descendant**; a `File` lock is the exact path only.
+struct LockEntry {
+    remote: RemotePath,
+    local: PathBuf,
+    kind: TransferKind,
+}
+
+/// Whether the set an owner of `kind` rooted at `owner` covers includes `query`:
+/// a directory owner covers its whole subtree, a file owner only its exact path.
+fn remote_covers(owner: &RemotePath, kind: TransferKind, query: &RemotePath) -> bool {
+    match kind {
+        TransferKind::Dir => query.is_within(owner),
+        TransferKind::File => query == owner,
+    }
+}
+
+/// Local-side counterpart of [`remote_covers`] (`Path::starts_with` compares
+/// whole components).
+fn local_covers(owner: &Path, kind: TransferKind, query: &Path) -> bool {
+    match kind {
+        TransferKind::Dir => query.starts_with(owner),
+        TransferKind::File => query == owner,
+    }
 }
 
 impl TransferQueue {
@@ -119,8 +146,6 @@ impl TransferQueue {
             queued: VecDeque::new(),
             running: HashMap::new(),
             awaiting: HashMap::new(),
-            locked_remote: HashSet::new(),
-            locked_local: HashSet::new(),
             locks: HashMap::new(),
         }
     }
@@ -129,7 +154,7 @@ impl TransferQueue {
     /// the new id — unless the remote or local path already has a live transfer,
     /// in which case it is **rejected** with [`PathInUse`] (the path-lock policy).
     pub fn submit(&mut self, spec: TransferSpec) -> Result<TransferId, PathInUse> {
-        if self.locked_remote.contains(&spec.remote) || self.locked_local.contains(&spec.local) {
+        if self.path_conflict(&spec) {
             return Err(PathInUse);
         }
         let id = TransferId(self.next_id);
@@ -139,27 +164,49 @@ impl TransferQueue {
         Ok(id)
     }
 
+    /// Whether `spec`'s remote or local path overlaps any live transfer's locked
+    /// set. Two transfers conflict when either's path falls inside the other's
+    /// covered set, so a directory transfer blocks (and is blocked by) anything
+    /// in its subtree, not just its exact root.
+    fn path_conflict(&self, spec: &TransferSpec) -> bool {
+        self.locks.values().any(|lock| {
+            remote_covers(&lock.remote, lock.kind, &spec.remote)
+                || remote_covers(&spec.remote, spec.kind, &lock.remote)
+                || local_covers(&lock.local, lock.kind, &spec.local)
+                || local_covers(&spec.local, spec.kind, &lock.local)
+        })
+    }
+
     /// Whether a remote path currently has a live transfer — the service checks
     /// this to reject a mutating op (`Remove` / `Rename`) that would race a copy.
+    ///
+    /// `path` is treated as covering its own subtree (a `Remove`/`Rename` of a
+    /// directory disturbs every transfer beneath it), and a live **dir** lock
+    /// covers its descendants — so deleting a child of a folder being downloaded,
+    /// or an ancestor of a file being transferred, is both caught.
     pub fn is_remote_locked(&self, path: &RemotePath) -> bool {
-        self.locked_remote.contains(path)
+        self.locks.values().any(|lock| {
+            remote_covers(&lock.remote, lock.kind, path)
+                || remote_covers(path, TransferKind::Dir, &lock.remote)
+        })
     }
 
     /// Record `spec`'s path locks for `id`.
     fn lock(&mut self, id: TransferId, spec: &TransferSpec) {
-        self.locked_remote.insert(spec.remote.clone());
-        self.locked_local.insert(spec.local.clone());
-        self.locks
-            .insert(id, (spec.remote.clone(), spec.local.clone()));
+        self.locks.insert(
+            id,
+            LockEntry {
+                remote: spec.remote.clone(),
+                local: spec.local.clone(),
+                kind: spec.kind,
+            },
+        );
     }
 
     /// Release `id`'s path locks (a no-op if it held none). Called from every
     /// terminal transition so a path can never leak a permanent lock.
     fn release(&mut self, id: TransferId) {
-        if let Some((remote, local)) = self.locks.remove(&id) {
-            self.locked_remote.remove(&remote);
-            self.locked_local.remove(&local);
-        }
+        self.locks.remove(&id);
     }
 
     /// If a slot is free and a transfer is queued, promote the oldest one into a
@@ -318,8 +365,20 @@ mod tests {
     fn spec(n: u64) -> TransferSpec {
         TransferSpec {
             direction: TransferDirection::Download,
+            kind: TransferKind::File,
             remote: RemotePath::new(format!("/r/{n}")),
             local: PathBuf::from(format!("/l/{n}")),
+            on_collision: None,
+        }
+    }
+
+    /// A directory transfer rooted at `remote` / `local`.
+    fn dir_spec(remote: &str, local: &str) -> TransferSpec {
+        TransferSpec {
+            direction: TransferDirection::Download,
+            kind: TransferKind::Dir,
+            remote: RemotePath::new(remote),
+            local: PathBuf::from(local),
             on_collision: None,
         }
     }
@@ -553,6 +612,58 @@ mod tests {
             ..spec(0)
         };
         assert_eq!(q.submit(same_local), Err(PathInUse));
+    }
+
+    #[test]
+    fn dir_lock_covers_descendants_but_not_siblings() {
+        let mut q = TransferQueue::new(2);
+        // A folder download locks /r/dir (and its whole subtree).
+        q.submit(dir_spec("/r/dir", "/l/dir")).unwrap();
+
+        // A Remove/Rename of a child is blocked; the root itself is blocked…
+        assert!(q.is_remote_locked(&RemotePath::new("/r/dir")));
+        assert!(q.is_remote_locked(&RemotePath::new("/r/dir/child.txt")));
+        assert!(q.is_remote_locked(&RemotePath::new("/r/dir/sub/deep")));
+        // …a sibling is not, and a same-prefix-but-different name is not.
+        assert!(!q.is_remote_locked(&RemotePath::new("/r/other")));
+        assert!(!q.is_remote_locked(&RemotePath::new("/r/dirx")));
+    }
+
+    #[test]
+    fn removing_an_ancestor_of_a_file_transfer_is_blocked() {
+        // A plain file transfer on /r/a/b/c.txt must block a delete of /r/a/b.
+        let mut q = TransferQueue::new(2);
+        q.submit(TransferSpec {
+            remote: RemotePath::new("/r/a/b/c.txt"),
+            ..spec(0)
+        })
+        .unwrap();
+        assert!(q.is_remote_locked(&RemotePath::new("/r/a/b")));
+        assert!(q.is_remote_locked(&RemotePath::new("/r/a/b/c.txt")));
+        // A sibling file under the same parent is free.
+        assert!(!q.is_remote_locked(&RemotePath::new("/r/a/b/d.txt")));
+    }
+
+    #[test]
+    fn submitting_into_a_locked_dir_subtree_is_rejected() {
+        let mut q = TransferQueue::new(3);
+        q.submit(dir_spec("/r/dir", "/l/dir")).unwrap();
+        // A file transfer whose remote falls under the locked dir conflicts…
+        let inside = TransferSpec {
+            remote: RemotePath::new("/r/dir/file.txt"),
+            local: PathBuf::from("/l/elsewhere"),
+            ..spec(0)
+        };
+        assert_eq!(q.submit(inside), Err(PathInUse));
+        // …and a local destination under the locked local root also conflicts.
+        let inside_local = TransferSpec {
+            remote: RemotePath::new("/r/elsewhere"),
+            local: PathBuf::from("/l/dir/file.txt"),
+            ..spec(0)
+        };
+        assert_eq!(q.submit(inside_local), Err(PathInUse));
+        // A fully independent path is fine.
+        assert!(q.submit(spec(9)).is_ok());
     }
 
     #[test]

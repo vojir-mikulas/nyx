@@ -28,6 +28,28 @@ Sequenced implementation plans live in [`plans/`](plans/).
   controls: consolidate bindings into one keymap with a clean `key_context`
   hierarchy, add global shortcuts, modal Esc/Enter, richer browser navigation,
   and a shortcuts cheat-sheet.
+- [`plans/folder-transfers.md`](plans/folder-transfers.md) — recursive folder
+  download/upload, drag folders in and out, and multi-file selection: make a
+  directory a first-class aggregate transfer that reuses the queue, progress
+  dock, collision gate and path-locking. Extends `drag-out-to-desktop.md`.
+- [`plans/ftp-ftps.md`](plans/ftp-ftps.md) — **done.** Added **FTP** and **FTPS**
+  behind the existing `RemoteClient` trait: a protocol factory keyed on
+  `profile.protocol`, a plain-FTP client and an FTPS client (explicit/implicit
+  TLS) with TLS-cert TOFU trust, plus editor wiring. Phase 5 polish
+  (anonymous login, server-quirk hardening) is the remaining tail.
+- [`plans/auto-reconnect-resume.md`](plans/auto-reconnect-resume.md) — the
+  deferred half of T2.2: **auto-reconnect** with backoff, and **transfer resume**
+  from an offset after a drop. Detection + manual reconnect already ship.
+- [`plans/per-file-error-surfacing.md`](plans/per-file-error-surfacing.md) —
+  surface **which** entries failed/were skipped in a folder transfer, and **why**,
+  not just an aggregate count. Extends folder-transfers Phase 6.
+- [`plans/cancel-partial-tree-safety.md`](plans/cancel-partial-tree-safety.md) —
+  make a cancelled/failed transfer leave a predictable destination: atomic
+  temp-then-rename for files, honest "partial" state for folders, never destroy a
+  merge target. Formalizes the deferred folder-transfers cancel risk.
+- [`plans/windows-drag-out.md`](plans/windows-drag-out.md) — **backlog.** Windows
+  drag-out parity (COM `IDataObject` delayed rendering) — the unbuilt Phase 3 of
+  `drag-out-to-desktop.md`. Pure additive `nyx-drag` module; no app-code changes.
 
 ## Visual reference
 

@@ -34,6 +34,10 @@ pub struct DragFile {
     pub name: String,
     /// The file's size in bytes, if known.
     pub size: Option<u64>,
+    /// Whether this promise is a directory: the platform advertises a folder type
+    /// so the OS creates a directory at the drop URL for [`DragFetch::fetch`] to
+    /// fill recursively.
+    pub is_dir: bool,
 }
 
 impl DragFile {
@@ -42,6 +46,7 @@ impl DragFile {
         Self {
             name: name.into(),
             size: None,
+            is_dir: false,
         }
     }
 }

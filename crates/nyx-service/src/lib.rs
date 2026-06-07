@@ -30,11 +30,13 @@ use futures::channel::mpsc::{
     UnboundedSender as FuturesSender,
 };
 use nyx_core::{
-    CollisionChoice, EntryKind, NyxError, RemoteEntry, RemotePath, Secret, TransferDirection,
-    TransferId, TransferStatus,
+    CollisionChoice, EntryKind, NyxError, Protocol, RemoteEntry, RemotePath, Secret,
+    ServerTrustKind, TransferDirection, TransferId, TransferKind, TransferStatus,
 };
 use nyx_profile::{AuthMethod, Profile};
-use nyx_protocol::{Auth, KnownHosts, RemoteClient, SftpClient};
+use nyx_protocol::{
+    Auth, DirWalk, FtpClient, FtpsClient, KnownHosts, RemoteClient, SftpClient, WalkItem,
+};
 use nyx_transfer::{CancelOutcome, Started, TransferQueue, TransferSpec};
 use tokio::sync::mpsc::{
     unbounded_channel, UnboundedReceiver as TokioReceiver, UnboundedSender as TokioSender,
@@ -63,6 +65,18 @@ fn known_hosts() -> PathBuf {
         None => {
             warn!("could not resolve the OS data directory; using ./known_hosts");
             PathBuf::from("known_hosts")
+        }
+    }
+}
+
+/// The per-OS path to the FTPS trust-on-first-use `known_certs` store
+/// (`<data_dir>/known_certs`) — the certificate parallel to [`known_hosts`].
+fn known_certs() -> PathBuf {
+    match directories::ProjectDirs::from("dev", "nyx", "Nyx") {
+        Some(dirs) => dirs.data_dir().join("known_certs"),
+        None => {
+            warn!("could not resolve the OS data directory; using ./known_certs");
+            PathBuf::from("known_certs")
         }
     }
 }
@@ -121,19 +135,24 @@ pub enum Command {
         /// Whether the target is a directory (recursive delete).
         is_dir: bool,
     },
-    /// Download a remote file to a chosen local path.
+    /// Download a remote file (or whole directory) to a chosen local path.
     Download {
         /// Absolute remote path to read.
         remote: RemotePath,
         /// Local destination chosen by the user.
         local: PathBuf,
+        /// Whether the remote path is a directory (recursive download).
+        is_dir: bool,
     },
-    /// Upload a local file to a remote path in the active connection's cwd.
+    /// Upload a local file (or whole directory) to a remote path in the active
+    /// connection's cwd.
     Upload {
         /// Local source path chosen by the user.
         local: PathBuf,
         /// Absolute remote destination path.
         remote: RemotePath,
+        /// Whether the local path is a directory (recursive upload).
+        is_dir: bool,
     },
     /// Validate a profile's credentials without opening a browser session.
     ///
@@ -188,14 +207,18 @@ pub enum Event {
         /// The connecting profile's id.
         profile_id: String,
     },
-    /// An unknown host key needs the user's trust decision (TOFU).
+    /// An unknown server identity (SSH host key or TLS certificate) needs the
+    /// user's trust decision (TOFU).
     ///
-    /// The UI shows a prompt and replies with [`Command::HostKeyDecision`].
+    /// The UI shows a prompt and replies with [`Command::HostKeyDecision`]. `kind`
+    /// lets the UI word it correctly per protocol.
     HostKeyPrompt {
-        /// The host the key belongs to.
+        /// The host the identity belongs to.
         host: String,
-        /// The SHA-256 fingerprint, e.g. `SHA256:…`.
+        /// The SHA-256 fingerprint (`SHA256:…` for a host key or certificate).
         fingerprint: String,
+        /// Whether this is an SSH host key (SFTP) or a TLS certificate (FTPS).
+        kind: ServerTrustKind,
     },
     /// The active connection is established for `profile_id`.
     Connected {
@@ -258,6 +281,8 @@ pub enum Event {
         id: TransferId,
         /// Upload or download.
         direction: TransferDirection,
+        /// File or whole-directory transfer.
+        kind: TransferKind,
         /// The remote-side path.
         remote: RemotePath,
         /// The local-side path (display form).
@@ -270,11 +295,14 @@ pub enum Event {
         id: TransferId,
         /// Upload or download (which side the existing destination is on).
         direction: TransferDirection,
+        /// Whether the existing destination is a directory (folder merge prompt).
+        is_dir: bool,
         /// The remote-side path.
         remote: RemotePath,
         /// The local-side path (display form).
         local: String,
-        /// Size of the existing destination, if it could be statted.
+        /// Size of the existing destination, if it could be statted (always
+        /// `None` for a directory).
         existing_size: Option<u64>,
     },
     /// A transfer left the queue and is now running. `total` is the size statted
@@ -429,7 +457,7 @@ enum TaskOutcome {
     /// A live connect succeeded — the dispatcher takes ownership of the session.
     Connected {
         profile_id: String,
-        client: Box<SftpClient>,
+        client: Box<dyn RemoteClient>,
         /// The resolved default landing directory (home).
         home: RemotePath,
     },
@@ -454,7 +482,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
     // `Arc`-shared so slow ops (download/upload/remove) can clone a handle into a
     // detached task and run concurrently against the one session, without
     // blocking the command loop.
-    let mut client: Option<Arc<SftpClient>> = None;
+    let mut client: Option<Arc<dyn RemoteClient>> = None;
     // The id of the profile behind the active session, for the `ConnectionLost`
     // event. Set on connect, cleared on disconnect or a detected loss.
     let mut active_profile: Option<String> = None;
@@ -641,53 +669,17 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                     // Transfers go through the queue: submit → announce → try to
                     // start (subject to the cap). The dock row is the feedback —
                     // no `FileOpDone` toast for transfers.
-                    Command::Download { remote, local } => {
-                        if client.is_none() {
-                            not_connected(&events);
-                        } else {
-                            let spec = TransferSpec {
-                                direction: TransferDirection::Download,
-                                remote: remote.clone(),
-                                local: local.clone(),
-                                on_collision: None,
-                            };
-                            match queue.submit(spec) {
-                                Ok(id) => {
-                                    let _ = events.unbounded_send(Event::TransferQueued {
-                                        id,
-                                        direction: TransferDirection::Download,
-                                        remote,
-                                        local: local.display().to_string(),
-                                    });
-                                    try_start(&mut queue, &client, &events, &xfer_done_tx);
-                                }
-                                Err(_) => path_in_use(&events, &remote),
-                            }
-                        }
+                    Command::Download { remote, local, is_dir } => {
+                        submit_transfer(
+                            &mut queue, &client, &events, &xfer_done_tx,
+                            TransferDirection::Download, kind_of(is_dir), remote, local,
+                        );
                     }
-                    Command::Upload { local, remote } => {
-                        if client.is_none() {
-                            not_connected(&events);
-                        } else {
-                            let spec = TransferSpec {
-                                direction: TransferDirection::Upload,
-                                remote: remote.clone(),
-                                local: local.clone(),
-                                on_collision: None,
-                            };
-                            match queue.submit(spec) {
-                                Ok(id) => {
-                                    let _ = events.unbounded_send(Event::TransferQueued {
-                                        id,
-                                        direction: TransferDirection::Upload,
-                                        remote,
-                                        local: local.display().to_string(),
-                                    });
-                                    try_start(&mut queue, &client, &events, &xfer_done_tx);
-                                }
-                                Err(_) => path_in_use(&events, &remote),
-                            }
-                        }
+                    Command::Upload { local, remote, is_dir } => {
+                        submit_transfer(
+                            &mut queue, &client, &events, &xfer_done_tx,
+                            TransferDirection::Upload, kind_of(is_dir), remote, local,
+                        );
                     }
                     Command::CancelTransfer { id } => match queue.cancel(id) {
                         // Never started: no task will report, so emit the terminal
@@ -787,6 +779,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                                 .unbounded_send(Event::TransferCollision {
                                     id,
                                     direction: spec.direction,
+                                    is_dir: spec.kind == TransferKind::Dir,
                                     remote: spec.remote.clone(),
                                     local: spec.local.display().to_string(),
                                     existing_size,
@@ -805,7 +798,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                         queue.finish(id);
                         last_bytes.remove(&id);
                         let (status, message) = match terminal {
-                            TransferOutcome::Completed => (TransferStatus::Completed, None),
+                            TransferOutcome::Completed { message } => (TransferStatus::Completed, message),
                             TransferOutcome::Cancelled => (TransferStatus::Cancelled, None),
                             TransferOutcome::Skipped => (TransferStatus::Skipped, None),
                             TransferOutcome::Failed(msg) => (TransferStatus::Failed, Some(msg)),
@@ -846,14 +839,64 @@ enum TransferOutcome {
         /// Size of the existing destination, if statted.
         existing_size: Option<u64>,
     },
-    /// The copy finished and the remote writes were acknowledged.
-    Completed,
+    /// The copy finished and the remote writes were acknowledged. `message`
+    /// carries a folder transfer's skipped/failed tally, if any.
+    Completed { message: Option<String> },
     /// The copy was cancelled mid-flight (a partial file was cleaned up).
     Cancelled,
     /// The destination existed and the policy resolved to skip; nothing written.
     Skipped,
     /// The copy failed; the credential-free message is for the UI.
     Failed(String),
+}
+
+/// Map an `is_dir` flag to a [`TransferKind`].
+fn kind_of(is_dir: bool) -> TransferKind {
+    if is_dir {
+        TransferKind::Dir
+    } else {
+        TransferKind::File
+    }
+}
+
+/// Submit a transfer (file or directory) into the queue: guard on a live session,
+/// build the spec, announce `TransferQueued`, then try to start it. Shared by the
+/// `Download` and `Upload` commands (the only difference is direction).
+#[allow(clippy::too_many_arguments)]
+fn submit_transfer(
+    queue: &mut TransferQueue,
+    client: &Option<Arc<dyn RemoteClient>>,
+    events: &FuturesSender<Event>,
+    xfer_done: &TokioSender<(TransferId, TransferOutcome)>,
+    direction: TransferDirection,
+    kind: TransferKind,
+    remote: RemotePath,
+    local: PathBuf,
+) {
+    if client.is_none() {
+        not_connected(events);
+        return;
+    }
+    let spec = TransferSpec {
+        direction,
+        kind,
+        remote: remote.clone(),
+        local: local.clone(),
+        on_collision: None,
+    };
+    match queue.submit(spec) {
+        Ok(id) => {
+            let _ = events.unbounded_send(Event::TransferQueued {
+                id,
+                direction,
+                kind,
+                remote,
+                local: local.display().to_string(),
+            });
+            try_start(queue, client, events, xfer_done);
+        }
+        Err(_) => path_in_use(events, &remote),
+    }
 }
 
 /// Promote and spawn as many queued transfers as the cap allows.
@@ -863,7 +906,7 @@ enum TransferOutcome {
 /// just belt-and-braces against promoting a transfer with no session to run it.
 fn try_start(
     queue: &mut TransferQueue,
-    client: &Option<Arc<SftpClient>>,
+    client: &Option<Arc<dyn RemoteClient>>,
     events: &FuturesSender<Event>,
     xfer_done: &TokioSender<(TransferId, TransferOutcome)>,
 ) {
@@ -877,7 +920,7 @@ fn try_start(
 /// start, run the protocol copy, clean up any partial file on cancel/fail, and
 /// report the terminal outcome back to the dispatcher.
 fn spawn_transfer(
-    client: Arc<SftpClient>,
+    client: Arc<dyn RemoteClient>,
     started: Started,
     events: FuturesSender<Event>,
     xfer_done: TokioSender<(TransferId, TransferOutcome)>,
@@ -886,40 +929,231 @@ fn spawn_transfer(
     tokio::spawn(async move {
         // Pre-flight collision gate: stat the destination before writing a byte.
         // A reliability-first client must never blind-overwrite.
-        if let Some(outcome) = collision_gate(&client, &spec).await {
+        if let Some(outcome) = collision_gate(&*client, &spec).await {
             let _ = xfer_done.send((id, outcome));
             return;
         }
 
-        // Stat the total up front so the dock can show a real %/total.
-        let total = match spec.direction {
-            TransferDirection::Download => client.remote_size(&spec.remote).await,
-            TransferDirection::Upload => {
-                tokio::fs::metadata(&spec.local).await.ok().map(|m| m.len())
-            }
-        };
-        let _ = events.unbounded_send(Event::TransferStarted { id, total });
-
-        let result = match spec.direction {
-            TransferDirection::Download => {
-                client.download(&spec.remote, &spec.local, &progress).await
-            }
-            TransferDirection::Upload => client.upload(&spec.local, &spec.remote, &progress).await,
-        };
-
-        let outcome = match result {
-            Ok(()) => TransferOutcome::Completed,
-            Err(NyxError::Cancelled) => {
-                cleanup_partial(&client, &spec).await;
-                TransferOutcome::Cancelled
-            }
-            Err(err) => {
-                cleanup_partial(&client, &spec).await;
-                TransferOutcome::Failed(err.to_string())
-            }
+        let outcome = match spec.kind {
+            TransferKind::File => copy_file(&*client, &spec, &progress, id, &events).await,
+            TransferKind::Dir => copy_dir(&*client, &spec, &progress, id, &events).await,
         };
         let _ = xfer_done.send((id, outcome));
     });
+}
+
+/// Copy a single file: stat the total, announce the start, run the protocol copy,
+/// clean up any partial on cancel/fail.
+async fn copy_file(
+    client: &dyn RemoteClient,
+    spec: &TransferSpec,
+    progress: &nyx_core::TransferProgress,
+    id: TransferId,
+    events: &FuturesSender<Event>,
+) -> TransferOutcome {
+    // Stat the total up front so the dock can show a real %/total.
+    let total = match spec.direction {
+        TransferDirection::Download => client.remote_size(&spec.remote).await,
+        TransferDirection::Upload => tokio::fs::metadata(&spec.local).await.ok().map(|m| m.len()),
+    };
+    let _ = events.unbounded_send(Event::TransferStarted { id, total });
+
+    let result = match spec.direction {
+        TransferDirection::Download => client.download(&spec.remote, &spec.local, progress).await,
+        TransferDirection::Upload => client.upload(&spec.local, &spec.remote, progress).await,
+    };
+    match result {
+        Ok(()) => TransferOutcome::Completed { message: None },
+        Err(NyxError::Cancelled) => {
+            cleanup_partial(client, spec).await;
+            TransferOutcome::Cancelled
+        }
+        Err(err) => {
+            cleanup_partial(client, spec).await;
+            TransferOutcome::Failed(err.to_string())
+        }
+    }
+}
+
+/// Copy a whole directory tree as one aggregate transfer: enumerate it (so the
+/// dock shows a real total), create the destination root, then walk the items
+/// parent-before-child, reusing the single-file `download`/`upload` primitives.
+///
+/// Per the settled decisions: collisions merge (each file overwrites in place),
+/// a failed/unreadable file is **skipped and tallied** (one bad file never aborts
+/// the folder), symlinks are skipped during the walk, and empty directories are
+/// created. Cancellation is checked between items; a cancelled or failed folder
+/// leaves its partial tree in place (we never delete a merge destination).
+async fn copy_dir(
+    client: &dyn RemoteClient,
+    spec: &TransferSpec,
+    progress: &nyx_core::TransferProgress,
+    id: TransferId,
+    events: &FuturesSender<Event>,
+) -> TransferOutcome {
+    // Enumerate before announcing, so `total` is the real byte sum.
+    let walk = match enumerate_dir(client, spec).await {
+        Ok(walk) => walk,
+        Err(err) => return TransferOutcome::Failed(err.to_string()),
+    };
+    let _ = events.unbounded_send(Event::TransferStarted {
+        id,
+        total: Some(walk.total_bytes),
+    });
+
+    // Create the destination root.
+    if let Err(err) = make_root(client, spec).await {
+        return TransferOutcome::Failed(err.to_string());
+    }
+
+    let mut failures = 0u64;
+    for item in &walk.items {
+        if progress.is_cancelled() {
+            return TransferOutcome::Cancelled;
+        }
+        match copy_walk_item(client, spec, item, progress).await {
+            Ok(()) => {}
+            Err(NyxError::Cancelled) => return TransferOutcome::Cancelled,
+            Err(err) => {
+                debug!(error = %err, rel = ?item.rel, "skipping unreadable entry in folder transfer");
+                failures += 1;
+            }
+        }
+    }
+
+    let mut notes = Vec::new();
+    if failures > 0 {
+        notes.push(format!("{failures} failed"));
+    }
+    if walk.skipped > 0 {
+        notes.push(format!("{} skipped", walk.skipped));
+    }
+    let message = (!notes.is_empty()).then(|| notes.join(", "));
+    TransferOutcome::Completed { message }
+}
+
+/// Enumerate a directory transfer's work items + totals — a remote walk for a
+/// download, a local-filesystem walk for an upload.
+async fn enumerate_dir(
+    client: &dyn RemoteClient,
+    spec: &TransferSpec,
+) -> Result<DirWalk, NyxError> {
+    match spec.direction {
+        TransferDirection::Download => client.walk_dir(&spec.remote).await,
+        TransferDirection::Upload => local_walk(&spec.local).await,
+    }
+}
+
+/// Create the destination root of a directory transfer (idempotent: an existing
+/// root is fine — that is the merge case).
+async fn make_root(client: &dyn RemoteClient, spec: &TransferSpec) -> Result<(), NyxError> {
+    match spec.direction {
+        TransferDirection::Download => tokio::fs::create_dir_all(&spec.local)
+            .await
+            .map_err(|e| NyxError::Io(e.to_string())),
+        TransferDirection::Upload => ensure_remote_dir(client, &spec.remote).await,
+    }
+}
+
+/// Copy one walk item to its mirrored destination under the transfer's root.
+async fn copy_walk_item(
+    client: &dyn RemoteClient,
+    spec: &TransferSpec,
+    item: &WalkItem,
+    progress: &nyx_core::TransferProgress,
+) -> Result<(), NyxError> {
+    let remote = join_remote(&spec.remote, &item.rel);
+    let local = join_local(&spec.local, &item.rel);
+    match (spec.direction, item.is_dir) {
+        (TransferDirection::Download, true) => tokio::fs::create_dir_all(&local)
+            .await
+            .map_err(|e| NyxError::Io(e.to_string())),
+        (TransferDirection::Download, false) => client.download(&remote, &local, progress).await,
+        (TransferDirection::Upload, true) => ensure_remote_dir(client, &remote).await,
+        (TransferDirection::Upload, false) => client.upload(&local, &remote, progress).await,
+    }
+}
+
+/// `mkdir` that tolerates an already-existing directory (the merge case).
+async fn ensure_remote_dir(client: &dyn RemoteClient, path: &RemotePath) -> Result<(), NyxError> {
+    match client.mkdir(path).await {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            if client.exists(path).await.unwrap_or(false) {
+                Ok(())
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
+/// Join walk-item components onto a remote root.
+fn join_remote(root: &RemotePath, rel: &[String]) -> RemotePath {
+    rel.iter().fold(root.clone(), |p, seg| p.join(seg))
+}
+
+/// Join walk-item components onto a local root.
+fn join_local(root: &std::path::Path, rel: &[String]) -> PathBuf {
+    let mut p = root.to_path_buf();
+    for seg in rel {
+        p.push(seg);
+    }
+    p
+}
+
+/// Walk a local directory tree on the service thread, mirroring the remote
+/// [`RemoteClient::walk_dir`]: pre-order, symlinks (and non-utf8 / special
+/// entries) skipped and tallied, file sizes summed. No async recursion — an
+/// explicit stack of directories to visit.
+async fn local_walk(root: &std::path::Path) -> Result<DirWalk, NyxError> {
+    let mut walk = DirWalk::default();
+    let mut stack: Vec<(PathBuf, Vec<String>)> = vec![(root.to_path_buf(), Vec::new())];
+    while let Some((dir, rel)) = stack.pop() {
+        let mut entries = tokio::fs::read_dir(&dir)
+            .await
+            .map_err(|e| NyxError::Io(e.to_string()))?;
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| NyxError::Io(e.to_string()))?
+        {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                walk.skipped += 1; // non-UTF-8 names are not representable remotely
+                continue;
+            };
+            // `symlink_metadata` is lstat-style, so a link is reported as a link.
+            let meta = match tokio::fs::symlink_metadata(entry.path()).await {
+                Ok(meta) => meta,
+                Err(_) => {
+                    walk.skipped += 1;
+                    continue;
+                }
+            };
+            let ft = meta.file_type();
+            let mut child_rel = rel.clone();
+            child_rel.push(name.to_string());
+            if ft.is_symlink() || (!ft.is_dir() && !ft.is_file()) {
+                walk.skipped += 1;
+            } else if ft.is_dir() {
+                walk.items.push(WalkItem {
+                    rel: child_rel.clone(),
+                    is_dir: true,
+                    size: 0,
+                });
+                stack.push((entry.path(), child_rel));
+            } else {
+                walk.total_bytes += meta.len();
+                walk.items.push(WalkItem {
+                    rel: child_rel,
+                    is_dir: false,
+                    size: meta.len(),
+                });
+            }
+        }
+    }
+    Ok(walk)
 }
 
 /// The transfer pre-flight gate. Stats the destination (remote for an upload,
@@ -933,7 +1167,7 @@ fn spawn_transfer(
 /// Returns `None` to proceed with the copy — either no collision, or the policy
 /// is `Overwrite`. A stat error is treated as "no collision" (proceed): it
 /// mirrors the prior unconditional behavior rather than wedging the transfer.
-async fn collision_gate(client: &SftpClient, spec: &TransferSpec) -> Option<TransferOutcome> {
+async fn collision_gate(client: &dyn RemoteClient, spec: &TransferSpec) -> Option<TransferOutcome> {
     let exists = match spec.direction {
         TransferDirection::Download => tokio::fs::try_exists(&spec.local).await.unwrap_or(false),
         TransferDirection::Upload => client.exists(&spec.remote).await.unwrap_or(false),
@@ -943,11 +1177,15 @@ async fn collision_gate(client: &SftpClient, spec: &TransferSpec) -> Option<Tran
     }
     match spec.on_collision {
         None => {
-            let existing_size = match spec.direction {
-                TransferDirection::Download => {
+            // A directory merge has no single "existing size"; only stat a file.
+            let existing_size = match (spec.kind, spec.direction) {
+                (TransferKind::Dir, _) => None,
+                (TransferKind::File, TransferDirection::Download) => {
                     tokio::fs::metadata(&spec.local).await.ok().map(|m| m.len())
                 }
-                TransferDirection::Upload => client.remote_size(&spec.remote).await,
+                (TransferKind::File, TransferDirection::Upload) => {
+                    client.remote_size(&spec.remote).await
+                }
             };
             Some(TransferOutcome::Collision { existing_size })
         }
@@ -961,7 +1199,14 @@ async fn collision_gate(client: &SftpClient, spec: &TransferSpec) -> Option<Tran
 /// transfer: the local destination for a download, the remote
 /// destination for an upload. Errors are logged at `debug` and never surfaced —
 /// the terminal `TransferDone` already tells the user the real story.
-async fn cleanup_partial(client: &SftpClient, spec: &TransferSpec) {
+async fn cleanup_partial(client: &dyn RemoteClient, spec: &TransferSpec) {
+    // A directory transfer may be merging into an existing tree, so deleting the
+    // destination on cancel/fail could destroy pre-existing user data. Leave the
+    // partial tree in place (the dock marks it Cancelled/Failed) and only ever
+    // clean up the single half-written file of a file transfer.
+    if spec.kind == TransferKind::Dir {
+        return;
+    }
     match spec.direction {
         TransferDirection::Download => {
             if let Err(err) = tokio::fs::remove_file(&spec.local).await {
@@ -994,7 +1239,7 @@ fn path_in_use(events: &FuturesSender<Event>, remote: &RemotePath) {
 /// (via [`note_connection_lost`]); anything else is a plain [`Event::Error`].
 fn report_op_error(
     err: NyxError,
-    client: &mut Option<Arc<SftpClient>>,
+    client: &mut Option<Arc<dyn RemoteClient>>,
     active_profile: &mut Option<String>,
     queue: &mut TransferQueue,
     last_bytes: &mut HashMap<TransferId, u64>,
@@ -1022,7 +1267,7 @@ fn report_op_error(
 /// their own next I/O). The `client.take()` guard makes the emission idempotent —
 /// a later op that also sees a transport error finds no client and is a no-op.
 fn note_connection_lost(
-    client: &mut Option<Arc<SftpClient>>,
+    client: &mut Option<Arc<dyn RemoteClient>>,
     active_profile: &mut Option<String>,
     queue: &mut TransferQueue,
     last_bytes: &mut HashMap<TransferId, u64>,
@@ -1097,26 +1342,15 @@ async fn run_task(
         events: events.clone(),
         register,
     });
-    // Build the auth method from the profile + the carried secret. For key auth
-    // an empty secret means "unencrypted key" (no passphrase).
-    let auth = match &profile.auth {
-        AuthMethod::Password => Auth::Password(secret.expose().to_string()),
-        AuthMethod::Key { path } => {
-            let passphrase = secret.expose();
-            Auth::Key {
-                path: path.clone(),
-                passphrase: (!passphrase.is_empty()).then(|| passphrase.to_string()),
-            }
+    // Build the protocol client from the profile + carried secret. A profile-level
+    // rejection (e.g. key auth on FTP) is reported here without ever connecting.
+    let mut client = match build_client(&profile, secret, prompt) {
+        Ok(client) => client,
+        Err(err) => {
+            let _ = done.send(connect_error_outcome(kind, profile_id, err));
+            return;
         }
     };
-    let mut client = SftpClient::new(
-        profile.host.clone(),
-        profile.port,
-        profile.username.clone(),
-        auth,
-        KnownHosts::at(known_hosts()),
-        prompt,
-    );
 
     let outcome = match (kind, client.connect().await) {
         (TaskKind::Connect, Ok(())) => {
@@ -1128,7 +1362,7 @@ async fn run_task(
                 .unwrap_or_else(|_| RemotePath::root());
             TaskOutcome::Connected {
                 profile_id,
-                client: Box::new(client),
+                client,
                 home,
             }
         }
@@ -1154,21 +1388,108 @@ async fn run_task(
     let _ = done.send(outcome);
 }
 
-/// The service-side host-key prompt: surface a [`Event::HostKeyPrompt`] to the UI
-/// and await the user's [`Command::HostKeyDecision`].
+/// Build the protocol client for a profile, keyed on `profile.protocol`.
+///
+/// This is the one construction seam: everything downstream speaks
+/// [`RemoteClient`]. Key auth is SFTP-only, so an FTP/FTPS profile that selects it
+/// is rejected here with a clear message rather than silently ignored.
+fn build_client(
+    profile: &Profile,
+    secret: Secret,
+    prompt: Arc<host_key::PromptBridge>,
+) -> Result<Box<dyn RemoteClient>, NyxError> {
+    match profile.protocol {
+        Protocol::Sftp => {
+            // For key auth an empty secret means "unencrypted key" (no passphrase).
+            let auth = match &profile.auth {
+                AuthMethod::Password => Auth::Password(secret.expose().to_string()),
+                AuthMethod::Key { path } => {
+                    let passphrase = secret.expose();
+                    Auth::Key {
+                        path: path.clone(),
+                        passphrase: (!passphrase.is_empty()).then(|| passphrase.to_string()),
+                    }
+                }
+            };
+            Ok(Box::new(SftpClient::new(
+                profile.host.clone(),
+                profile.port,
+                profile.username.clone(),
+                auth,
+                KnownHosts::at(known_hosts()),
+                prompt,
+            )))
+        }
+        Protocol::Ftp => {
+            reject_key_auth(profile)?;
+            Ok(Box::new(FtpClient::new(
+                profile.host.clone(),
+                profile.port,
+                profile.username.clone(),
+                secret.expose().to_string(),
+            )))
+        }
+        Protocol::Ftps => {
+            reject_key_auth(profile)?;
+            Ok(Box::new(FtpsClient::new(
+                profile.host.clone(),
+                profile.port,
+                profile.username.clone(),
+                secret.expose().to_string(),
+                profile.ftps_mode,
+                KnownHosts::at(known_certs()),
+                prompt,
+            )))
+        }
+    }
+}
+
+/// Reject key auth for a non-SFTP protocol (FTP/FTPS are username+password only).
+fn reject_key_auth(profile: &Profile) -> Result<(), NyxError> {
+    if matches!(profile.auth, AuthMethod::Key { .. }) {
+        return Err(NyxError::Other(
+            "key authentication is only supported for SFTP".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Map a pre-connect build error to the right terminal outcome for the task kind.
+fn connect_error_outcome(kind: TaskKind, profile_id: String, err: NyxError) -> TaskOutcome {
+    match kind {
+        TaskKind::Connect => TaskOutcome::ConnectFailed {
+            message: err.to_string(),
+        },
+        TaskKind::Test => TaskOutcome::TestResult {
+            profile_id,
+            ok: false,
+            message: err.to_string(),
+        },
+    }
+}
+
+/// The service-side trust prompt: surface a [`Event::HostKeyPrompt`] to the UI
+/// and await the user's [`Command::HostKeyDecision`]. Serves both SSH host keys
+/// (SFTP) and TLS certificates (FTPS) — the single decision slot is safe because
+/// the single-flight guard allows only one connect-like op at a time.
 mod host_key {
     use super::*;
-    use nyx_protocol::HostKeyPrompt;
+    use nyx_protocol::ServerTrustPrompt;
 
-    /// Bridges the protocol layer's host-key callback to the UI event/command flow.
+    /// Bridges the protocol layer's trust callback to the UI event/command flow.
     pub struct PromptBridge {
         pub events: FuturesSender<Event>,
         pub register: TokioSender<oneshot::Sender<bool>>,
     }
 
     #[async_trait::async_trait]
-    impl HostKeyPrompt for PromptBridge {
-        async fn confirm_unknown(&self, host: &str, fingerprint: &str) -> bool {
+    impl ServerTrustPrompt for PromptBridge {
+        async fn confirm_unknown(
+            &self,
+            host: &str,
+            fingerprint: &str,
+            kind: ServerTrustKind,
+        ) -> bool {
             let (responder, answer) = oneshot::channel();
             // Register the responder with the dispatcher *before* prompting, so a
             // decision can never arrive with no slot to resolve.
@@ -1178,6 +1499,7 @@ mod host_key {
             let _ = self.events.unbounded_send(Event::HostKeyPrompt {
                 host: host.to_string(),
                 fingerprint: fingerprint.to_string(),
+                kind,
             });
             // A dropped sender (e.g. shutdown) resolves to "do not trust".
             answer.await.unwrap_or(false)
@@ -1197,6 +1519,7 @@ mod tests {
                 id: "id".into(),
                 name: "n".into(),
                 protocol: Protocol::Sftp,
+                ftps_mode: Default::default(),
                 host: "example.com".into(),
                 port: 22,
                 username: "user".into(),

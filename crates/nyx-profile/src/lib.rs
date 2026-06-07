@@ -11,7 +11,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use nyx_core::{NyxError, Protocol, Result};
+use nyx_core::{FtpsMode, NyxError, Protocol, Result};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -27,6 +27,12 @@ pub struct Profile {
     pub name: String,
     /// Which protocol to use.
     pub protocol: Protocol,
+    /// How FTPS negotiates TLS (ignored for non-FTPS protocols).
+    ///
+    /// `#[serde(default)]` = [`FtpsMode::Explicit`] so profiles written before
+    /// this field existed still parse.
+    #[serde(default)]
+    pub ftps_mode: FtpsMode,
     /// Remote hostname or IP.
     pub host: String,
     /// Remote port.
@@ -226,6 +232,7 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             protocol: Protocol::Sftp,
+            ftps_mode: FtpsMode::default(),
             host: "example.com".to_string(),
             port: 22,
             username: "deploy".to_string(),

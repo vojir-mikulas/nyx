@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 
 /// A remote-access protocol.
 ///
-/// V1 ships SFTP only; FTP/FTPS are modelled here so the `RemoteClient`
-/// abstraction (in `nyx-protocol`) can grow without touching shared types.
+/// All three are implemented behind the `RemoteClient` abstraction (in
+/// `nyx-protocol`) and chosen per profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Protocol {
@@ -27,6 +27,36 @@ impl Protocol {
             Protocol::Ftp | Protocol::Ftps => 21,
         }
     }
+}
+
+/// How FTPS negotiates TLS.
+///
+/// **Explicit** (the default) connects in the clear on the normal FTP port and
+/// upgrades with `AUTH TLS`; **implicit** wraps the whole connection in TLS from
+/// the first byte (conventionally on port 990). `#[serde(default)]` =
+/// [`Explicit`](FtpsMode::Explicit) so profiles written before this field still
+/// parse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FtpsMode {
+    /// Connect plain, then upgrade with `AUTH TLS` (RFC 4217). The default.
+    #[default]
+    Explicit,
+    /// TLS from connect (implicit FTPS, typically port 990).
+    Implicit,
+}
+
+/// What kind of server identity a trust-on-first-use prompt is about, so the UI
+/// can word it correctly: an SSH host key (SFTP) or a TLS certificate (FTPS).
+///
+/// Both are pinned by a SHA-256 fingerprint through the same prompt + decision
+/// flow; only the wording (and the backing store) differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerTrustKind {
+    /// An SSH host-key fingerprint (SFTP).
+    HostKey,
+    /// A TLS server-certificate fingerprint (FTPS).
+    Certificate,
 }
 
 #[cfg(test)]

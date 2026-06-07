@@ -31,7 +31,8 @@ Claude Design prototype in HTML/CSS/React — reference only, not shipped code).
 | UI framework | **GPUI** (`git = zed-industries/zed`) | Tailwind-like styling, `Render`/`RenderOnce` components |
 | UI components | **`nyx-ui`** (own crate → future **Flint**) | shadcn-style: owned source, themed, variant API, gallery |
 | Async | **Tokio** on a dedicated backend thread | bridged to GPUI's own executor via channels |
-| SFTP (V1) | `russh` / `russh-sftp` (Tokio-based) | |
+| SFTP | `russh` / `russh-sftp` (Tokio-based) | |
+| FTP / FTPS | `suppaftp` (Tokio) + `tokio-rustls` (ring) | FTPS cert trust via TOFU (`webpki-roots`, `sha2`) |
 | Credentials | OS keychain (`keyring` crate) | never logged, never in profile files |
 | Profiles | local persisted store | shareable with future apps |
 | License | Apache-2.0 | |
@@ -49,7 +50,7 @@ Claude Design prototype in HTML/CSS/React — reference only, not shipped code).
          │                                                           │
 ┌────────┴───────────────────────── Tokio backend thread ──────────┴───────────────────────┐
 │  nyx-service   (owns connections + transfer queue, runs the Tokio runtime)                 │
-│   ├─ nyx-protocol   RemoteClient trait + SftpClient (V1)                                   │
+│   ├─ nyx-protocol   RemoteClient trait + SftpClient / FtpClient / FtpsClient               │
 │   ├─ nyx-transfer   queue, concurrency, progress, cancellation                             │
 │   ├─ nyx-profile    profile CRUD + persistence                                             │
 │   └─ nyx-keyring    OS-keychain credentials                                                │
@@ -76,7 +77,7 @@ nyx/
 │   ├── nyx-ui/               # ► component library (extract → Flint). Standalone, zero app coupling
 │   ├── nyx-core/             # shared types: errors, RemoteEntry, transfer model
 │   ├── nyx-service/          # Tokio backend thread + command/event channels
-│   ├── nyx-protocol/         # RemoteClient trait + SftpClient (V1)
+│   ├── nyx-protocol/         # RemoteClient trait + SftpClient / FtpClient / FtpsClient
 │   ├── nyx-transfer/         # queue, concurrency, progress, cancellation
 │   ├── nyx-profile/          # profile store
 │   └── nyx-keyring/          # OS-keychain credentials
@@ -87,17 +88,19 @@ nyx/
 
 ## Scope
 
-### V1 (SFTP only)
+### Shipped
+- Protocols: **SFTP**, **FTP**, **FTPS** (explicit/implicit TLS), selected per
+  profile and dispatched behind the `RemoteClient` trait
 - Connection profiles: create / edit / delete, stored locally, test-connection
 - Browse remote dirs: name, size, type, modified, permissions; open / up /
   refresh / sort / filter
 - File ops: upload, download, rename, delete, create folder
 - Transfer queue: progress %, speed, status (queued/running/completed/failed/
   cancelled), multiple concurrent transfers, cancel
-- SSH host-key verification; credentials in OS keychain
+- Trust-on-first-use: SSH host keys (SFTP) and TLS certificates (FTPS);
+  credentials in OS keychain
 
 ### Later
-- FTP + FTPS (`RemoteClient` trait already abstracts this)
 - Linux packaging (macOS first)
 - Extract `nyx-ui` → **Flint** standalone repo
 - Sibling app **dbviewer** reusing Flint + the shared backend crates

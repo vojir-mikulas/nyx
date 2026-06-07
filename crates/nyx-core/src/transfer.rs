@@ -21,6 +21,21 @@ pub enum TransferDirection {
     Download,
 }
 
+/// Whether a transfer moves a single file or a whole directory tree.
+///
+/// A `Dir` transfer is one user intent — one dock row, one cancel, one collision
+/// decision — that the service expands into a recursive walk over the existing
+/// single-file copy primitives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TransferKind {
+    /// A single file.
+    #[default]
+    File,
+    /// A directory, copied recursively (parent-before-child).
+    Dir,
+}
+
 /// The lifecycle state of a transfer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -66,6 +81,9 @@ pub struct Transfer {
     pub id: TransferId,
     /// Upload or download.
     pub direction: TransferDirection,
+    /// File or whole-directory transfer.
+    #[serde(default)]
+    pub kind: TransferKind,
     /// The remote-side path.
     pub remote_path: RemotePath,
     /// The local-side path (display form).
@@ -131,6 +149,7 @@ mod tests {
         Transfer {
             id: TransferId(1),
             direction: TransferDirection::Download,
+            kind: TransferKind::File,
             remote_path: "/r".into(),
             local_path: "/l".into(),
             total_bytes: total,

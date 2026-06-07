@@ -8,29 +8,27 @@
 //! no server detail echoed back; an encrypted key with a missing/wrong
 //! passphrase maps to [`NyxError::KeyLocked`] (also credential-free).
 
-use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use nyx_core::{
-    EntryKind, NyxError, Permissions, RemoteEntry, RemotePath, Result, TransferProgress,
+    EntryKind, NyxError, Permissions, RemoteEntry, RemotePath, Result, ServerTrustKind,
+    TransferProgress,
 };
 use russh::client::{self, Handle};
 use russh::keys::ssh_key::PublicKey;
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg};
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::{FileType, StatusCode};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tracing::warn;
 
-/// The copy-loop chunk size (64 KiB).
-const COPY_CHUNK: usize = 64 * 1024;
-
-use crate::host_key::HostKeyPrompt;
+use crate::host_key::ServerTrustPrompt;
 use crate::known_hosts::{KnownHostStatus, KnownHosts};
-use crate::RemoteClient;
+use crate::util::{copy_counting, map_io_err, plan_removal, plan_walk, RemoveOp};
+use crate::{DirWalk, RemoteClient};
 
 /// How a client proves its identity to the server.
 ///
@@ -61,7 +59,7 @@ pub struct SftpClient {
     /// consumes it, then cleared. Never logged.
     auth: Auth,
     known_hosts: KnownHosts,
-    prompt: Arc<dyn HostKeyPrompt>,
+    prompt: Arc<dyn ServerTrustPrompt>,
     /// Set by the host-key handler when it rejects a key, so [`connect`] can map
     /// the resulting handshake failure to a precise [`NyxError::HostKey`].
     reject_reason: Arc<Mutex<Option<String>>>,
@@ -73,14 +71,14 @@ impl SftpClient {
     /// Create a new, unconnected SFTP client.
     ///
     /// `known_hosts` is the trust-on-first-use store and `prompt` is consulted
-    /// when an unknown host key is presented (see [`HostKeyPrompt`]).
+    /// when an unknown host key is presented (see [`ServerTrustPrompt`]).
     pub fn new(
         host: impl Into<String>,
         port: u16,
         username: impl Into<String>,
         auth: Auth,
         known_hosts: KnownHosts,
-        prompt: Arc<dyn HostKeyPrompt>,
+        prompt: Arc<dyn ServerTrustPrompt>,
     ) -> Self {
         Self {
             host: host.into(),
@@ -100,13 +98,6 @@ impl SftpClient {
         self.sftp
             .as_ref()
             .ok_or_else(|| NyxError::Connection("not connected".into()))
-    }
-
-    /// Best-effort size of a remote file, for showing a transfer's total up
-    /// front. `None` if the stat fails or the size is unknown — the transfer
-    /// still runs, just without a `%`/total.
-    pub async fn remote_size(&self, path: &RemotePath) -> Option<u64> {
-        self.sftp().ok()?.metadata(path.as_str()).await.ok()?.size
     }
 }
 
@@ -177,6 +168,10 @@ impl RemoteClient for SftpClient {
         Ok(RemotePath::new(dir))
     }
 
+    async fn remote_size(&self, path: &RemotePath) -> Option<u64> {
+        self.sftp().ok()?.metadata(path.as_str()).await.ok()?.size
+    }
+
     async fn exists(&self, path: &RemotePath) -> Result<bool> {
         match self.sftp()?.metadata(path.as_str()).await {
             Ok(_) => Ok(true),
@@ -210,6 +205,20 @@ impl RemoteClient for SftpClient {
             });
         }
         Ok(entries)
+    }
+
+    async fn walk_dir(&self, root: &RemotePath) -> Result<DirWalk> {
+        let sftp = self.sftp()?;
+        plan_walk(root.as_str(), move |dir| async move {
+            let entries = sftp.read_dir(dir).await.map_err(map_sftp_err)?;
+            Ok(entries
+                .map(|entry| {
+                    let size = entry.metadata().size.unwrap_or(0);
+                    (entry.file_name(), map_kind(entry.file_type()), size)
+                })
+                .collect())
+        })
+        .await
     }
 
     async fn target_kind(&self, path: &RemotePath) -> Result<EntryKind> {
@@ -305,7 +314,7 @@ impl RemoteClient for SftpClient {
 struct ClientHandler {
     host: String,
     known_hosts: KnownHosts,
-    prompt: Arc<dyn HostKeyPrompt>,
+    prompt: Arc<dyn ServerTrustPrompt>,
     reject_reason: Arc<Mutex<Option<String>>>,
 }
 
@@ -327,7 +336,11 @@ impl client::Handler for ClientHandler {
                 Ok(false)
             }
             KnownHostStatus::Unknown => {
-                if self.prompt.confirm_unknown(&self.host, &fingerprint).await {
+                if self
+                    .prompt
+                    .confirm_unknown(&self.host, &fingerprint, ServerTrustKind::HostKey)
+                    .await
+                {
                     if let Err(err) = self.known_hosts.trust(&self.host, &fingerprint) {
                         warn!(error = %err, "failed to persist trusted host key");
                     }
@@ -413,98 +426,6 @@ fn map_russh_err(err: russh::Error) -> NyxError {
     }
 }
 
-/// Copy `reader` → `writer` in 64 KiB chunks, bumping `progress` per chunk and
-/// checking for a requested cancel between chunks.
-///
-/// Both halves are driven through tokio's `AsyncRead`/`AsyncWrite`, which surface
-/// `std::io::Error` regardless of which side (remote SFTP handle or local file)
-/// errors — hence the single [`map_io_err`]. A cancel short-circuits with
-/// [`NyxError::Cancelled`]; the caller (service) does any partial-file cleanup.
-async fn copy_counting<R, W>(
-    reader: &mut R,
-    writer: &mut W,
-    progress: &TransferProgress,
-) -> Result<()>
-where
-    R: AsyncReadExt + Unpin,
-    W: AsyncWriteExt + Unpin,
-{
-    let mut buf = vec![0u8; COPY_CHUNK];
-    loop {
-        if progress.is_cancelled() {
-            return Err(NyxError::Cancelled);
-        }
-        let n = reader.read(&mut buf).await.map_err(map_io_err)?;
-        if n == 0 {
-            break;
-        }
-        writer.write_all(&buf[..n]).await.map_err(map_io_err)?;
-        progress.add(n as u64);
-    }
-    Ok(())
-}
-
-/// Map a **local** filesystem / transfer-copy error to [`NyxError`]. Used for
-/// the local half of a download (write) or upload (read); paths aren't secrets,
-/// but the message stays coarse (an OS error string, never a credential).
-fn map_io_err(err: std::io::Error) -> NyxError {
-    NyxError::Io(err.to_string())
-}
-
-/// One step of a recursive removal, in the order it must be performed: a
-/// directory only ever appears **after** all of its descendants.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum RemoveOp {
-    /// Delete a file (or symlink) at this absolute path.
-    File(String),
-    /// Delete a now-empty directory at this absolute path.
-    Dir(String),
-}
-
-/// Plan the depth-first removal of `root` without async recursion.
-///
-/// A file target yields a single [`RemoveOp::File`]. A directory target is
-/// walked with an explicit work-stack: each directory is visited twice — once to
-/// list its children (pushing sub-directories back on the stack and emitting its
-/// files), and once (after its children) to emit the directory's own
-/// [`RemoveOp::Dir`]. `list_dir` yields each directory's `(path, is_dir)`
-/// children. The result is post-order, so applying it in sequence removes the
-/// whole tree leaf-first.
-async fn plan_removal<F, Fut>(
-    root: &str,
-    root_is_dir: bool,
-    mut list_dir: F,
-) -> Result<Vec<RemoveOp>>
-where
-    F: FnMut(String) -> Fut,
-    Fut: Future<Output = Result<Vec<(String, bool)>>>,
-{
-    if !root_is_dir {
-        return Ok(vec![RemoveOp::File(root.to_string())]);
-    }
-    let mut ops = Vec::new();
-    // (path, expanded): an unexpanded directory still needs listing; an expanded
-    // one has had its children queued and is ready to be removed.
-    let mut stack: Vec<(String, bool)> = vec![(root.to_string(), false)];
-    while let Some((path, expanded)) = stack.pop() {
-        if expanded {
-            ops.push(RemoveOp::Dir(path));
-            continue;
-        }
-        let children = list_dir(path.clone()).await?;
-        // Re-push this directory below its children so it is removed last.
-        stack.push((path, true));
-        for (child, is_dir) in children {
-            if is_dir {
-                stack.push((child, false));
-            } else {
-                ops.push(RemoveOp::File(child));
-            }
-        }
-    }
-    Ok(ops)
-}
-
 /// Map an SFTP protocol error to [`NyxError`]. The SFTP error `Display` carries
 /// only status codes and server messages — no credentials.
 ///
@@ -533,6 +454,8 @@ fn map_sftp_err(err: russh_sftp::client::error::Error) -> NyxError {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+
     use super::*;
 
     #[test]
@@ -641,77 +564,11 @@ MC4CAQAwBQYDK2VwBCIEINTuctv5E1hK1bbY8fdp+K06/nwoy/HU++CXqI9EdVhC
         assert!(err.to_string().contains("id_ed25519"));
     }
 
-    /// Drive an async future to completion on a minimal current-thread runtime
-    /// (the recursive-remove traversal is async but server-free in the test).
+    /// Drive an async future to completion on a minimal current-thread runtime.
     fn block_on<F: Future>(fut: F) -> F::Output {
         tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(fut)
-    }
-
-    #[test]
-    fn removal_of_a_file_is_a_single_op() {
-        let ops = block_on(plan_removal("/srv/report.pdf", false, |_| async {
-            unreachable!("a file target is never listed")
-        }))
-        .unwrap();
-        assert_eq!(ops, vec![RemoveOp::File("/srv/report.pdf".into())]);
-    }
-
-    #[test]
-    fn removal_of_a_tree_is_post_order() {
-        use std::collections::HashMap;
-
-        // /root
-        //   a.txt
-        //   sub/
-        //     c.txt
-        //     deep/
-        //       d.txt
-        //   b.txt
-        let tree: HashMap<&str, Vec<(&str, bool)>> = HashMap::from([
-            (
-                "/root",
-                vec![
-                    ("/root/a.txt", false),
-                    ("/root/sub", true),
-                    ("/root/b.txt", false),
-                ],
-            ),
-            (
-                "/root/sub",
-                vec![("/root/sub/c.txt", false), ("/root/sub/deep", true)],
-            ),
-            ("/root/sub/deep", vec![("/root/sub/deep/d.txt", false)]),
-        ]);
-
-        let ops = block_on(plan_removal("/root", true, |dir| {
-            let tree = &tree;
-            async move {
-                Ok(tree
-                    .get(dir.as_str())
-                    .cloned()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|(p, is_dir)| (p.to_string(), is_dir))
-                    .collect())
-            }
-        }))
-        .unwrap();
-
-        // Every file before its parent dir; every dir after all its descendants.
-        assert_eq!(
-            ops,
-            vec![
-                RemoveOp::File("/root/a.txt".into()),
-                RemoveOp::File("/root/b.txt".into()),
-                RemoveOp::File("/root/sub/c.txt".into()),
-                RemoveOp::File("/root/sub/deep/d.txt".into()),
-                RemoveOp::Dir("/root/sub/deep".into()),
-                RemoveOp::Dir("/root/sub".into()),
-                RemoveOp::Dir("/root".into()),
-            ]
-        );
     }
 }

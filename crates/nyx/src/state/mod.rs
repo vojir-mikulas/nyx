@@ -17,8 +17,8 @@ use gpui::{
     Pixels, Point, SharedString, Window,
 };
 use nyx_core::{
-    CollisionChoice, EntryKind, Protocol, RemotePath, Secret, Transfer, TransferDirection,
-    TransferId, TransferStatus,
+    CollisionChoice, EntryKind, FtpsMode, Protocol, RemotePath, Secret, ServerTrustKind, Transfer,
+    TransferDirection, TransferId, TransferKind, TransferStatus,
 };
 use nyx_drag::DragFile;
 use nyx_keyring::{passphrase_account, password_account, CredentialStore, OsKeyring};
@@ -77,12 +77,15 @@ pub struct PasswordPrompt {
     pub is_passphrase: bool,
 }
 
-/// A pending host-key trust-on-first-use prompt (an unknown key was presented).
+/// A pending trust-on-first-use prompt (an unknown host key or TLS certificate
+/// was presented).
 pub struct HostKeyPrompt {
-    /// The host the key belongs to.
+    /// The host the identity belongs to.
     pub host: SharedString,
     /// The SHA-256 fingerprint, e.g. `SHA256:…`.
     pub fingerprint: SharedString,
+    /// Whether this is an SSH host key (SFTP) or a TLS certificate (FTPS).
+    pub kind: ServerTrustKind,
 }
 
 /// One transfer parked at the pre-flight gate because its destination exists.
@@ -92,6 +95,8 @@ pub struct CollisionInfo {
     pub id: TransferId,
     /// Upload or download (which side the existing destination is on).
     pub direction: TransferDirection,
+    /// Whether the existing destination is a directory (folder merge prompt).
+    pub is_dir: bool,
     /// The destination's final name (for the prompt copy).
     pub name: SharedString,
     /// The full destination path (remote for upload, local for download).
@@ -135,6 +140,8 @@ pub struct ConnectionEditor {
     pub passphrase: Entity<TextInput>,
     /// Selected protocol.
     pub protocol: Protocol,
+    /// Selected FTPS TLS mode (only meaningful when `protocol` is FTPS).
+    pub ftps_mode: FtpsMode,
     /// Selected accent color.
     pub color: AccentKind,
     /// Inline test-connection status, if a probe has reported.
@@ -166,8 +173,6 @@ pub struct DeleteConfirm {
 pub struct FileMenu {
     /// The clicked row's name (the single-target ops act on this).
     pub name: SharedString,
-    /// Whether the clicked row is a directory (Download is unsupported for dirs).
-    pub is_dir: bool,
     /// Where the menu is anchored (the cursor position).
     pub position: Point<Pixels>,
 }
@@ -231,6 +236,11 @@ pub struct AppState {
     pub sort: (SortKey, bool),
     /// Selected entry names.
     pub selected: HashSet<SharedString>,
+    /// The selection anchor: the row a range-select (shift-click) extends from.
+    /// Set by every plain / additive click; consulted by [`select_range`].
+    ///
+    /// [`select_range`]: AppState::select_range
+    select_anchor: Option<SharedString>,
 
     /// Whether the dock body is expanded.
     pub dock_open: bool,
@@ -416,6 +426,7 @@ impl AppState {
             filter,
             sort: (SortKey::Name, true),
             selected: HashSet::new(),
+            select_anchor: None,
             dock_open: true,
             dock_tab: DockTab::All,
             transfers: Vec::new(),
@@ -820,6 +831,7 @@ impl AppState {
                     .obscured()
             }),
             protocol: Protocol::Sftp,
+            ftps_mode: FtpsMode::default(),
             color: AccentKind::Purple,
             test_status: None,
             testing: false,
@@ -870,6 +882,7 @@ impl AppState {
                     .obscured()
             }),
             protocol: p.protocol,
+            ftps_mode: p.ftps_mode,
             color: AccentKind::from_profile_color(p.color),
             test_status: None,
             testing: false,
@@ -952,6 +965,10 @@ impl AppState {
         };
         let old = editor.protocol;
         editor.protocol = new;
+        // Key auth is SFTP-only; leaving SFTP forces password auth.
+        if new != Protocol::Sftp {
+            editor.auth_is_key = false;
+        }
         let port_input = editor.port.clone();
         let port_text = port_input.read(cx).content().to_string();
         let port_trim = port_text.trim();
@@ -960,6 +977,33 @@ impl AppState {
             port_input.update(cx, |input, cx| {
                 input.set_content(new.default_port().to_string(), cx)
             });
+        }
+    }
+
+    /// Change the editor's FTPS TLS mode (0 = explicit, 1 = implicit). When the
+    /// port still holds the protocol default, switch it to the conventional
+    /// implicit/explicit port (990 / 21).
+    pub fn set_editor_ftps_mode(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let new = if ix == 1 {
+            FtpsMode::Implicit
+        } else {
+            FtpsMode::Explicit
+        };
+        let Some(editor) = self.editor.as_mut() else {
+            return;
+        };
+        editor.ftps_mode = new;
+        // Nudge the port to the conventional one when it still holds a default.
+        let port_input = editor.port.clone();
+        let port_text = port_input.read(cx).content().to_string();
+        let port_trim = port_text.trim();
+        if port_trim.is_empty() || port_trim == "21" || port_trim == "990" {
+            let port = if new == FtpsMode::Implicit {
+                "990"
+            } else {
+                "21"
+            };
+            port_input.update(cx, |input, cx| input.set_content(port, cx));
         }
     }
 
@@ -985,6 +1029,7 @@ impl AppState {
         let key_path = editor.key_path.read(cx).content().trim().to_string();
         let passphrase = editor.passphrase.read(cx).content().to_string();
         let protocol = editor.protocol;
+        let ftps_mode = editor.ftps_mode;
         let color = editor.color;
         let id = editor.id.clone();
         let is_new = editor.is_new;
@@ -1038,6 +1083,7 @@ impl AppState {
             id: id.clone(),
             name,
             protocol,
+            ftps_mode,
             host,
             port,
             username,
@@ -1100,6 +1146,7 @@ impl AppState {
         let key_path = editor.key_path.read(cx).content().trim().to_string();
         let passphrase = editor.passphrase.read(cx).content().to_string();
         let protocol = editor.protocol;
+        let ftps_mode = editor.ftps_mode;
         let id = editor.id.clone();
         let is_new = editor.is_new;
 
@@ -1133,6 +1180,7 @@ impl AppState {
             id: id.clone(),
             name: if name.is_empty() { "test".into() } else { name },
             protocol,
+            ftps_mode,
             host,
             port,
             username,
@@ -1266,16 +1314,12 @@ impl AppState {
 
     /// Open the file-row context menu. Right-click on an unselected row replaces
     /// the selection with just it; right-click inside the selection keeps it.
-    pub fn open_file_menu(&mut self, name: SharedString, is_dir: bool, position: Point<Pixels>) {
+    pub fn open_file_menu(&mut self, name: SharedString, position: Point<Pixels>) {
         if !self.selected.contains(&name) {
             self.selected.clear();
             self.selected.insert(name.clone());
         }
-        self.file_menu = Some(FileMenu {
-            name,
-            is_dir,
-            position,
-        });
+        self.file_menu = Some(FileMenu { name, position });
         self.arm_root_focus();
     }
 
@@ -1498,12 +1542,12 @@ impl AppState {
     }
 
     /// Download the current selection. A single file opens a save-as dialog;
-    /// several files open a folder picker (one `Download` per file). Folders are
-    /// skipped with a toast (directory download is not yet supported).
+    /// anything else — several entries, or a single folder — opens a folder
+    /// picker and issues one `Download` per top-level entry (folders recurse).
     pub fn download_selection(&mut self, cx: &mut Context<Self>) {
         self.close_file_menu();
-        let mut files: Vec<(RemotePath, String)> = Vec::new();
-        let mut skipped_folder = false;
+        // (remote path, display name, is_dir) for each selected entry.
+        let mut entries: Vec<(RemotePath, String, bool)> = Vec::new();
         for name in &self.selected {
             let Some(row) = self
                 .listing
@@ -1512,53 +1556,51 @@ impl AppState {
             else {
                 continue;
             };
-            if row.entry.is_dir() {
-                skipped_folder = true;
-                continue;
-            }
-            files.push((self.cwd.join(name), name.to_string()));
+            entries.push((self.cwd.join(name), name.to_string(), row.entry.is_dir()));
         }
-        if skipped_folder {
-            self.push_toast("Folders can't be downloaded yet", ToastVariant::Info, cx);
-        }
-        if files.is_empty() {
+        if entries.is_empty() {
             return;
         }
 
-        if files.len() == 1 {
-            let (remote, name) = files.into_iter().next().expect("one file");
-            self.download_remote_file(remote, name, cx);
-        } else {
-            let receiver = cx.prompt_for_paths(PathPromptOptions {
-                files: false,
-                directories: true,
-                multiple: false,
-                prompt: Some("Download to".into()),
-            });
-            cx.spawn(async move |this, cx| {
-                let Ok(Ok(Some(folder))) = receiver.await else {
-                    return;
-                };
-                let Some(folder) = folder.into_iter().next() else {
-                    return;
-                };
-                this.update(cx, |this, cx| {
-                    let mut ok = true;
-                    for (remote, name) in files {
-                        let local = folder.join(&name);
-                        if !this.service.send(Command::Download { remote, local }) {
-                            ok = false;
-                        }
-                    }
-                    if !ok {
-                        this.push_toast("Backend unavailable", ToastVariant::Error, cx);
-                    }
-                    cx.notify();
-                })
-                .ok();
-            })
-            .detach();
+        // A lone file gets the familiar save-as dialog; a lone folder or a batch
+        // picks a destination folder to drop the items into.
+        if let [(remote, name, false)] = entries.as_slice() {
+            self.download_remote_file(remote.clone(), name.clone(), cx);
+            return;
         }
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Download to".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(folder))) = receiver.await else {
+                return;
+            };
+            let Some(folder) = folder.into_iter().next() else {
+                return;
+            };
+            this.update(cx, |this, cx| {
+                let mut ok = true;
+                for (remote, name, is_dir) in entries {
+                    let local = folder.join(&name);
+                    if !this.service.send(Command::Download {
+                        remote,
+                        local,
+                        is_dir,
+                    }) {
+                        ok = false;
+                    }
+                }
+                if !ok {
+                    this.push_toast("Backend unavailable", ToastVariant::Error, cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Download a single remote file: open a save-as dialog (defaulting to the OS
@@ -1570,7 +1612,11 @@ impl AppState {
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(local))) = receiver.await {
                 this.update(cx, |this, cx| {
-                    if !this.service.send(Command::Download { remote, local }) {
+                    if !this.service.send(Command::Download {
+                        remote,
+                        local,
+                        is_dir: false,
+                    }) {
                         this.push_toast("Backend unavailable", ToastVariant::Error, cx);
                     }
                     cx.notify();
@@ -1581,9 +1627,9 @@ impl AppState {
         .detach();
     }
 
-    /// Begin an OS drag-out of file rows to Finder/desktop. Drags the whole
-    /// selection when `name` is part of it, otherwise just that row; directories
-    /// are excluded (mirrors download). The drop streams each file through the
+    /// Begin an OS drag-out of file/folder rows to Finder/desktop. Drags the whole
+    /// selection when `name` is part of it, otherwise just that row; a folder
+    /// drops as a recursive download. The drop streams each item through the
     /// download queue via the promise callback in [`crate::drag`].
     pub fn start_drag_out(
         &mut self,
@@ -1606,14 +1652,17 @@ impl AppState {
             else {
                 continue;
             };
-            if row.entry.is_dir() {
+            // Symlinks aren't promised out (their target kind is unresolved here).
+            if matches!(row.entry.kind, EntryKind::Symlink) {
                 continue;
             }
+            let is_dir = row.entry.is_dir();
             files.push(DragFile {
                 name: n.to_string(),
-                size: Some(row.entry.size),
+                size: (!is_dir).then_some(row.entry.size),
+                is_dir,
             });
-            remotes.insert(n.to_string(), self.cwd.join(n));
+            remotes.insert(n.to_string(), (self.cwd.join(n), is_dir));
         }
         if files.is_empty() {
             return;
@@ -1653,9 +1702,10 @@ impl AppState {
         .detach();
     }
 
-    /// Upload already-known local files (from a drag-and-drop). `subdir`, when
-    /// set, is a directory *in the current folder* the files were dropped onto;
-    /// otherwise they land in the current folder. Folders are skipped with a toast.
+    /// Upload already-known local paths (from a drag-and-drop). `subdir`, when
+    /// set, is a directory *in the current folder* the items were dropped onto;
+    /// otherwise they land in the current folder. A dropped folder uploads
+    /// recursively.
     pub fn upload_paths(
         &mut self,
         paths: Vec<std::path::PathBuf>,
@@ -1668,12 +1718,8 @@ impl AppState {
         }
         let mut ok = true;
         let mut sent = 0;
-        let mut skipped_dir = false;
         for local in paths {
-            if local.is_dir() {
-                skipped_dir = true;
-                continue;
-            }
+            let is_dir = local.is_dir();
             let Some(name) = local.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
@@ -1681,14 +1727,15 @@ impl AppState {
                 Some(dir) => self.cwd.join(dir).join(name),
                 None => self.cwd.join(name),
             };
-            if self.service.send(Command::Upload { local, remote }) {
+            if self.service.send(Command::Upload {
+                local,
+                remote,
+                is_dir,
+            }) {
                 sent += 1;
             } else {
                 ok = false;
             }
-        }
-        if skipped_dir {
-            self.push_toast("Folders can't be uploaded yet", ToastVariant::Info, cx);
         }
         if !ok {
             self.push_toast("Backend unavailable", ToastVariant::Error, cx);
@@ -1798,9 +1845,18 @@ impl AppState {
         }
         let remote = vm.transfer.remote_path.clone();
         let local = std::path::PathBuf::from(vm.transfer.local_path.clone());
+        let is_dir = vm.transfer.kind == TransferKind::Dir;
         let command = match vm.transfer.direction {
-            TransferDirection::Upload => Command::Upload { local, remote },
-            TransferDirection::Download => Command::Download { remote, local },
+            TransferDirection::Upload => Command::Upload {
+                local,
+                remote,
+                is_dir,
+            },
+            TransferDirection::Download => Command::Download {
+                remote,
+                local,
+                is_dir,
+            },
         };
         if self.service.send(command) {
             self.transfers.retain(|t| t.transfer.id != id);
@@ -1816,10 +1872,15 @@ impl AppState {
             Event::Connecting { profile_id } => {
                 self.connecting_id = Some(profile_id);
             }
-            Event::HostKeyPrompt { host, fingerprint } => {
+            Event::HostKeyPrompt {
+                host,
+                fingerprint,
+                kind,
+            } => {
                 self.host_key_prompt = Some(HostKeyPrompt {
                     host: host.into(),
                     fingerprint: fingerprint.into(),
+                    kind,
                 });
                 self.arm_primary_focus();
             }
@@ -1890,6 +1951,7 @@ impl AppState {
             Event::TransferQueued {
                 id,
                 direction,
+                kind,
                 remote,
                 local,
             } => {
@@ -1899,6 +1961,7 @@ impl AppState {
                     transfer: Transfer {
                         id,
                         direction,
+                        kind,
                         remote_path: remote,
                         local_path: local,
                         total_bytes: None,
@@ -1912,6 +1975,7 @@ impl AppState {
             Event::TransferCollision {
                 id,
                 direction,
+                is_dir,
                 remote,
                 local,
                 existing_size,
@@ -1937,6 +2001,7 @@ impl AppState {
                 self.pending_collisions.push(CollisionInfo {
                     id,
                     direction,
+                    is_dir,
                     name: name.into(),
                     path: path.into(),
                     existing_size,
@@ -1975,6 +2040,10 @@ impl AppState {
                 self.drag_downloads
                     .note_done(id, status, message.as_deref());
                 let cwd = self.cwd.clone();
+                // A completed folder transfer may carry a "N skipped/failed" note.
+                let completed_note = (status == TransferStatus::Completed)
+                    .then(|| message.clone())
+                    .flatten();
                 let mut refresh = false;
                 if let Some(vm) = self.transfers.iter_mut().find(|t| t.transfer.id == id) {
                     vm.transfer.status = status;
@@ -1985,6 +2054,8 @@ impl AppState {
                             if let Some(total) = vm.transfer.total_bytes {
                                 vm.transfer.transferred_bytes = total;
                             }
+                            // An upload into the current directory (file or folder
+                            // root) refreshes the listing so the new entry shows.
                             refresh = vm.transfer.direction == TransferDirection::Upload
                                 && vm.transfer.remote_path.parent().as_ref() == Some(&cwd);
                         }
@@ -1993,6 +2064,9 @@ impl AppState {
                         }
                         _ => {}
                     }
+                }
+                if let Some(note) = completed_note {
+                    self.push_toast(format!("Folder finished — {note}"), ToastVariant::Info, cx);
                 }
                 if refresh {
                     self.reload_listing(cx);
@@ -2219,15 +2293,39 @@ impl AppState {
         rows
     }
 
-    /// Apply a row click: plain click replaces, cmd/ctrl-click toggles.
+    /// Apply a row click: plain click replaces, cmd/ctrl-click toggles. Either
+    /// way the clicked row becomes the anchor a later shift-click extends from.
     pub fn select(&mut self, name: SharedString, additive: bool) {
         if additive {
             if !self.selected.remove(&name) {
-                self.selected.insert(name);
+                self.selected.insert(name.clone());
             }
         } else {
             self.selected.clear();
-            self.selected.insert(name);
+            self.selected.insert(name.clone());
+        }
+        self.select_anchor = Some(name);
+    }
+
+    /// Apply a shift-click: select the inclusive range from the anchor row to the
+    /// clicked row in the current visible order. With no (visible) anchor it
+    /// behaves like a plain click. The anchor is left where it was so successive
+    /// shift-clicks re-extend from the same origin.
+    pub fn select_range(&mut self, name: SharedString, cx: &App) {
+        let names = self.visible_names(cx);
+        let clicked = names.iter().position(|n| *n == name);
+        let anchor = self
+            .select_anchor
+            .as_ref()
+            .and_then(|a| names.iter().position(|n| n == a));
+        match (clicked, anchor) {
+            (Some(click), Some(anchor)) => {
+                let (lo, hi) = (click.min(anchor), click.max(anchor));
+                self.selected = names[lo..=hi].iter().cloned().collect();
+            }
+            // No anchor (or it scrolled out of the listing): fall back to a plain
+            // select, seeding the anchor for the next shift-click.
+            _ => self.select(name, false),
         }
     }
 

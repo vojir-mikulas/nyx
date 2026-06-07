@@ -4,7 +4,7 @@
 //! [`AppState`] methods; this file only reads `state.editor` and emits elements.
 
 use gpui::{div, prelude::*, px, Context, FontWeight};
-use nyx_core::Protocol;
+use nyx_core::{FtpsMode, Protocol};
 use nyx_ui::{ActiveTheme, Button, ButtonSize, ButtonVariant, Modal, Segmented};
 
 use crate::state::AppState;
@@ -23,6 +23,10 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
     let color_ix = editor.color.index();
     let is_new = editor.is_new;
     let auth_is_key = editor.auth_is_key;
+    let is_sftp = matches!(editor.protocol, Protocol::Sftp);
+    let is_ftp = matches!(editor.protocol, Protocol::Ftp);
+    let is_ftps = matches!(editor.protocol, Protocol::Ftps);
+    let ftps_implicit = editor.ftps_mode == FtpsMode::Implicit;
 
     // The inline test-connection status line.
     let status: Option<gpui::AnyElement> = if editor.testing {
@@ -96,6 +100,33 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                         }),
                     cx,
                 ))
+                .when(is_ftps, |this| {
+                    this.child(field(
+                        "Encryption",
+                        Segmented::new("ce-ftps-mode")
+                            .segment("Explicit")
+                            .segment("Implicit")
+                            .selected(if ftps_implicit { 1 } else { 0 })
+                            .on_select({
+                                let view = view.clone();
+                                move |ix, _window, cx| {
+                                    view.update(cx, |this, cx| {
+                                        this.set_editor_ftps_mode(ix, cx);
+                                        cx.notify();
+                                    });
+                                }
+                            }),
+                        cx,
+                    ))
+                })
+                .when(is_ftp, |this| {
+                    this.child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.red)
+                            .child("⚠ FTP is unencrypted — credentials and files cross the network in the clear."),
+                    )
+                })
                 .child(
                     div()
                         .flex()
@@ -127,27 +158,31 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                         }),
                     cx,
                 ))
-                .child(field(
-                    "Authentication",
-                    Segmented::new("ce-auth")
-                        .segment("Password")
-                        .segment("Key")
-                        .selected(if auth_is_key { 1 } else { 0 })
-                        .on_select({
-                            let view = view.clone();
-                            move |ix, _window, cx| {
-                                view.update(cx, |this, cx| {
-                                    this.set_editor_auth(ix);
-                                    cx.notify();
-                                });
-                            }
-                        }),
-                    cx,
-                ))
+                .when(is_sftp, |this| {
+                    this.child(field(
+                        "Authentication",
+                        Segmented::new("ce-auth")
+                            .segment("Password")
+                            .segment("Key")
+                            .selected(if auth_is_key { 1 } else { 0 })
+                            .on_select({
+                                let view = view.clone();
+                                move |ix, _window, cx| {
+                                    view.update(cx, |this, cx| {
+                                        this.set_editor_auth(ix);
+                                        cx.notify();
+                                    });
+                                }
+                            }),
+                        cx,
+                    ))
+                })
+                // Password auth: SFTP-with-password, or any FTP/FTPS (which are
+                // username+password only).
                 .when(!auth_is_key, |this| {
                     this.child(field("Password", editor.password.clone(), cx))
                 })
-                .when(auth_is_key, |this| {
+                .when(is_sftp && auth_is_key, |this| {
                     this.child(field(
                         "Private key",
                         div()

@@ -185,10 +185,17 @@ pub fn start_file_drag(
     let mut items: Vec<Retained<NSDraggingItem>> = Vec::with_capacity(files.len());
     let mut delegates: Vec<Retained<PromiseDelegate>> = Vec::with_capacity(files.len());
     for (i, file) in files.into_iter().enumerate() {
+        // `public.folder` makes the OS create a directory at the drop URL (which
+        // `writePromiseToURL:` then fills recursively); `public.data` advertises a
+        // generic byte stream for a file. The real name comes from the delegate's
+        // `fileNameForType:`.
+        let uti_str = if file.is_dir {
+            "public.folder"
+        } else {
+            "public.data"
+        };
         let delegate = PromiseDelegate::new(file, fetch.clone());
-        // `public.data` advertises a generic byte stream; the real file name
-        // (with extension) comes from the delegate's `fileNameForType:`.
-        let uti = NSString::from_str("public.data");
+        let uti = NSString::from_str(uti_str);
         let provider = NSFilePromiseProvider::initWithFileType_delegate(
             NSFilePromiseProvider::alloc(),
             &uti,
