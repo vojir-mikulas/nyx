@@ -74,6 +74,98 @@ pub enum CollisionChoice {
     Cancel,
 }
 
+/// Whether a per-entry issue in a folder transfer was a hard failure (the copy
+/// errored mid-flight) or a deliberate skip (a symlink, special file, or
+/// non-representable name the walk declined to copy in the first place).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EntryOutcomeKind {
+    /// The copy was attempted and errored (e.g. permission denied, unreadable).
+    Failed,
+    /// The entry was never copied (symlink, special file, non-UTF-8 name).
+    Skipped,
+}
+
+/// One entry a recursive folder transfer could not copy, kept so a partial
+/// success is *diagnosable* rather than a bare tally: the path (relative to the
+/// transfer root) and a credential-free reason.
+///
+/// Reasons come from `io::Error`/[`NyxError`](crate::NyxError) text or the walk's
+/// skip classification — both are filesystem paths and OS error strings, so a
+/// secret can never appear here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntryIssue {
+    /// Path relative to the transfer root, e.g. `"sub/report.txt"`.
+    pub rel: String,
+    /// Whether the entry failed mid-copy or was skipped during enumeration.
+    pub kind: EntryOutcomeKind,
+    /// A short, credential-free reason (e.g. `"permission denied"`,
+    /// `"symlink skipped"`).
+    pub reason: String,
+}
+
+impl EntryIssue {
+    /// A skip discovered during enumeration (a walk).
+    pub fn skipped(rel: String, reason: impl Into<String>) -> Self {
+        Self {
+            rel,
+            kind: EntryOutcomeKind::Skipped,
+            reason: reason.into(),
+        }
+    }
+
+    /// A failure caught while copying an entry.
+    pub fn failed(rel: String, reason: impl Into<String>) -> Self {
+        Self {
+            rel,
+            kind: EntryOutcomeKind::Failed,
+            reason: reason.into(),
+        }
+    }
+}
+
+/// The per-entry report attached to a completed-with-issues folder transfer.
+///
+/// `failed`/`skipped` are exact full counts; `issues` is a **capped** retained
+/// list (see [`EntryIssue`]). When `issues.len()` is short of `failed + skipped`
+/// the tail was truncated — [`truncated`](Self::truncated) reports by how many,
+/// so the cap is never a silent drop.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferReport {
+    /// Exact count of entries that failed mid-copy.
+    pub failed: u64,
+    /// Exact count of entries skipped during enumeration.
+    pub skipped: u64,
+    /// The retained per-entry detail, capped — may be shorter than the counts.
+    pub issues: Vec<EntryIssue>,
+}
+
+impl TransferReport {
+    /// One-line at-a-glance summary, e.g. `"2 failed, 1 skipped"`; `None` when
+    /// the transfer was clean (no failures, no skips).
+    pub fn summary(&self) -> Option<String> {
+        let mut notes = Vec::new();
+        if self.failed > 0 {
+            notes.push(format!("{} failed", self.failed));
+        }
+        if self.skipped > 0 {
+            notes.push(format!("{} skipped", self.skipped));
+        }
+        (!notes.is_empty()).then(|| notes.join(", "))
+    }
+
+    /// Whether the report carries any failure or skip at all.
+    pub fn has_issues(&self) -> bool {
+        self.failed > 0 || self.skipped > 0
+    }
+
+    /// How many issues the retention cap dropped from `issues` (full counts stay
+    /// exact, so this is `failed + skipped` minus what we kept).
+    pub fn truncated(&self) -> u64 {
+        (self.failed + self.skipped).saturating_sub(self.issues.len() as u64)
+    }
+}
+
 /// A single queued / running transfer and its progress.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Transfer {

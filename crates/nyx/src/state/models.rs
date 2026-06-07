@@ -7,7 +7,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{Hsla, SharedString};
-use nyx_core::{EntryKind, Protocol, RemoteEntry, Transfer, TransferStatus};
+use nyx_core::{EntryKind, Protocol, RemoteEntry, Transfer, TransferReport, TransferStatus};
 use nyx_profile::{Profile, ProfileColor};
 use nyx_ui::{BadgeVariant, Theme};
 use time::OffsetDateTime;
@@ -84,6 +84,11 @@ pub struct TransferVm {
     pub speed_bps: Option<u64>,
     /// Display copy for a failed transfer.
     pub error: Option<SharedString>,
+    /// Per-entry detail for a folder that completed with skips/failures; `None`
+    /// for clean folders and file transfers.
+    pub report: Option<TransferReport>,
+    /// Whether the dock row's per-entry report is expanded.
+    pub report_expanded: bool,
 }
 
 /// A directory entry plus its derived display strings.

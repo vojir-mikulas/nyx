@@ -17,8 +17,8 @@ use gpui::{
     Pixels, Point, SharedString, Window,
 };
 use nyx_core::{
-    CollisionChoice, EntryKind, FtpsMode, Protocol, RemotePath, Secret, ServerTrustKind, Transfer,
-    TransferDirection, TransferId, TransferKind, TransferStatus,
+    CollisionChoice, EntryKind, EntryOutcomeKind, FtpsMode, Protocol, RemotePath, Secret,
+    ServerTrustKind, Transfer, TransferDirection, TransferId, TransferKind, TransferStatus,
 };
 use nyx_drag::DragFile;
 use nyx_keyring::{passphrase_account, password_account, CredentialStore, OsKeyring};
@@ -1859,6 +1859,54 @@ impl AppState {
         self.service.send(Command::CancelTransfer { id });
     }
 
+    /// Toggle the per-entry report disclosure on a completed-with-issues folder
+    /// row (the dock's chevron / row click).
+    pub fn toggle_transfer_report(&mut self, id: TransferId) {
+        if let Some(vm) = self.transfers.iter_mut().find(|t| t.transfer.id == id) {
+            vm.report_expanded = !vm.report_expanded;
+        }
+    }
+
+    /// Copy a folder transfer's per-entry report to the clipboard as plain text
+    /// — the whole point of surfacing the detail is that it can be pasted into a
+    /// bug report. The text mirrors the (capped) retained list and notes any
+    /// truncated tail so the paste is never silently partial.
+    pub fn copy_transfer_report(&mut self, id: TransferId, cx: &mut Context<Self>) {
+        let Some(vm) = self.transfers.iter().find(|t| t.transfer.id == id) else {
+            return;
+        };
+        let Some(report) = vm.report.as_ref() else {
+            return;
+        };
+        let mut out = String::new();
+        out.push_str(&format!(
+            "Folder transfer: {}\n",
+            vm.transfer.remote_path.as_str()
+        ));
+        if let Some(summary) = report.summary() {
+            out.push_str(&summary);
+            out.push('\n');
+        }
+        let mut push_group = |kind: EntryOutcomeKind, label: &str| {
+            let group: Vec<_> = report.issues.iter().filter(|i| i.kind == kind).collect();
+            if group.is_empty() {
+                return;
+            }
+            out.push_str(&format!("\n{label}:\n"));
+            for issue in group {
+                out.push_str(&format!("  {} — {}\n", issue.rel, issue.reason));
+            }
+        };
+        push_group(EntryOutcomeKind::Failed, "Failed");
+        push_group(EntryOutcomeKind::Skipped, "Skipped");
+        let truncated = report.truncated();
+        if truncated > 0 {
+            out.push_str(&format!("…and {truncated} more\n"));
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(out));
+        self.push_toast("Report copied", ToastVariant::Info, cx);
+    }
+
     /// Re-issue a failed transfer (the dock's retry button). Resends the original
     /// `Upload`/`Download` command and drops the stale failed row — the retry
     /// re-enters the queue as a fresh transfer (its own `TransferQueued` event).
@@ -2029,6 +2077,8 @@ impl AppState {
                     },
                     speed_bps: None,
                     error: None,
+                    report: None,
+                    report_expanded: false,
                 });
             }
             Event::TransferCollision {
@@ -2093,6 +2143,7 @@ impl AppState {
                 id,
                 status,
                 message,
+                report,
             } => {
                 // Release any drag-out promise waiting on this transfer (no-op
                 // otherwise), unblocking the OS callback that drives the drop.
@@ -2107,6 +2158,8 @@ impl AppState {
                 if let Some(vm) = self.transfers.iter_mut().find(|t| t.transfer.id == id) {
                     vm.transfer.status = status;
                     vm.speed_bps = None;
+                    // The per-entry detail behind a completed-with-issues folder.
+                    vm.report = report;
                     match status {
                         TransferStatus::Completed => {
                             // Snap the bar to 100% even if no final sample landed.

@@ -11,7 +11,7 @@
 use std::path::Path;
 
 use async_trait::async_trait;
-use nyx_core::{EntryKind, RemoteEntry, RemotePath, Result, TransferProgress};
+use nyx_core::{EntryIssue, EntryKind, RemoteEntry, RemotePath, Result, TransferProgress};
 
 mod ftp;
 mod ftps;
@@ -50,9 +50,10 @@ pub struct DirWalk {
     pub items: Vec<WalkItem>,
     /// Sum of all file sizes — the transfer's `total`.
     pub total_bytes: u64,
-    /// Count of symlinks (and other non-file/non-dir entries) skipped during the
-    /// walk, surfaced in the terminal event. We don't follow links in v1.
-    pub skipped: u64,
+    /// Entries skipped during the walk — symlinks, special files and (locally)
+    /// non-UTF-8 names — each carrying *why*, so the terminal report lists the
+    /// path and reason rather than a bare count. We don't follow links in v1.
+    pub skips: Vec<EntryIssue>,
 }
 
 /// An async client for a remote filesystem.

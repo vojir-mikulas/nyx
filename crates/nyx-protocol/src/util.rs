@@ -7,7 +7,7 @@
 
 use std::future::Future;
 
-use nyx_core::{EntryKind, NyxError, Result, TransferProgress};
+use nyx_core::{EntryIssue, EntryKind, NyxError, Result, TransferProgress};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{DirWalk, WalkItem};
@@ -147,8 +147,14 @@ where
                     });
                 }
                 // Links and special files (sockets, devices, …) aren't copyable
-                // byte streams — skip and tally, never follow.
-                EntryKind::Symlink | EntryKind::Other => walk.skipped += 1,
+                // byte streams — skip and record why, never follow.
+                EntryKind::Symlink => walk
+                    .skips
+                    .push(EntryIssue::skipped(child_rel.join("/"), "symlink skipped")),
+                EntryKind::Other => walk.skips.push(EntryIssue::skipped(
+                    child_rel.join("/"),
+                    "special file skipped",
+                )),
             }
         }
     }
@@ -213,7 +219,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(walk.total_bytes, 17);
-        assert_eq!(walk.skipped, 1);
+        // The lone symlink is skipped, carrying its path and reason.
+        assert_eq!(walk.skips.len(), 1);
+        assert_eq!(walk.skips[0].rel, "link");
+        assert_eq!(walk.skips[0].reason, "symlink skipped");
         // Every directory precedes anything beneath it.
         let pos = |rel: &[&str]| {
             walk.items

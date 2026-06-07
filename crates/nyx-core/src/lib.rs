@@ -16,6 +16,6 @@ pub use path::{RemotePath, RemotePathError};
 pub use remote::{EntryKind, FtpsMode, Permissions, Protocol, RemoteEntry, Rwx, ServerTrustKind};
 pub use secret::Secret;
 pub use transfer::{
-    CollisionChoice, Transfer, TransferDirection, TransferId, TransferKind, TransferProgress,
-    TransferStatus,
+    CollisionChoice, EntryIssue, EntryOutcomeKind, Transfer, TransferDirection, TransferId,
+    TransferKind, TransferProgress, TransferReport, TransferStatus,
 };

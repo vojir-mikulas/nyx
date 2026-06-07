@@ -1,8 +1,10 @@
 //! The bottom transfer dock: collapsible header (tabs + clear) and rows.
 
-use gpui::{div, prelude::*, px, Context};
-use nyx_core::{TransferDirection, TransferStatus};
-use nyx_ui::{ActiveTheme, IconButton, IconButtonSize, ProgressBar, Tabs};
+use gpui::{div, prelude::*, px, AnyElement, Context, Hsla, SharedString};
+use nyx_core::{EntryOutcomeKind, TransferDirection, TransferStatus};
+use nyx_ui::{
+    ActiveTheme, Button, ButtonSize, ButtonVariant, IconButton, IconButtonSize, ProgressBar, Tabs,
+};
 
 use crate::icon::icon;
 use crate::state::models::{fmt_bytes_pair, fmt_size, DockTab, TransferVm};
@@ -114,6 +116,13 @@ fn transfer_row(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
     let mono = crate::assets::FONT_MONO;
     let status = t.transfer.status;
+    let id = t.transfer.id;
+
+    // A folder that completed with skips/failures carries a report — surface its
+    // summary in a warning color and let the row expand to the per-entry detail.
+    let has_report = status == TransferStatus::Completed && t.report.is_some();
+    let summary = t.report.as_ref().and_then(|r| r.summary());
+    let expanded = t.report_expanded;
 
     let (dir_icon, dir_color) = match t.transfer.direction {
         TransferDirection::Upload => ("upload", theme.blue),
@@ -149,24 +158,32 @@ fn transfer_row(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
 
     let show_bar = matches!(status, TransferStatus::Running | TransferStatus::Queued);
     let show_cancel = show_bar || status == TransferStatus::AwaitingDecision;
-    let path_or_error = if status == TransferStatus::Failed {
+    let (detail_text, detail_color): (SharedString, Hsla) = if status == TransferStatus::Failed {
         (
             t.error.clone().unwrap_or_else(|| "Transfer failed".into()),
             theme.red,
         )
+    } else if let Some(summary) = summary {
+        (summary.into(), theme.yellow)
     } else {
         (t.transfer.remote_path.as_str().into(), theme.text_faint)
     };
 
-    div()
+    let main = div()
+        .id(SharedString::from(format!("xfer-row-{}", id.0)))
         .flex()
         .items_center()
         .gap_2p5()
         .px_3()
         .py(px(7.))
-        .border_b_1()
-        .border_color(theme.border_soft)
         .hover(|s| s.bg(theme.bg_hover))
+        .when(has_report, |this| {
+            this.cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.toggle_transfer_report(id);
+                    cx.notify();
+                }))
+        })
         .child(
             div()
                 .w(px(18.))
@@ -189,10 +206,19 @@ fn transfer_row(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
                 )
                 .child(
                     div()
-                        .text_xs()
-                        .text_color(path_or_error.1)
-                        .truncate()
-                        .child(path_or_error.0),
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .when(has_report, |this| {
+                            this.child(icon("alert", 11., theme.yellow))
+                        })
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(detail_color)
+                                .truncate()
+                                .child(detail_text),
+                        ),
                 )
                 .when(show_bar, |this| {
                     this.child(div().mt_1p5().child(ProgressBar::new(
@@ -229,6 +255,13 @@ fn transfer_row(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
                 .gap_1p5()
                 .w(px(112.))
                 .flex_shrink_0()
+                .when(has_report, |this| {
+                    this.child(icon(
+                        if expanded { "chevD" } else { "chevR" },
+                        13.,
+                        theme.text_faint,
+                    ))
+                })
                 .child(
                     div()
                         .flex()
@@ -249,6 +282,111 @@ fn transfer_row(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
                 .when(status == TransferStatus::Failed, |this| {
                     this.child(retry_button(t, cx))
                 }),
+        );
+
+    div()
+        .flex()
+        .flex_col()
+        .border_b_1()
+        .border_color(theme.border_soft)
+        .child(main)
+        .when(has_report && expanded, |this| {
+            this.child(report_panel(t, cx))
+        })
+}
+
+/// The expanded per-entry report under a completed-with-issues folder row: the
+/// failed and skipped paths with reasons (grouped, scrollable) plus a copy
+/// action. Only rendered when `t.report` is `Some`.
+fn report_panel(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
+    let theme = cx.theme().clone();
+    let mono = crate::assets::FONT_MONO;
+    let id = t.transfer.id;
+    let report = t.report.clone().unwrap_or_default();
+
+    let group = |kind: EntryOutcomeKind, label: &str, color: Hsla| -> Option<AnyElement> {
+        let rows: Vec<_> = report
+            .issues
+            .iter()
+            .filter(|i| i.kind == kind)
+            .map(|i| {
+                div()
+                    .flex()
+                    .gap_2()
+                    .font_family(mono)
+                    .text_xs()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(theme.text_muted)
+                            .child(i.rel.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_color(theme.text_faint)
+                            .child(i.reason.clone()),
+                    )
+            })
+            .collect();
+        if rows.is_empty() {
+            return None;
+        }
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap_0p5()
+                .child(div().text_xs().text_color(color).child(label.to_string()))
+                .children(rows)
+                .into_any_element(),
+        )
+    };
+
+    let truncated = report.truncated();
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_1p5()
+        .px_3()
+        .pb_2()
+        .pl(px(38.))
+        .bg(theme.bg_app)
+        .child(
+            div()
+                .id(SharedString::from(format!("xfer-report-{}", id.0)))
+                .flex()
+                .flex_col()
+                .gap_2()
+                .max_h(px(132.))
+                .overflow_y_scroll()
+                .py_1()
+                .children(group(EntryOutcomeKind::Failed, "Failed", theme.red))
+                .children(group(EntryOutcomeKind::Skipped, "Skipped", theme.text_dim))
+                .when(truncated > 0, |this| {
+                    this.child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.text_faint)
+                            .child(format!("…and {truncated} more")),
+                    )
+                }),
+        )
+        .child(
+            div().flex().child(
+                Button::new(
+                    SharedString::from(format!("xfer-copy-report-{}", id.0)),
+                    "Copy report",
+                )
+                .size(ButtonSize::Sm)
+                .variant(ButtonVariant::Secondary)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.copy_transfer_report(id, cx);
+                    cx.notify();
+                })),
+            ),
         )
 }
 

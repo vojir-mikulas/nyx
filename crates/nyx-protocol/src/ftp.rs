@@ -17,7 +17,7 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use nyx_core::{
-    EntryKind, NyxError, Permissions, RemoteEntry, RemotePath, Result, TransferProgress,
+    EntryIssue, EntryKind, NyxError, Permissions, RemoteEntry, RemotePath, Result, TransferProgress,
 };
 use suppaftp::list::{File, PosixPexQuery};
 use suppaftp::tokio::{AsyncFtpStream, ImplAsyncFtpStream, TokioTlsStream};
@@ -275,7 +275,13 @@ where
                         size: entry.size,
                     });
                 }
-                EntryKind::Symlink | EntryKind::Other => walk.skipped += 1,
+                EntryKind::Symlink => walk
+                    .skips
+                    .push(EntryIssue::skipped(child_rel.join("/"), "symlink skipped")),
+                EntryKind::Other => walk.skips.push(EntryIssue::skipped(
+                    child_rel.join("/"),
+                    "special file skipped",
+                )),
             }
         }
     }
