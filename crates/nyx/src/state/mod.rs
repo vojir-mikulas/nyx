@@ -5,7 +5,6 @@
 //! helpers that read a `&AppState` and emit elements; only the filter
 //! [`TextInput`] is its own entity (it needs focus/IME state).
 
-mod filter;
 pub mod models;
 
 use std::cell::RefCell;
@@ -21,7 +20,7 @@ use gpui::{
     PathPromptOptions, Pixels, Point, SharedString, Window,
 };
 use nyx_core::{
-    CollisionChoice, EntryKind, EntryOutcomeKind, FtpsMode, Protocol, RemotePath, Secret,
+    CollisionChoice, EntryKind, EntryOutcomeKind, Filter, FtpsMode, Protocol, RemotePath, Secret,
     ServerTrustKind, Transfer, TransferDirection, TransferId, TransferKind, TransferStatus,
 };
 use nyx_drag::DragFile;
@@ -33,7 +32,6 @@ use nyx_service::{Command, Event, FileOp, ServiceHandle};
 use nyx_ui::{ActiveTheme, TextInput, TextInputEvent, Theme, ToastVariant};
 use time::OffsetDateTime;
 
-use filter::Filter;
 use models::{AccentKind, ConnectionVm, Density, DockTab, EntryRow, SortKey, TransferVm};
 
 /// Visible folder rows' painted rects (name → window-coordinate rect), shared
@@ -2639,7 +2637,7 @@ impl AppState {
             .listing
             .iter()
             .enumerate()
-            .filter(|(_, row)| query.matches(row, now))
+            .filter(|(_, row)| query.matches(&row.entry, &row.name_lower, now))
             .map(|(ix, _)| ix)
             .collect();
 

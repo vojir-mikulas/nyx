@@ -12,6 +12,8 @@ back here.
 - [`git-workflow.md`](git-workflow.md) — how we structure source control:
   trunk-based branching, conventional commits, versioning/releases, CI gates,
   and the repo hygiene files.
+- [`user/`](user/README.md) — the **end-user guide** (install, getting started,
+  troubleshooting). For people using the app, not building it.
 
 ## Plans
 
@@ -72,6 +74,11 @@ the GitHub mirror.
   `ext:`/`modified:` predicates) with two scopes: current dir (default) and a
   **recursive search of the remote tree** via a leading `/` sigil, streamed and
   cancellable. Ships independently of `large-listings.md` via a result cap.
+- [`plans/connection-accent-color.md`](plans/connection-accent-color.md) —
+  **proposed.** The per-connection accent color already exists end to end but
+  only tints two small icons; make it actually identify a connection (welcome
+  card chip + titlebar segment), and optionally widen the Blue/Purple/Green
+  palette to the theme's other named colors.
 
 ## Visual reference
 

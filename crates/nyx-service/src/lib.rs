@@ -18,20 +18,23 @@
 //! at most one connect-like op (Connect or TestConnection) is in flight at a
 //! time, so there is never more than one pending host-key decision.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
+
+use async_trait::async_trait;
 
 use futures::channel::mpsc::{
     unbounded as futures_unbounded, UnboundedReceiver as FuturesReceiver,
     UnboundedSender as FuturesSender,
 };
 use nyx_core::{
-    is_safe_local_segment, CollisionChoice, EntryIssue, EntryKind, NyxError, Protocol, RemoteEntry,
-    RemotePath, Secret, ServerTrustKind, TransferDirection, TransferId, TransferKind,
+    is_safe_local_segment, CollisionChoice, EntryIssue, EntryKind, Filter, NyxError, Protocol,
+    RemoteEntry, RemotePath, Secret, ServerTrustKind, TransferDirection, TransferId, TransferKind,
     TransferReport, TransferStatus, LARGE_LISTING_WARN,
 };
 use nyx_profile::{AuthMethod, Profile};
@@ -66,6 +69,19 @@ fn transfer_cap_for(protocol: Protocol) -> usize {
 /// throttled [`Event::TransferProgress`]. The fixed interval also serves as the
 /// speed denominator, so no `Instant` is needed.
 const PROGRESS_TICK: Duration = Duration::from_millis(150);
+
+/// Recursion depth cap for a tree search (the root is depth 0). Bounds work on
+/// pathological trees and is the symlink-loop backstop.
+const SEARCH_MAX_DEPTH: u32 = 32;
+
+/// Hard cap on hits a single tree search returns. Beyond this the result is
+/// marked truncated and the walk stops — keeps a wildcard query over a huge tree
+/// from flooding the UI. Lift once `large-listings` lazifies the row precompute.
+const SEARCH_MAX_RESULTS: usize = 5_000;
+
+/// Hits buffered before a streaming [`Event::SearchResult`] batch is flushed, so
+/// results appear as the tree is walked rather than all at the end.
+const SEARCH_BATCH: usize = 128;
 
 /// How many automatic reconnect attempts to make on a transport loss before
 /// giving up and falling back to a manual reconnect.
@@ -102,6 +118,16 @@ fn known_certs() -> PathBuf {
     }
 }
 
+/// A single match from a recursive tree search: an entry plus its absolute path
+/// (results live outside the current directory, so the path is essential).
+#[derive(Debug, Clone)]
+pub struct SearchHit {
+    /// Absolute remote path of the matched entry.
+    pub path: RemotePath,
+    /// The matched entry's metadata.
+    pub entry: RemoteEntry,
+}
+
 /// A request from the UI to the backend.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -131,6 +157,21 @@ pub enum Command {
         /// Absolute remote path to list.
         path: RemotePath,
     },
+    /// Recursively search the subtree at `root` on the active connection for
+    /// entries matching `query`, streaming hits back as [`Event::SearchResult`].
+    /// Runs off the command loop so the UI stays responsive; a later `SearchTree`
+    /// or [`Command::CancelSearch`] supersedes an in-flight walk.
+    SearchTree {
+        /// Absolute remote path to search beneath (the search root).
+        root: RemotePath,
+        /// The parsed query each entry is matched against.
+        query: Filter,
+        /// Correlates streamed results to this request; the UI drops batches from
+        /// a superseded (stale) token.
+        token: u64,
+    },
+    /// Abort the in-flight tree search, if any. A no-op when none is running.
+    CancelSearch,
     /// Resolve a symlink on the active connection by following it, so the UI can
     /// decide on click whether to navigate into it (directory target) or treat it
     /// as a file (download). Replies with [`Event::SymlinkResolved`].
@@ -262,6 +303,20 @@ pub enum Event {
         path: RemotePath,
         /// The entries in that directory.
         entries: Vec<RemoteEntry>,
+    },
+    /// A batch of matches from a [`Command::SearchTree`] walk. Several arrive per
+    /// search as the tree is streamed; the UI appends them under the matching
+    /// `token` and drops batches from a stale (superseded) one.
+    SearchResult {
+        /// Echoes the request's token so the UI can drop stale results.
+        token: u64,
+        /// The matches in this batch (may be empty on the terminal batch).
+        hits: Vec<SearchHit>,
+        /// `true` on the final batch — the walk has finished (or was capped).
+        done: bool,
+        /// `true` when the result cap stopped the walk before the tree was
+        /// exhausted, so the UI can say results are partial.
+        truncated: bool,
     },
     /// The result of a [`Command::ResolveSymlink`]: the followed link's target is
     /// a directory (navigate into `path`) or not (treat `path` as a file).
@@ -591,6 +646,11 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
     // healthy session — it's resumed instead of flipping the session again.
     let mut generation: u64 = 0;
 
+    // Cancel flag of the in-flight tree search, if any. A new `SearchTree` (or a
+    // `CancelSearch`/connect/disconnect) sets it, which makes the detached search
+    // task stop between directory listings.
+    let mut current_search: Option<Arc<AtomicBool>> = None;
+
     // The throttle ticker for progress sampling. The first tick fires
     // immediately; on an idle loop it samples an empty set (cheap no-op).
     let mut progress_tick = tokio::time::interval(PROGRESS_TICK);
@@ -631,6 +691,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                         }
                         reconnector.set_creds(profile.clone(), secret.clone(), auto_reconnect);
                         // Replace any existing session.
+                        abort_search(&mut current_search);
                         client = None;
                         in_flight = true;
                         tokio::spawn(run_task(
@@ -691,6 +752,24 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                             None => not_connected(&events),
                         }
                     }
+                    Command::SearchTree { root, query, token } => {
+                        // Supersede any in-flight search, then walk off the command
+                        // loop so further commands (incl. the next keystroke's
+                        // search) keep flowing while the tree is traversed.
+                        abort_search(&mut current_search);
+                        match client.clone() {
+                            Some(session) => {
+                                let cancel = Arc::new(AtomicBool::new(false));
+                                current_search = Some(cancel.clone());
+                                let events = events.clone();
+                                tokio::spawn(async move {
+                                    run_search(&session, root, query, token, cancel, events).await;
+                                });
+                            }
+                            None => not_connected(&events),
+                        }
+                    }
+                    Command::CancelSearch => abort_search(&mut current_search),
                     Command::ResolveSymlink { path } => {
                         let result = match client.as_deref() {
                             Some(session) => Some(session.target_kind(&path).await),
@@ -853,6 +932,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                         in_flight = false;
                         active_profile = None;
                         reconnector.clear();
+                        abort_search(&mut current_search);
                         // Cancel everything: flag the running transfers (their
                         // tasks wind down and report Cancelled via `xfer_done`)
                         // and drain the queued ones (no task ran, so emit their
@@ -1811,6 +1891,97 @@ async fn remote_tree_fileless(client: &dyn RemoteClient, root: &RemotePath) -> O
     Some(walk.items.iter().all(|i| i.is_dir) && walk.skips.is_empty())
 }
 
+/// The one capability a tree search needs: list a directory. Going through a
+/// narrow trait (rather than `RemoteClient` directly) keeps [`run_search`]
+/// unit-testable against an in-memory fake.
+#[async_trait]
+trait DirLister: Send + Sync {
+    async fn list(&self, path: &RemotePath) -> nyx_core::Result<Vec<RemoteEntry>>;
+}
+
+#[async_trait]
+impl DirLister for Arc<dyn RemoteClient> {
+    async fn list(&self, path: &RemotePath) -> nyx_core::Result<Vec<RemoteEntry>> {
+        self.list_dir(path).await
+    }
+}
+
+/// Signal the in-flight search (if any) to stop, and forget it.
+fn abort_search(current: &mut Option<Arc<AtomicBool>>) {
+    if let Some(flag) = current.take() {
+        flag.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Breadth-first walk of `root`, streaming matched entries back in batches.
+///
+/// Bounded by [`SEARCH_MAX_DEPTH`] (also the symlink-loop backstop) and
+/// [`SEARCH_MAX_RESULTS`]. A directory that fails to list (permission denied, a
+/// vanished path) is skipped, not fatal. The walk checks `cancel` between
+/// directories and bails immediately when a newer search supersedes it — the UI
+/// ignores that token anyway, so no terminal batch is owed.
+async fn run_search(
+    client: &(impl DirLister + ?Sized),
+    root: RemotePath,
+    query: Filter,
+    token: u64,
+    cancel: Arc<AtomicBool>,
+    events: FuturesSender<Event>,
+) {
+    let now = SystemTime::now();
+    let mut frontier: VecDeque<(RemotePath, u32)> = VecDeque::new();
+    frontier.push_back((root, 0));
+    let mut batch: Vec<SearchHit> = Vec::new();
+    let mut found = 0usize;
+    let mut truncated = false;
+
+    'walk: while let Some((dir, depth)) = frontier.pop_front() {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        let entries = match client.list(&dir).await {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries {
+            let name_lower = entry.name.to_lowercase();
+            let path = dir.join(&entry.name);
+            if entry.is_dir() && depth < SEARCH_MAX_DEPTH {
+                frontier.push_back((path.clone(), depth + 1));
+            }
+            if query.matches(&entry, &name_lower, now) {
+                batch.push(SearchHit { path, entry });
+                found += 1;
+                if batch.len() >= SEARCH_BATCH {
+                    flush_hits(&events, token, &mut batch, false, false);
+                }
+                if found >= SEARCH_MAX_RESULTS {
+                    truncated = true;
+                    break 'walk;
+                }
+            }
+        }
+    }
+    flush_hits(&events, token, &mut batch, true, truncated);
+}
+
+/// Send one [`Event::SearchResult`] batch, draining `batch`.
+fn flush_hits(
+    events: &FuturesSender<Event>,
+    token: u64,
+    batch: &mut Vec<SearchHit>,
+    done: bool,
+    truncated: bool,
+) {
+    let hits = std::mem::take(batch);
+    let _ = events.unbounded_send(Event::SearchResult {
+        token,
+        hits,
+        done,
+        truncated,
+    });
+}
+
 /// Emit the standard "not connected" error (a file op arrived with no session).
 fn not_connected(events: &FuturesSender<Event>) {
     let _ = events.unbounded_send(Event::Error {
@@ -2546,5 +2717,152 @@ mod tests {
             resume_offset(true, &resume_spec(256, Some(orig)), Some(orig), Some(1200)),
             0
         );
+    }
+
+    use futures::StreamExt;
+    use nyx_core::Permissions;
+
+    /// In-memory directory tree for [`run_search`] tests. A path absent from the
+    /// map lists as an error — modeling an unreadable (skipped) directory.
+    struct FakeTree {
+        dirs: HashMap<String, Vec<RemoteEntry>>,
+    }
+
+    #[async_trait]
+    impl DirLister for FakeTree {
+        async fn list(&self, path: &RemotePath) -> nyx_core::Result<Vec<RemoteEntry>> {
+            self.dirs
+                .get(path.as_str())
+                .cloned()
+                .ok_or_else(|| NyxError::NotFound(path.as_str().into()))
+        }
+    }
+
+    fn dir_entry(name: &str) -> RemoteEntry {
+        RemoteEntry {
+            name: name.into(),
+            size: 0,
+            kind: EntryKind::Directory,
+            modified: None,
+            permissions: Permissions::from_mode(0o755),
+        }
+    }
+
+    fn file_entry(name: &str) -> RemoteEntry {
+        RemoteEntry {
+            name: name.into(),
+            size: 0,
+            kind: EntryKind::File,
+            modified: None,
+            permissions: Permissions::from_mode(0o644),
+        }
+    }
+
+    /// Run a search to completion and gather all streamed hits.
+    async fn collect_search(
+        tree: &FakeTree,
+        query: &str,
+        cancel: Arc<AtomicBool>,
+    ) -> (Vec<SearchHit>, bool, bool) {
+        let (tx, mut rx) = futures_unbounded();
+        run_search(
+            tree,
+            RemotePath::root(),
+            Filter::parse(query),
+            9,
+            cancel,
+            tx,
+        )
+        .await;
+        // `run_search` owns and drops the sender on return, so the receiver is now
+        // closed and drains the buffered batches.
+        let (mut hits, mut done, mut truncated) = (Vec::new(), false, false);
+        while let Some(event) = rx.next().await {
+            if let Event::SearchResult {
+                token,
+                hits: batch,
+                done: d,
+                truncated: t,
+            } = event
+            {
+                assert_eq!(token, 9);
+                hits.extend(batch);
+                done |= d;
+                truncated |= t;
+            }
+        }
+        (hits, done, truncated)
+    }
+
+    fn sample_tree() -> FakeTree {
+        let mut dirs = HashMap::new();
+        dirs.insert(
+            "/".to_string(),
+            vec![
+                dir_entry("src"),
+                file_entry("readme.md"),
+                dir_entry("denied"),
+            ],
+        );
+        dirs.insert(
+            "/src".to_string(),
+            vec![
+                file_entry("main.rs"),
+                file_entry("lib.rs"),
+                dir_entry("deep"),
+            ],
+        );
+        dirs.insert("/src/deep".to_string(), vec![file_entry("mod.rs")]);
+        // "/denied" is intentionally absent → lists as an error (skipped).
+        FakeTree { dirs }
+    }
+
+    #[tokio::test]
+    async fn search_walks_subtree_and_matches() {
+        let (hits, done, truncated) =
+            collect_search(&sample_tree(), "*.rs", Arc::new(AtomicBool::new(false))).await;
+        let mut paths: Vec<&str> = hits.iter().map(|h| h.path.as_str()).collect();
+        paths.sort_unstable();
+        assert_eq!(paths, ["/src/deep/mod.rs", "/src/lib.rs", "/src/main.rs"]);
+        assert!(done);
+        assert!(!truncated);
+    }
+
+    #[tokio::test]
+    async fn search_skips_unreadable_dirs_and_completes() {
+        // The walk descends into the absent "/denied" dir, which errors; it must
+        // be skipped rather than aborting the whole search.
+        let (hits, done, _) = collect_search(
+            &sample_tree(),
+            "type:file",
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await;
+        assert!(done);
+        assert_eq!(hits.len(), 4); // readme.md, main.rs, lib.rs, mod.rs
+    }
+
+    #[tokio::test]
+    async fn search_respects_result_cap() {
+        let many: Vec<RemoteEntry> = (0..SEARCH_MAX_RESULTS + 5)
+            .map(|i| file_entry(&format!("f{i}.txt")))
+            .collect();
+        let mut dirs = HashMap::new();
+        dirs.insert("/".to_string(), many);
+        let tree = FakeTree { dirs };
+
+        let (hits, done, truncated) =
+            collect_search(&tree, "*.txt", Arc::new(AtomicBool::new(false))).await;
+        assert_eq!(hits.len(), SEARCH_MAX_RESULTS);
+        assert!(truncated);
+        assert!(done);
+    }
+
+    #[tokio::test]
+    async fn cancelled_search_emits_nothing() {
+        let cancel = Arc::new(AtomicBool::new(true));
+        let (hits, done, _) = collect_search(&sample_tree(), "*.rs", cancel).await;
+        assert!(hits.is_empty());
+        assert!(!done, "a superseded search owes no terminal batch");
     }
 }

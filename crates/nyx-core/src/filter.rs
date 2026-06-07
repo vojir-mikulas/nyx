@@ -1,32 +1,48 @@
 //! Parses the browser's filter box into a query and matches entries against it.
 //!
-//! Bare words are case-insensitive substrings on the name (the historical
-//! behavior); multiple bare words are AND-combined. A `*`/`?` switches a word to
-//! a glob. `key:value` tokens add `type:`/`ext:`/`size:`/`modified:` predicates,
-//! also AND-combined. A `"quoted phrase"` matches case-sensitively and keeps its
-//! spaces. Anything that doesn't parse as a predicate falls back to a substring,
-//! so a literal `foo:bar` filename still filters as typed.
+//! A leading `/` sets the [`Scope`] to a recursive tree search; otherwise the
+//! query filters the current directory. After the optional sigil: bare words are
+//! case-insensitive substrings on the name (AND-combined); `*`/`?` switch a word
+//! to a glob; `key:value` tokens add `type:`/`ext:`/`size:`/`modified:`
+//! predicates; a `"quoted phrase"` matches case-sensitively and keeps its spaces.
+//! Anything that doesn't parse as a predicate falls back to a substring, so a
+//! literal `foo:bar` filename still filters as typed.
 //!
-//! Matching is pure and allocation-light (it reuses each row's `name_lower`); it
-//! runs in `rebuild_view_order`, never per frame.
+//! Matching is pure and allocation-light — the caller passes a precomputed
+//! lowercased name (the browser caches one per row; the tree search lowercases on
+//! the fly), so a substring/sort never re-lowercases.
 
 use std::time::{Duration, SystemTime};
 
-use nyx_core::EntryKind;
+use crate::remote::{EntryKind, RemoteEntry};
 
-use super::models::EntryRow;
+/// Where a query searches: the current directory (default) or the whole subtree.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Scope {
+    /// Filter the entries already listed for the current directory.
+    #[default]
+    CurrentDir,
+    /// Recursively search the subtree, triggered by a leading `/`.
+    Tree,
+}
 
-/// A parsed filter query: a set of AND-combined terms. The default (no terms)
-/// matches everything, i.e. an empty filter box.
+/// A parsed filter query: a [`Scope`] plus AND-combined terms. The default (no
+/// terms) matches everything, i.e. an empty filter box.
 #[derive(Debug, Default, PartialEq)]
 pub struct Filter {
+    scope: Scope,
     terms: Vec<Term>,
 }
 
 impl Filter {
     /// Parse the raw filter-box text into a query.
     pub fn parse(input: &str) -> Self {
-        let terms = tokenize(input)
+        let trimmed = input.trim_start();
+        let (scope, rest) = match trimmed.strip_prefix('/') {
+            Some(rest) => (Scope::Tree, rest),
+            None => (Scope::CurrentDir, trimmed),
+        };
+        let terms = tokenize(rest)
             .into_iter()
             .filter(|t| !t.text.is_empty())
             .map(|t| {
@@ -37,13 +53,24 @@ impl Filter {
                 }
             })
             .collect();
-        Self { terms }
+        Self { scope, terms }
     }
 
-    /// Whether `row` satisfies every term. `now` anchors relative `modified:`
-    /// ages; pass a single snapshot for a whole rebuild.
-    pub fn matches(&self, row: &EntryRow, now: SystemTime) -> bool {
-        self.terms.iter().all(|t| t.matches(row, now))
+    /// The query's scope (current directory vs. recursive tree search).
+    pub fn scope(&self) -> Scope {
+        self.scope
+    }
+
+    /// Whether the query has no terms (an empty or sigil-only box).
+    pub fn is_empty(&self) -> bool {
+        self.terms.is_empty()
+    }
+
+    /// Whether `entry` satisfies every term. `name_lower` must be the entry's
+    /// lowercased name; `now` anchors relative `modified:` ages — pass one
+    /// snapshot for a whole pass.
+    pub fn matches(&self, entry: &RemoteEntry, name_lower: &str, now: SystemTime) -> bool {
+        self.terms.iter().all(|t| t.matches(entry, name_lower, now))
     }
 }
 
@@ -66,21 +93,20 @@ enum Term {
 }
 
 impl Term {
-    fn matches(&self, row: &EntryRow, now: SystemTime) -> bool {
+    fn matches(&self, entry: &RemoteEntry, name_lower: &str, now: SystemTime) -> bool {
         match self {
-            Term::Substr(needle) => row.name_lower.contains(needle.as_str()),
-            Term::SubstrExact(needle) => row.entry.name.contains(needle.as_str()),
+            Term::Substr(needle) => name_lower.contains(needle.as_str()),
+            Term::SubstrExact(needle) => entry.name.contains(needle.as_str()),
             Term::Glob(pat) => {
-                let name: Vec<char> = row.name_lower.chars().collect();
+                let name: Vec<char> = name_lower.chars().collect();
                 glob_match(pat, &name)
             }
             Term::Kind(kind) => {
-                row.entry.kind == *kind
-                    || (*kind == EntryKind::File && row.entry.kind == EntryKind::Other)
+                entry.kind == *kind || (*kind == EntryKind::File && entry.kind == EntryKind::Other)
             }
-            Term::Ext(ext) => ext_of(&row.entry.name).is_some_and(|e| e == *ext),
-            Term::Size(cmp, bytes) => cmp.test(row.entry.size, *bytes),
-            Term::Age { newer, dur } => match (row.entry.modified, now.checked_sub(*dur)) {
+            Term::Ext(ext) => ext_of(&entry.name).is_some_and(|e| e == *ext),
+            Term::Size(cmp, bytes) => cmp.test(entry.size, *bytes),
+            Term::Age { newer, dur } => match (entry.modified, now.checked_sub(*dur)) {
                 (Some(modified), Some(threshold)) => {
                     if *newer {
                         modified >= threshold
@@ -295,34 +321,45 @@ fn glob_match(pat: &[char], text: &[char]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nyx_core::{Permissions, RemoteEntry};
+    use crate::Permissions;
 
     fn now() -> SystemTime {
         SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000)
     }
 
-    fn row(name: &str, kind: EntryKind, size: u64, age: Option<Duration>) -> EntryRow {
-        EntryRow::new(RemoteEntry {
+    fn entry(name: &str, kind: EntryKind, size: u64, age: Option<Duration>) -> RemoteEntry {
+        RemoteEntry {
             name: name.into(),
             size,
             kind,
             modified: age.map(|a| now() - a),
             permissions: Permissions::from_mode(0o644),
-        })
+        }
     }
 
-    fn file(name: &str) -> EntryRow {
-        row(name, EntryKind::File, 0, None)
+    fn file(name: &str) -> RemoteEntry {
+        entry(name, EntryKind::File, 0, None)
     }
 
-    fn matches(query: &str, row: &EntryRow) -> bool {
-        Filter::parse(query).matches(row, now())
+    fn matches(query: &str, e: &RemoteEntry) -> bool {
+        Filter::parse(query).matches(e, &e.name.to_lowercase(), now())
     }
 
     #[test]
     fn empty_matches_everything() {
         assert!(matches("", &file("anything.txt")));
         assert!(matches("   ", &file("anything.txt")));
+    }
+
+    #[test]
+    fn scope_sigil_is_parsed_and_stripped() {
+        assert_eq!(Filter::parse("report").scope(), Scope::CurrentDir);
+        assert_eq!(Filter::parse("/report").scope(), Scope::Tree);
+        assert_eq!(Filter::parse("  /*.rs").scope(), Scope::Tree);
+        // The sigil doesn't leak into matching.
+        assert!(matches("/report", &file("report.txt")));
+        assert!(matches("/*.rs", &file("main.rs")));
+        assert!(Filter::parse("/").is_empty());
     }
 
     #[test]
@@ -349,14 +386,14 @@ mod tests {
 
     #[test]
     fn type_predicate() {
-        let dir = row("src", EntryKind::Directory, 0, None);
+        let dir = entry("src", EntryKind::Directory, 0, None);
         assert!(matches("type:dir", &dir));
         assert!(matches("type:folder", &dir));
         assert!(!matches("type:file", &dir));
         assert!(matches("type:file", &file("a.txt")));
         assert!(matches(
             "type:file",
-            &row("sock", EntryKind::Other, 0, None)
+            &entry("sock", EntryKind::Other, 0, None)
         ));
     }
 
@@ -370,30 +407,35 @@ mod tests {
 
     #[test]
     fn size_predicate_with_units() {
-        let big = file_sized("big.bin", 5 * 1024 * 1024);
+        let big = entry("big.bin", EntryKind::File, 5 * 1024 * 1024, None);
         assert!(matches("size:>1m", &big));
         assert!(matches("size:>=5mb", &big));
         assert!(!matches("size:<1m", &big));
-        assert!(matches("size:<100k", &file_sized("tiny", 1000)));
-    }
-
-    fn file_sized(name: &str, size: u64) -> EntryRow {
-        row(name, EntryKind::File, size, None)
+        assert!(matches(
+            "size:<100k",
+            &entry("tiny", EntryKind::File, 1000, None)
+        ));
     }
 
     #[test]
     fn modified_age() {
-        let recent = file_aged("recent", Duration::from_secs(86_400)); // 1 day
-        let old = file_aged("old", Duration::from_secs(30 * 86_400)); // 30 days
+        let recent = entry(
+            "recent",
+            EntryKind::File,
+            0,
+            Some(Duration::from_secs(86_400)),
+        );
+        let old = entry(
+            "old",
+            EntryKind::File,
+            0,
+            Some(Duration::from_secs(30 * 86_400)),
+        );
         assert!(matches("modified:<7d", &recent));
         assert!(!matches("modified:<7d", &old));
         assert!(matches("modified:>7d", &old));
         assert!(!matches("modified:>7d", &recent));
         assert!(!matches("modified:<7d", &file("no-mtime")));
-    }
-
-    fn file_aged(name: &str, age: Duration) -> EntryRow {
-        row(name, EntryKind::File, 0, Some(age))
     }
 
     #[test]
@@ -405,7 +447,7 @@ mod tests {
 
     #[test]
     fn combined_predicates_and_name() {
-        let row = file_sized("report_final.pdf", 2 * 1024 * 1024);
+        let row = entry("report_final.pdf", EntryKind::File, 2 * 1024 * 1024, None);
         assert!(matches("report ext:pdf size:>1m", &row));
         assert!(!matches("report ext:pdf size:>5m", &row));
     }

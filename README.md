@@ -8,6 +8,10 @@ remote directories, and transfer files — with a polished native UI rendered wi
 [GPUI](https://github.com/zed-industries/zed) (Zed's GPU-accelerated framework),
 not a web stack.
 
+**Using the app?** See the [user guide](docs/user/README.md) —
+[install](docs/user/install.md), [getting started](docs/user/getting-started.md),
+and [troubleshooting](docs/user/troubleshooting.md).
+
 ## Architecture
 
 GPUI runs on the main thread with its own executor; a dedicated **Tokio** backend

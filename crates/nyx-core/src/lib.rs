@@ -6,12 +6,14 @@
 //! free.
 
 mod error;
+mod filter;
 mod path;
 mod remote;
 mod secret;
 mod transfer;
 
 pub use error::{NyxError, Result};
+pub use filter::{Filter, Scope};
 pub use path::{is_safe_local_segment, RemotePath, RemotePathError};
 pub use remote::{
     EntryKind, FtpsMode, Permissions, Protocol, RemoteEntry, Rwx, ServerTrustKind,
