@@ -5,13 +5,14 @@
 //! helpers that read a `&AppState` and emit elements; only the filter
 //! [`TextInput`] is its own entity (it needs focus/IME state).
 
+mod filter;
 pub mod models;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use futures::channel::oneshot;
 use futures::StreamExt;
@@ -32,6 +33,7 @@ use nyx_service::{Command, Event, FileOp, ServiceHandle};
 use nyx_ui::{ActiveTheme, TextInput, TextInputEvent, Theme, ToastVariant};
 use time::OffsetDateTime;
 
+use filter::Filter;
 use models::{AccentKind, ConnectionVm, Density, DockTab, EntryRow, SortKey, TransferVm};
 
 /// Visible folder rows' painted rects (name → window-coordinate rect), shared
@@ -243,14 +245,14 @@ pub struct AppState {
     /// hand it to its `'static` row closures without cloning the entries.
     pub listing: Rc<Vec<EntryRow>>,
     /// Indices into [`listing`](Self::listing) giving the visible order (filtered
-    /// by [`filter_lower`](Self::filter_lower), then sorted, folders first).
+    /// by [`filter_query`](Self::filter_query), then sorted, folders first).
     /// Rebuilt only when the listing, sort, or filter changes — never per frame.
     view_order: Rc<Vec<usize>>,
     /// The stateful filter box.
     pub filter: Entity<TextInput>,
-    /// Lower-cased, trimmed filter text, kept in sync with [`filter`](Self::filter)
-    /// so [`rebuild_view_order`](Self::rebuild_view_order) needs no `cx`.
-    filter_lower: String,
+    /// The parsed filter query, kept in sync with [`filter`](Self::filter) so
+    /// [`rebuild_view_order`](Self::rebuild_view_order) needs no `cx`.
+    filter_query: Filter,
     /// Active sort: `(key, ascending)`.
     pub sort: (SortKey, bool),
     /// Selected entry names.
@@ -466,7 +468,7 @@ impl AppState {
             listing: Rc::new(Vec::new()),
             view_order: Rc::new(Vec::new()),
             filter,
-            filter_lower: String::new(),
+            filter_query: Filter::default(),
             sort: (SortKey::Name, true),
             selected: HashSet::new(),
             select_anchor: None,
@@ -2622,7 +2624,7 @@ impl AppState {
     /// Pull the filter box text into [`filter_lower`](Self::filter_lower) and
     /// recompute the visible order. Called whenever the filter content changes.
     fn refilter(&mut self, cx: &App) {
-        self.filter_lower = self.filter.read(cx).content().trim().to_lowercase();
+        self.filter_query = Filter::parse(self.filter.read(cx).content().as_ref());
         self.rebuild_view_order();
     }
 
@@ -2631,12 +2633,13 @@ impl AppState {
     /// never per frame, and reuses each row's precomputed `name_lower` so name
     /// filtering/sorting allocates nothing.
     fn rebuild_view_order(&mut self) {
-        let filter = &self.filter_lower;
+        let now = SystemTime::now();
+        let query = &self.filter_query;
         let mut order: Vec<usize> = self
             .listing
             .iter()
             .enumerate()
-            .filter(|(_, row)| filter.is_empty() || row.name_lower.contains(filter.as_str()))
+            .filter(|(_, row)| query.matches(row, now))
             .map(|(ix, _)| ix)
             .collect();
 
