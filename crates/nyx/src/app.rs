@@ -13,8 +13,8 @@ use nyx_ui::{
 
 use crate::assets::{FONT_MONO, FONT_UI};
 use crate::keymap::{
-    CloseTab, Dismiss, FocusFilter, FocusNext, FocusPrev, NewConnection, OpenSettings, Refresh,
-    ShowShortcuts, ToggleSidebar,
+    CloseTab, Dismiss, FocusFilter, FocusNext, FocusPrev, NewConnection, OpenSettings, Quit,
+    Refresh, ShowShortcuts, ToggleSidebar,
 };
 use crate::state::models::Density;
 use crate::state::{AppState, View};
@@ -76,6 +76,7 @@ impl Render for AppState {
             .text_sm()
             .on_action(cx.listener(|_, _: &FocusNext, window, cx| window.focus_next(cx)))
             .on_action(cx.listener(|_, _: &FocusPrev, window, cx| window.focus_prev(cx)))
+            .on_action(cx.listener(|_, _: &Quit, _, cx| cx.quit()))
             .on_action(cx.listener(|this, _: &NewConnection, _, cx| {
                 this.open_editor_create(cx);
                 cx.notify();

@@ -47,6 +47,8 @@ gpui::actions!(
         OpenSettings,
         /// Open the keyboard-shortcuts cheat-sheet.
         ShowShortcuts,
+        /// Quit the application.
+        Quit,
         /// Move focus to the next focusable item (Tab).
         FocusNext,
         /// Move focus to the previous focusable item (Shift-Tab).
@@ -147,6 +149,12 @@ pub fn bind_all(cx: &mut App) {
             .iter()
             .map(|(keys, ctx, make)| make(&platform_keystrokes(keys), *ctx)),
     );
+    // Quit is platform-specific: ⌘Q on macOS. Windows/Linux quit via the native
+    // window close (Alt+F4 / the close button), already wired in `main` — so no
+    // app-level binding there (Ctrl+Q is not a standard quit key).
+    if cfg!(target_os = "macos") {
+        bindings.push(KeyBinding::new("cmd-q", Quit, Some("App")));
+    }
     cx.bind_keys(bindings);
 }
 
@@ -167,6 +175,15 @@ pub fn cheat_sheet() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
             if *group == Group::Dialogs {
                 rows.insert(0, (display_keys("enter"), "Confirm / activate"));
                 rows.push((display_keys("space"), "Activate focused"));
+            }
+            // Quit is platform-specific and bound outside the table.
+            if *group == Group::Application {
+                let quit = if cfg!(target_os = "macos") {
+                    display_keys("cmd-q")
+                } else {
+                    "Alt+F4".to_string()
+                };
+                rows.push((quit, "Quit"));
             }
             (group.title(), rows)
         })
