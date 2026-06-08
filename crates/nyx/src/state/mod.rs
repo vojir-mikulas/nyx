@@ -175,6 +175,12 @@ pub struct AppState {
     /// when an OS drag-out returns inside the window, to find the folder under the
     /// drop point. See [`AppState::handoff_drag_out`].
     drop_row_bounds: DropRowBounds,
+    /// Painted bounds of *every* visible file row (name → window-coord rect),
+    /// refreshed each render. Hit-tested by the rubber-band selection to decide
+    /// which rows its rectangle crosses, and whether a press landed on a row.
+    row_bounds: DropRowBounds,
+    /// The in-progress rubber-band selection, if the user is dragging one.
+    marquee: Option<Marquee>,
     /// While an OS drag-out is back inside the window, the folder row currently
     /// under the cursor - highlighted so the (unchangeable native) cursor still
     /// has a visible drop target. `None` when outside or over a non-folder.

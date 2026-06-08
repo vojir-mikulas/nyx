@@ -121,6 +121,8 @@ impl AppState {
             service,
             drag_downloads: DragDownloads::new(),
             drop_row_bounds: Rc::new(RefCell::new(Vec::new())),
+            row_bounds: Rc::new(RefCell::new(Vec::new())),
+            marquee: None,
             drag_return_folder: None,
             connecting_id: None,
             used_stored_password: None,

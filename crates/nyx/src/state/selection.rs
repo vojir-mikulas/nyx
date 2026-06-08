@@ -133,4 +133,71 @@ impl AppState {
     pub fn select_all_visible(&mut self) {
         self.selected = self.visible_names().into_iter().collect();
     }
+
+    /// The current rubber-band rectangle, for the table to paint.
+    pub fn marquee(&self) -> Option<&Marquee> {
+        self.marquee.as_ref()
+    }
+
+    /// Whether a window-coord point lies over a visible file row.
+    fn point_over_row(&self, p: Point<Pixels>) -> bool {
+        self.row_bounds.borrow().iter().any(|(_, b)| b.contains(&p))
+    }
+
+    /// Begin a rubber-band at a left-press. Starts only on empty space (a press
+    /// over a row is left to its click/drag handlers, so a file grab is never
+    /// hijacked) and clears the selection, so a press on empty space deselects.
+    /// Returns whether a rubber-band was started.
+    pub fn marquee_start(&mut self, origin: Point<Pixels>, cx: &mut Context<Self>) -> bool {
+        if self.point_over_row(origin) {
+            return false;
+        }
+        self.selected.clear();
+        self.select_anchor = None;
+        self.marquee = Some(Marquee {
+            origin,
+            current: origin,
+            active: false,
+        });
+        cx.notify();
+        true
+    }
+
+    /// Grow the active rubber-band to `current` and reselect every row its rect
+    /// crosses. A no-op without an active rubber-band.
+    pub fn marquee_update(&mut self, current: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(marquee) = self.marquee.as_mut() else {
+            return;
+        };
+        marquee.current = current;
+        // Below the start threshold a press still reads as a plain click; don't
+        // draw the box or touch selection yet.
+        let threshold = px(4.);
+        let moved = (current.x - marquee.origin.x).abs() > threshold
+            || (current.y - marquee.origin.y).abs() > threshold;
+        if !marquee.active && !moved {
+            return;
+        }
+        marquee.active = true;
+        let origin = marquee.origin;
+
+        let top_left = point(origin.x.min(current.x), origin.y.min(current.y));
+        let bottom_right = point(origin.x.max(current.x), origin.y.max(current.y));
+        let rect = Bounds::from_corners(top_left, bottom_right);
+        self.selected = self
+            .row_bounds
+            .borrow()
+            .iter()
+            .filter(|(_, b)| rect.intersects(b))
+            .map(|(name, _)| name.clone())
+            .collect();
+        cx.notify();
+    }
+
+    /// End the rubber-band gesture (left-release). A no-op if none is active.
+    pub fn marquee_end(&mut self, cx: &mut Context<Self>) {
+        if self.marquee.take().is_some() {
+            cx.notify();
+        }
+    }
 }

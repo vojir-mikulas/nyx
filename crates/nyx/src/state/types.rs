@@ -41,6 +41,20 @@ impl SettingsTab {
     }
 }
 
+/// An in-progress rubber-band (rectangle) selection in the file table. Begun by
+/// a left-press on empty space (never over a row, so it can't fight a file grab),
+/// it grows with the pointer and selects every row its rect crosses. Coordinates
+/// are GPUI window coordinates, matching the painted row rects it hit-tests.
+pub struct Marquee {
+    /// Where the press began (the fixed corner).
+    pub origin: Point<Pixels>,
+    /// The current pointer position (the moving corner).
+    pub current: Point<Pixels>,
+    /// Whether the pointer has moved past the start threshold. Until then the
+    /// rectangle isn't drawn, so a plain click doesn't flash a zero-size box.
+    pub active: bool,
+}
+
 /// A transient toast notification.
 pub struct ToastMsg {
     /// The message text.
