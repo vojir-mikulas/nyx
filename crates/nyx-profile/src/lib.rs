@@ -113,6 +113,12 @@ pub enum ProfileColor {
     Purple,
     /// Green accent.
     Green,
+    /// Red accent.
+    Red,
+    /// Yellow accent.
+    Yellow,
+    /// Orange accent.
+    Orange,
 }
 
 /// Persistence for [`Profile`]s.

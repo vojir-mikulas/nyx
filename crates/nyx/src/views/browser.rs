@@ -4,7 +4,10 @@ use gpui::{
     actions, div, prelude::*, px, radians, Context, DragMoveEvent, ExternalPaths, MouseButton,
     SharedString, Transformation,
 };
-use nyx_ui::{ActiveTheme, Button, ButtonSize, ButtonVariant, Column, IconButton, Table, Theme};
+use nyx_core::Protocol;
+use nyx_ui::{
+    ActiveTheme, Button, ButtonSize, ButtonVariant, Column, IconButton, Table, Theme, Tooltip,
+};
 
 use crate::icon::icon;
 use crate::state::models::EntryRow;
@@ -170,7 +173,7 @@ fn tab_strip(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
                     .gap_2()
                     .px_3()
                     .max_w(px(230.))
-                    .bg(theme.bg_app)
+                    .bg(color.opacity(0.10))
                     .text_color(theme.text)
                     .text_sm()
                     .border_r_1()
@@ -838,6 +841,12 @@ fn search_view(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement
     let search = state
         .search()
         .expect("search_view requires an active search");
+    // FTP/FTPS have no `find`: the service crawls the tree client-side, which is
+    // markedly slower on deep trees. SFTP runs server-side `find` where it can.
+    let client_side_walk = matches!(
+        state.active_conn().map(|c| c.profile.protocol),
+        Some(Protocol::Ftp | Protocol::Ftps)
+    );
     let rows = search.hits.clone();
     let row_count = rows.len();
     let row_height = state.density.row_height();
@@ -944,13 +953,13 @@ fn search_view(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement
                 window.focus(&this.browser_focus, cx);
             }),
         )
-        .child(search_header(search, &theme))
+        .child(search_header(search, client_side_walk, &theme))
         .child(div().flex_1().min_h_0().child(body))
 }
 
 /// The thin status bar above the search results: a spinner while the walk runs,
 /// the query, and a match count (with a "capped" hint when truncated).
-fn search_header(search: &SearchState, theme: &Theme) -> impl IntoElement {
+fn search_header(search: &SearchState, client_side_walk: bool, theme: &Theme) -> impl IntoElement {
     let count = search.hits.len();
     let status = if !search.done {
         format!("Searching… {count} found")
@@ -988,6 +997,19 @@ fn search_header(search: &SearchState, theme: &Theme) -> impl IntoElement {
                 .font_family(crate::assets::FONT_MONO)
                 .child(search.query.clone()),
         )
+        .when(client_side_walk, |row| {
+            row.child(
+                div()
+                    .id("search-slow-warning")
+                    .flex()
+                    .items_center()
+                    .child(icon("alert", 13., theme.yellow))
+                    .tooltip(Tooltip::text(
+                        "FTP has no server-side search, so Nyx crawls the tree from \
+                         here — this can be slow on large directories.",
+                    )),
+            )
+        })
         .child(div().flex_1())
         .child(div().text_color(theme.text_faint).child(status))
 }

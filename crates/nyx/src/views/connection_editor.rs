@@ -3,10 +3,11 @@
 //! A [`Modal`] wrapping the `nyx-ui` form kit. All mutation goes back through
 //! [`AppState`] methods; this file only reads `state.editor` and emits elements.
 
-use gpui::{div, prelude::*, px, Context, FontWeight};
+use gpui::{div, prelude::*, px, Context, Entity, FontWeight};
 use nyx_core::{FtpsMode, Protocol};
-use nyx_ui::{ActiveTheme, Button, ButtonSize, ButtonVariant, Modal, Segmented};
+use nyx_ui::{ActiveTheme, Button, ButtonSize, ButtonVariant, Modal, Segmented, Theme};
 
+use crate::state::models::AccentKind;
 use crate::state::AppState;
 
 /// Render the editor modal. The caller guards `state.editor.is_some()`.
@@ -20,7 +21,6 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
         Protocol::Ftp => 1,
         Protocol::Ftps => 2,
     };
-    let color_ix = editor.color.index();
     let is_new = editor.is_new;
     let auth_is_key = editor.auth_is_key;
     let auth_is_anonymous = editor.auth_is_anonymous;
@@ -147,20 +147,7 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                 .child(field("Remote path", editor.remote_path.clone(), cx))
                 .child(field(
                     "Accent color",
-                    Segmented::new("ce-color")
-                        .segment("Blue")
-                        .segment("Purple")
-                        .segment("Green")
-                        .selected(color_ix)
-                        .on_select({
-                            let view = view.clone();
-                            move |ix, _window, cx| {
-                                view.update(cx, |this, cx| {
-                                    this.set_editor_color(ix);
-                                    cx.notify();
-                                });
-                            }
-                        }),
+                    color_picker(editor.color, &theme, &view),
                     cx,
                 ))
                 // Auth selector: SFTP picks Password/Key; FTP/FTPS picks
@@ -262,6 +249,38 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
 }
 
 /// A labelled form field (label above the control).
+/// A row of clickable color swatches — the connection's accent picker. The
+/// selected swatch carries a ring in its own color.
+fn color_picker(selected: AccentKind, theme: &Theme, view: &Entity<AppState>) -> impl IntoElement {
+    div()
+        .flex()
+        .gap_2()
+        .children(AccentKind::ALL.into_iter().enumerate().map(|(ix, kind)| {
+            let c = kind.color(theme);
+            let is_sel = kind == selected;
+            div()
+                .id(("color-swatch", ix))
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(26.))
+                .rounded_full()
+                .border_2()
+                .border_color(if is_sel { c } else { gpui::transparent_black() })
+                .cursor_pointer()
+                .child(div().size(px(16.)).rounded_full().bg(c))
+                .on_click({
+                    let view = view.clone();
+                    move |_, _window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.set_editor_color(ix);
+                            cx.notify();
+                        });
+                    }
+                })
+        }))
+}
+
 fn field(
     label: &'static str,
     control: impl IntoElement,

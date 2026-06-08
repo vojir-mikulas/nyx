@@ -163,11 +163,21 @@ pub enum AccentKind {
     Blue,
     Purple,
     Green,
+    Red,
+    Yellow,
+    Orange,
 }
 
 impl AccentKind {
     /// The accent kinds the color picker offers, in display order.
-    pub const ALL: [AccentKind; 3] = [AccentKind::Blue, AccentKind::Purple, AccentKind::Green];
+    pub const ALL: [AccentKind; 6] = [
+        AccentKind::Blue,
+        AccentKind::Purple,
+        AccentKind::Green,
+        AccentKind::Red,
+        AccentKind::Yellow,
+        AccentKind::Orange,
+    ];
 
     /// Resolve to a concrete color against the active theme.
     pub fn color(self, theme: &Theme) -> Hsla {
@@ -175,6 +185,9 @@ impl AccentKind {
             AccentKind::Blue => theme.blue,
             AccentKind::Purple => theme.purple,
             AccentKind::Green => theme.green,
+            AccentKind::Red => theme.red,
+            AccentKind::Yellow => theme.yellow,
+            AccentKind::Orange => theme.orange,
         }
     }
 
@@ -184,6 +197,9 @@ impl AccentKind {
             ProfileColor::Blue => AccentKind::Blue,
             ProfileColor::Purple => AccentKind::Purple,
             ProfileColor::Green => AccentKind::Green,
+            ProfileColor::Red => AccentKind::Red,
+            ProfileColor::Yellow => AccentKind::Yellow,
+            ProfileColor::Orange => AccentKind::Orange,
         }
     }
 
@@ -193,15 +209,9 @@ impl AccentKind {
             AccentKind::Blue => ProfileColor::Blue,
             AccentKind::Purple => ProfileColor::Purple,
             AccentKind::Green => ProfileColor::Green,
-        }
-    }
-
-    /// The picker index for this accent.
-    pub fn index(self) -> usize {
-        match self {
-            AccentKind::Blue => 0,
-            AccentKind::Purple => 1,
-            AccentKind::Green => 2,
+            AccentKind::Red => ProfileColor::Red,
+            AccentKind::Yellow => ProfileColor::Yellow,
+            AccentKind::Orange => ProfileColor::Orange,
         }
     }
 }

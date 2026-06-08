@@ -126,6 +126,8 @@ fn card(state: &AppState, conn: &ConnectionVm, cx: &mut Context<AppState>) -> im
         _ => conn.user_host_port(),
     };
 
+    let accent = conn.color.color(&theme);
+
     let name: gpui::SharedString = conn.profile.name.clone().into();
     let group = gpui::SharedString::from(format!("wm-card-{id}"));
     let open_id = id.clone();
@@ -165,11 +167,11 @@ fn card(state: &AppState, conn: &ConnectionVm, cx: &mut Context<AppState>) -> im
                 .justify_center()
                 .size(px(34.))
                 .rounded(px(8.))
-                .bg(theme.bg_input)
+                .bg(accent.opacity(0.12))
                 .border_1()
-                .border_color(theme.border_soft)
-                .text_color(conn.color.color(&theme))
-                .child(icon(glyph, 17., conn.color.color(&theme))),
+                .border_color(accent.opacity(0.35))
+                .text_color(accent)
+                .child(icon(glyph, 17., accent)),
         )
         .child(
             div()
