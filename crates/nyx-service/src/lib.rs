@@ -34,9 +34,9 @@ use futures::channel::mpsc::{
 };
 use futures::stream::{FuturesUnordered, StreamExt};
 use nyx_core::{
-    is_safe_local_segment, CollisionChoice, EntryIssue, EntryKind, Filter, NyxError, Protocol,
-    RemoteEntry, RemotePath, Secret, ServerTrustKind, TransferDirection, TransferId, TransferKind,
-    TransferReport, TransferStatus, LARGE_LISTING_WARN,
+    is_safe_local_segment, CollisionChoice, EntryIssue, EntryKind, Filter, NyxError, Permissions,
+    Protocol, RemoteEntry, RemotePath, Secret, ServerTrustKind, TransferDirection, TransferId,
+    TransferKind, TransferReport, TransferStatus, LARGE_LISTING_WARN,
 };
 use nyx_profile::{AuthMethod, Profile};
 use nyx_protocol::{
@@ -653,10 +653,11 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
     // healthy session — it's resumed instead of flipping the session again.
     let mut generation: u64 = 0;
 
-    // Cancel flag of the in-flight tree search, if any. A new `SearchTree` (or a
-    // `CancelSearch`/connect/disconnect) sets it, which makes the detached search
-    // task stop between directory listings.
-    let mut current_search: Option<Arc<AtomicBool>> = None;
+    // The in-flight tree search, if any: its cancel flag (stops the client walk
+    // between listings) and its task handle (aborting drops a server-side `find`'s
+    // channel, killing it). A new `SearchTree`/`CancelSearch`/connect/disconnect
+    // ends it.
+    let mut current_search: Option<(Arc<AtomicBool>, tokio::task::JoinHandle<()>)> = None;
 
     // The throttle ticker for progress sampling. The first tick fires
     // immediately; on an idle loop it samples an empty set (cheap no-op).
@@ -760,18 +761,23 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                         }
                     }
                     Command::SearchTree { root, query, token } => {
-                        // Supersede any in-flight search, then walk off the command
+                        // Supersede any in-flight search, then search off the command
                         // loop so further commands (incl. the next keystroke's
                         // search) keep flowing while the tree is traversed.
                         abort_search(&mut current_search);
                         match client.clone() {
                             Some(session) => {
                                 let cancel = Arc::new(AtomicBool::new(false));
-                                current_search = Some(cancel.clone());
                                 let events = events.clone();
-                                tokio::spawn(async move {
-                                    run_search(&session, root, query, token, cancel, events).await;
-                                });
+                                let handle = tokio::spawn(run_tree_search(
+                                    session,
+                                    root,
+                                    query,
+                                    token,
+                                    cancel.clone(),
+                                    events,
+                                ));
+                                current_search = Some((cancel, handle));
                             }
                             None => not_connected(&events),
                         }
@@ -1913,10 +1919,92 @@ impl DirLister for Arc<dyn RemoteClient> {
     }
 }
 
-/// Signal the in-flight search (if any) to stop, and forget it.
-fn abort_search(current: &mut Option<Arc<AtomicBool>>) {
-    if let Some(flag) = current.take() {
+/// End the in-flight search (if any): flag the client walk to stop and abort the
+/// task, which drops a server-side `find`'s channel and kills it.
+fn abort_search(current: &mut Option<(Arc<AtomicBool>, tokio::task::JoinHandle<()>)>) {
+    if let Some((flag, handle)) = current.take() {
         flag.store(true, Ordering::Relaxed);
+        handle.abort();
+    }
+}
+
+/// Run a tree search: try to offload it to the server (`find` over SSH `exec`),
+/// and fall back to the client-side walk when the protocol/server can't — FTP, a
+/// jailed sftp-only server, or a query with `size:`/`modified:` terms `find`
+/// can't express here.
+async fn run_tree_search(
+    client: Arc<dyn RemoteClient>,
+    root: RemotePath,
+    query: Filter,
+    token: u64,
+    cancel: Arc<AtomicBool>,
+    events: FuturesSender<Event>,
+) {
+    if let Some(predicates) = query.as_find_predicates() {
+        // `Ok(None)` (unsupported) or `Err` (failed exec) → fall through to the
+        // client walk; only a `Some(paths)` short-circuits.
+        if let Ok(Some(paths)) = client
+            .server_search(&root, &predicates, SEARCH_MAX_RESULTS)
+            .await
+        {
+            emit_find_results(&events, token, &predicates, paths);
+            return;
+        }
+    }
+    run_search(&client, root, query, token, cancel, events).await;
+}
+
+/// Stream server-`find` matches to the UI. The paths carry no metadata, so each
+/// entry is synthesized — kind from a `-type` predicate when present (else file),
+/// size/mtime unknown (the UI renders those as "—").
+fn emit_find_results(
+    events: &FuturesSender<Event>,
+    token: u64,
+    predicates: &[nyx_core::FindPredicate],
+    paths: Vec<RemotePath>,
+) {
+    use nyx_core::FindPredicate;
+    let kind = predicates
+        .iter()
+        .find_map(|p| match p {
+            FindPredicate::Kind(k) => Some(*k),
+            _ => None,
+        })
+        .unwrap_or(EntryKind::File);
+    let truncated = paths.len() >= SEARCH_MAX_RESULTS;
+
+    let mut remaining: Vec<SearchHit> = paths
+        .into_iter()
+        .map(|path| {
+            let name = path.file_name().unwrap_or_default().to_string();
+            SearchHit {
+                entry: RemoteEntry {
+                    name,
+                    size: 0,
+                    kind,
+                    modified: None,
+                    permissions: Permissions::from_mode(0),
+                },
+                path,
+            }
+        })
+        .collect();
+
+    // Stream in the same batch size the walk uses, ending with a terminal `done`
+    // batch (empty when there were no matches at all).
+    loop {
+        let take = remaining.len().min(SEARCH_BATCH);
+        let chunk: Vec<SearchHit> = remaining.drain(..take).collect();
+        let done = remaining.is_empty();
+        let _ = events.unbounded_send(Event::SearchResult {
+            token,
+            hits: chunk,
+            done,
+            truncated: done && truncated,
+        });
+        if done {
+            break;
+        }
     }
 }
 

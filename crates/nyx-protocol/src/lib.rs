@@ -12,7 +12,8 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use nyx_core::{
-    EntryIssue, EntryKind, RemoteEntry, RemotePath, Result, SourceMeta, TransferProgress,
+    EntryIssue, EntryKind, FindPredicate, RemoteEntry, RemotePath, Result, SourceMeta,
+    TransferProgress,
 };
 
 mod ftp;
@@ -88,6 +89,24 @@ pub trait RemoteClient: Send + Sync {
     /// root itself is not emitted — the caller creates the destination root. Used
     /// to plan a recursive download before any bytes move.
     async fn walk_dir(&self, root: &RemotePath) -> Result<DirWalk>;
+
+    /// Offload a recursive search to the server, when the protocol can (SSH `exec`
+    /// running `find`). Returns the matched absolute paths (capped at `limit`), or
+    /// `Ok(None)` when it can't — no exec, no `find`, or a non-SSH protocol — so
+    /// the caller falls back to a client-side walk. `predicates` are the
+    /// find-expressible part of the query, AND-combined.
+    ///
+    /// This trades the walk's thousands of round-trips for one remote command, so
+    /// it's dramatically faster on deep trees. The default opts out.
+    async fn server_search(
+        &self,
+        root: &RemotePath,
+        predicates: &[FindPredicate],
+        limit: usize,
+    ) -> Result<Option<Vec<RemotePath>>> {
+        let _ = (root, predicates, limit);
+        Ok(None)
+    }
 
     /// Follow `path` (resolving a symlink) and report the *target's* kind.
     ///

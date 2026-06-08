@@ -16,12 +16,13 @@ use async_trait::async_trait;
 use std::io::SeekFrom;
 
 use nyx_core::{
-    EntryKind, NyxError, Permissions, RemoteEntry, RemotePath, Result, ServerTrustKind, SourceMeta,
-    TransferProgress,
+    EntryKind, FindPredicate, NyxError, Permissions, RemoteEntry, RemotePath, Result,
+    ServerTrustKind, SourceMeta, TransferProgress,
 };
 use russh::client::{self, Handle};
 use russh::keys::ssh_key::PublicKey;
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg};
+use russh::ChannelMsg;
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::{FileType, OpenFlags, StatusCode};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
@@ -235,6 +236,63 @@ impl RemoteClient for SftpClient {
         .await
     }
 
+    /// Server-side search via an SSH `exec` of `find`. One remote command walks
+    /// the server's own disk and streams back matched paths — vastly cheaper than
+    /// thousands of client `readdir` round-trips. Falls back (`Ok(None)`) when the
+    /// server has no shell/`find` or rejects exec, so jailed sftp-only servers
+    /// degrade to the client walk. Cancellation is by the caller dropping this
+    /// future, which closes the channel and stops `find`.
+    async fn server_search(
+        &self,
+        root: &RemotePath,
+        predicates: &[FindPredicate],
+        limit: usize,
+    ) -> Result<Option<Vec<RemotePath>>> {
+        let handle = self
+            .handle
+            .as_ref()
+            .ok_or_else(|| NyxError::Connection("not connected".into()))?;
+        let command = build_find_command(root, predicates, limit);
+
+        // A failure to open a channel / run exec means "can't search server-side"
+        // (e.g. exec disabled), not a hard error — fall back to the walk.
+        let Ok(mut channel) = handle.channel_open_session().await else {
+            return Ok(None);
+        };
+        if channel.exec(true, command.as_bytes()).await.is_err() {
+            return Ok(None);
+        }
+
+        let mut stdout: Vec<u8> = Vec::new();
+        let mut exit_status: Option<u32> = None;
+        let mut got_data = false;
+        loop {
+            match channel.wait().await {
+                Some(ChannelMsg::Data { data }) => {
+                    got_data = true;
+                    stdout.extend_from_slice(&data);
+                    if stdout.len() > MAX_FIND_OUTPUT {
+                        break;
+                    }
+                }
+                Some(ChannelMsg::ExitStatus { exit_status: code }) => exit_status = Some(code),
+                // Ignore stderr (permission-denied noise is already routed to
+                // /dev/null in the command, but be defensive).
+                Some(ChannelMsg::ExtendedData { .. }) => {}
+                Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
+                _ => {}
+            }
+        }
+
+        // No output plus a non-zero exit usually means the shell couldn't run
+        // `find` (missing, or no shell at all) — fall back rather than report
+        // "no matches".
+        if !got_data && exit_status.is_some_and(|code| code != 0) {
+            return Ok(None);
+        }
+        Ok(Some(parse_find_output(&stdout, limit)))
+    }
+
     async fn target_kind(&self, path: &RemotePath) -> Result<EntryKind> {
         // `metadata` is a follow-stat (`SSH_FXP_STAT`), so a symlink resolves to
         // its target here; `list_dir` uses the lstat-style readdir attrs instead.
@@ -424,6 +482,66 @@ fn map_kind(file_type: FileType) -> EntryKind {
     }
 }
 
+/// Hard cap on bytes read from a server search's stdout, so a runaway `find`
+/// can't balloon memory even if the `head` cap in the command is absent.
+const MAX_FIND_OUTPUT: usize = 4 * 1024 * 1024;
+
+/// Build the `find` command for a server-side search: the root, the AND-combined
+/// predicates, stderr silenced (permission-denied noise), and `head` capping the
+/// match count. Run by the server's shell, so the pipe is fine.
+fn build_find_command(root: &RemotePath, predicates: &[FindPredicate], limit: usize) -> String {
+    let mut cmd = format!("find {}", sh_quote(root.as_str()));
+    for pred in predicates {
+        match pred {
+            FindPredicate::Iname(glob) => {
+                cmd.push_str(" -iname ");
+                cmd.push_str(&sh_quote(glob));
+            }
+            FindPredicate::Name(glob) => {
+                cmd.push_str(" -name ");
+                cmd.push_str(&sh_quote(glob));
+            }
+            FindPredicate::Kind(kind) => {
+                cmd.push_str(" -type ");
+                cmd.push(match kind {
+                    EntryKind::Directory => 'd',
+                    EntryKind::Symlink => 'l',
+                    EntryKind::File | EntryKind::Other => 'f',
+                });
+            }
+        }
+    }
+    cmd.push_str(&format!(" 2>/dev/null | head -n {limit}"));
+    cmd
+}
+
+/// POSIX single-quote a string for safe inclusion in a shell command (the only
+/// untrusted inputs are the search root and the user's pattern).
+fn sh_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// Parse `find`'s newline-separated absolute paths, dropping blanks and capping.
+fn parse_find_output(bytes: &[u8], limit: usize) -> Vec<RemotePath> {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.is_empty())
+        .take(limit)
+        .map(RemotePath::new)
+        .collect()
+}
+
 /// Load + decrypt an OpenSSH private key for public-key auth.
 ///
 /// The decode (and, for an encrypted key, the bcrypt KDF) is CPU-bound and reads
@@ -516,6 +634,39 @@ mod tests {
     fn auth_error_has_no_detail() {
         // The opaque auth error must never carry server/credential detail.
         assert_eq!(NyxError::Auth.to_string(), "authentication failed");
+    }
+
+    #[test]
+    fn find_command_quotes_and_ands_predicates() {
+        let cmd = build_find_command(
+            &RemotePath::new("/srv/data"),
+            &[
+                FindPredicate::Iname("*.rs".into()),
+                FindPredicate::Kind(EntryKind::File),
+            ],
+            5000,
+        );
+        assert_eq!(
+            cmd,
+            "find '/srv/data' -iname '*.rs' -type f 2>/dev/null | head -n 5000"
+        );
+    }
+
+    #[test]
+    fn find_command_escapes_quotes_in_paths() {
+        // A single quote in the root must not break out of the quoting.
+        let cmd = build_find_command(&RemotePath::new("/a'b"), &[], 10);
+        assert!(cmd.starts_with("find '/a'\\''b'"), "{cmd}");
+    }
+
+    #[test]
+    fn parse_find_output_drops_blanks_and_caps() {
+        let out = b"/a/x.rs\n/a/y.rs\n\n/a/z.rs\n";
+        let paths = parse_find_output(out, 2);
+        assert_eq!(
+            paths,
+            vec![RemotePath::new("/a/x.rs"), RemotePath::new("/a/y.rs")]
+        );
     }
 
     #[test]

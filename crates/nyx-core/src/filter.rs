@@ -16,6 +16,31 @@ use std::time::{Duration, SystemTime};
 
 use crate::remote::{EntryKind, RemoteEntry};
 
+/// One `find` predicate for a server-side search. The protocol layer renders
+/// these into a (shell-quoted) `find` command; this stays pure data so `nyx-core`
+/// keeps no shell/runtime knowledge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FindPredicate {
+    /// Case-insensitive name glob → `-iname '<glob>'`.
+    Iname(String),
+    /// Case-sensitive name glob (from a quoted term) → `-name '<glob>'`.
+    Name(String),
+    /// Restrict to a kind → `-type d|f|l`.
+    Kind(EntryKind),
+}
+
+/// Escape `find`-glob metacharacters so a literal substring matches literally.
+fn glob_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '*' | '?' | '[' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Where a query searches: the current directory (default) or the whole subtree.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Scope {
@@ -71,6 +96,31 @@ impl Filter {
     /// snapshot for a whole pass.
     pub fn matches(&self, entry: &RemoteEntry, name_lower: &str, now: SystemTime) -> bool {
         self.terms.iter().all(|t| t.matches(entry, name_lower, now))
+    }
+
+    /// Translate this query into `find` predicates for a server-side search, or
+    /// `None` when it can't be fully expressed (a `size:`/`modified:` term, or no
+    /// terms) so the caller falls back to a client-side walk. Name/glob/`ext:`/
+    /// `type:` map cleanly to portable `-iname`/`-name`/`-type` predicates,
+    /// AND-combined (find's default).
+    pub fn as_find_predicates(&self) -> Option<Vec<FindPredicate>> {
+        if self.terms.is_empty() {
+            return None;
+        }
+        let mut preds = Vec::with_capacity(self.terms.len());
+        for term in &self.terms {
+            preds.push(match term {
+                Term::Substr(s) => FindPredicate::Iname(format!("*{}*", glob_escape(s))),
+                Term::SubstrExact(s) => FindPredicate::Name(format!("*{}*", glob_escape(s))),
+                Term::Glob(chars) => FindPredicate::Iname(chars.iter().collect()),
+                Term::Ext(e) => FindPredicate::Iname(format!("*.{}", glob_escape(e))),
+                Term::Kind(k) => FindPredicate::Kind(*k),
+                // `find` can express these, but units/semantics diverge from our
+                // matcher — defer to the client walk for exact fidelity.
+                Term::Size(..) | Term::Age { .. } => return None,
+            });
+        }
+        Some(preds)
     }
 }
 
@@ -456,5 +506,43 @@ mod tests {
     fn unparseable_predicate_falls_back_to_substring() {
         assert!(matches("foo:bar", &file("config.foo:bar")));
         assert!(matches("size:abc", &file("my-size:abc-file")));
+    }
+
+    #[test]
+    fn find_predicates_translate_expressible_queries() {
+        use FindPredicate::{Iname, Kind, Name};
+        assert_eq!(
+            Filter::parse("/*.rs").as_find_predicates(),
+            Some(vec![Iname("*.rs".into())])
+        );
+        assert_eq!(
+            Filter::parse("report").as_find_predicates(),
+            Some(vec![Iname("*report*".into())])
+        );
+        assert_eq!(
+            Filter::parse("ext:png type:file").as_find_predicates(),
+            Some(vec![Iname("*.png".into()), Kind(EntryKind::File)])
+        );
+        assert_eq!(
+            Filter::parse("\"Foo\"").as_find_predicates(),
+            Some(vec![Name("*Foo*".into())])
+        );
+        // A bare `*` is a glob (passed through); a quoted one is a literal, escaped.
+        assert_eq!(
+            Filter::parse("a*b").as_find_predicates(),
+            Some(vec![Iname("a*b".into())])
+        );
+        assert_eq!(
+            Filter::parse("\"a*b\"").as_find_predicates(),
+            Some(vec![Name("*a\\*b*".into())])
+        );
+    }
+
+    #[test]
+    fn find_predicates_bail_when_not_expressible() {
+        assert_eq!(Filter::parse("report size:>1m").as_find_predicates(), None);
+        assert_eq!(Filter::parse("modified:<7d").as_find_predicates(), None);
+        assert_eq!(Filter::parse("").as_find_predicates(), None);
+        assert_eq!(Filter::parse("/").as_find_predicates(), None);
     }
 }
