@@ -639,6 +639,7 @@ impl Render for Gallery {
                 let next = match cx.theme().name.as_str() {
                     "One Dark" => Theme::github_dark(),
                     "GitHub Dark" => Theme::ayu_dark(),
+                    "Ayu Dark" => Theme::ayu_light(),
                     _ => Theme::one_dark(),
                 };
                 cx.set_global(next);

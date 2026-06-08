@@ -136,4 +136,46 @@ impl Theme {
             radius_sm: px(3.0),
         }
     }
+
+    /// **Ayu Light** - warm-gold accent on near-white surfaces.
+    pub fn ayu_light() -> Self {
+        Theme {
+            name: "Ayu Light".into(),
+
+            bg_app: h(0xfcfcfc),
+            bg_panel: h(0xf3f4f5),
+            bg_panel_2: h(0xeceef0),
+            bg_elevated: h(0xffffff),
+            bg_bar: h(0xf3f4f5),
+            bg_hover: h(0xebedef),
+            bg_active: h(0xe1e4e6),
+            bg_selected: h(0xcfe3f7),
+            bg_input: h(0xffffff),
+
+            border: h(0xdcdfe2),
+            border_soft: h(0xe8eaed),
+            border_strong: h(0xc5c9ce),
+
+            text: h(0x5c6166),
+            text_muted: h(0x8a9199),
+            text_faint: h(0xa6acb2),
+            text_dim: h(0xbabfc4),
+
+            accent: h(0xffaa33),
+            accent_hover: h(0xf2940f),
+            accent_ghost: h(0xffaa33).opacity(0.16),
+            on_accent: h(0x422a00),
+
+            green: h(0x86b300),
+            red: h(0xe65050),
+            blue: h(0x399ee6),
+            purple: h(0xa37acc),
+            yellow: h(0xf2ae49),
+            orange: h(0xfa8d3e),
+
+            row_height: px(26.0),
+            radius: px(5.0),
+            radius_sm: px(3.0),
+        }
+    }
 }

@@ -17,7 +17,12 @@ use serde::Deserialize;
 
 /// The built-in themes, in picker order. The first is the fallback default.
 fn builtins() -> Vec<Theme> {
-    vec![Theme::one_dark(), Theme::github_dark(), Theme::ayu_dark()]
+    vec![
+        Theme::one_dark(),
+        Theme::github_dark(),
+        Theme::ayu_dark(),
+        Theme::ayu_light(),
+    ]
 }
 
 /// A built-in by name, used to resolve a theme file's `base`.

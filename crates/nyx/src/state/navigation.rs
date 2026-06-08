@@ -29,6 +29,7 @@ impl AppState {
         self.online_id = Some(profile_id.clone());
         self.connecting_id = None;
         self.view = View::Browse;
+        self.sidebar_open = true;
         self.cwd = root.clone();
         self.history = vec![root];
         self.history_ix = 0;

@@ -99,7 +99,9 @@ impl AppState {
             dock_open: true,
             dock_tab: DockTab::All,
             transfers: Vec::new(),
-            sidebar_open: true,
+            // Hidden on the welcome screen (its cards are the connection
+            // manager); shown once a connection opens. See `enter_browser`.
+            sidebar_open: false,
             recent_collapsed: false,
             browser_focus,
             root_focus,

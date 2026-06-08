@@ -3,13 +3,14 @@
 use gpui::{
     div, prelude::*, px, radians, Context, FontWeight, MouseButton, SharedString, Transformation,
 };
+use nyx_core::Protocol;
 use nyx_ui::{ActiveTheme, Badge, Button, ButtonSize, ButtonVariant, IconButton};
 
 use crate::icon::icon;
 use crate::state::models::{protocol_badge, ConnectionVm};
 use crate::state::AppState;
 
-use super::{status_dot, titlebar_drag};
+use super::titlebar_drag;
 
 /// Left inset of the titlebar strip. On macOS it clears the traffic lights
 /// overlapping this region; on other platforms the native caption bar is
@@ -173,12 +174,17 @@ fn conn_row(
     let is_online = state.online_id.as_deref() == Some(id.as_str());
     let (badge_variant, badge_label) = protocol_badge(conn.profile.protocol);
 
+    let accent = conn.color.color(&theme);
+    let glyph = if conn.profile.protocol == Protocol::Sftp {
+        "server"
+    } else {
+        "globe"
+    };
     let dot_color = if is_online {
         theme.green
     } else {
         theme.text_dim
     };
-    let ring = is_online.then(|| theme.green.opacity(0.16));
 
     let open_id = id.clone();
     let menu_id = id.clone();
@@ -194,9 +200,51 @@ fn conn_row(
         .pl(px(14.))
         .pr_3()
         .cursor_pointer()
-        .when(is_active, |this| this.bg(theme.bg_active))
+        .when(is_active, |this| this.bg(accent.opacity(0.10)))
         .when(!is_active, |this| this.hover(|s| s.bg(theme.bg_hover)))
-        .child(status_dot(dot_color, ring))
+        // Active-row marker: a thin accent stripe hugging the left edge.
+        .when(is_active, |this| {
+            this.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top(px(4.))
+                    .bottom(px(4.))
+                    .w(px(3.))
+                    .rounded_r(px(2.))
+                    .bg(accent),
+            )
+        })
+        // Accent chip identifies the connection by color; the corner dot is its
+        // online/offline presence.
+        .child(
+            div()
+                .relative()
+                .flex_shrink_0()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(28.))
+                        .rounded(px(7.))
+                        .bg(accent.opacity(0.12))
+                        .border_1()
+                        .border_color(accent.opacity(0.30))
+                        .child(icon(glyph, 14., accent)),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .bottom(px(-1.))
+                        .right(px(-1.))
+                        .size(px(9.))
+                        .rounded_full()
+                        .bg(dot_color)
+                        .border_2()
+                        .border_color(theme.bg_panel),
+                ),
+        )
         .child(
             div()
                 .flex_1()

@@ -255,6 +255,7 @@ impl AppState {
         self.online_id = None;
         self.connecting_id = None;
         self.view = View::Welcome;
+        self.sidebar_open = false;
         self.transfers.clear();
         self.pending_collisions.clear();
         self.collision_apply_all = false;
