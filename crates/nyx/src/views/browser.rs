@@ -838,11 +838,16 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
 }
 
 /// The floating preview shown under the cursor during an in-app drag: a small
-/// chip with the grabbed row's icon and name, plus a count badge when more than
-/// one row is being dragged.
+/// chip with the grabbed row's icon and name, or "N files" when more than one
+/// row is being dragged.
 fn drag_chip(row: &EntryRow, count: usize, theme: &Theme) -> gpui::AnyElement {
     let (icon_name, icon_color) = row.icon(theme);
-    let mut chip = div()
+    let label = if count > 1 {
+        SharedString::from(format!("{count} files"))
+    } else {
+        SharedString::from(row.entry.name.clone())
+    };
+    div()
         .flex()
         .items_center()
         .gap_1p5()
@@ -859,31 +864,8 @@ fn drag_chip(row: &EntryRow, count: usize, theme: &Theme) -> gpui::AnyElement {
                 .text_color(icon_color)
                 .child(icon(icon_name, 14., icon_color)),
         )
-        .child(
-            div()
-                .max_w(px(180.))
-                .truncate()
-                .child(SharedString::from(row.entry.name.clone())),
-        );
-    if count > 1 {
-        chip = chip.child(
-            div()
-                .flex()
-                .items_center()
-                .justify_center()
-                .min_w(px(16.))
-                .h(px(16.))
-                .pl(px(5.))
-                .pr(px(3.))
-                .rounded_full()
-                .bg(theme.accent)
-                .text_color(theme.on_accent)
-                .text_size(px(10.))
-                .line_height(px(16.))
-                .child(format!("{count}")),
-        );
-    }
-    chip.into_any_element()
+        .child(div().max_w(px(180.)).truncate().child(label))
+        .into_any_element()
 }
 
 /// The tree-search results view: a status header over a table of hits, shown in
