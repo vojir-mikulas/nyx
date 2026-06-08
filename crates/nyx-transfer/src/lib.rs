@@ -5,7 +5,7 @@
 //! allocation and - per running transfer - a shared [`TransferProgress`] handle
 //! (a byte counter + a one-way cancel flag). The service drives it: it `submit`s
 //! specs, `poll_start`s to promote queued transfers into running slots (spawning
-//! the actual copy tasks), `finish`es them on completion and `cancel`s on
+//! the actual copy tasks), `terminate`s them on completion and `cancel`s on
 //! request. Keeping the queue free of I/O makes the policy unit-testable without
 //! a runtime or a server.
 //!
@@ -20,7 +20,7 @@
 //! locked path is refused (surfacing the conflict) rather than racing - a
 //! delete-during-download or a double-upload to one path can't corrupt state.
 //! Independent paths still run concurrently up to the cap. Locks release on
-//! every terminal transition (finish / cancel / skip / failed). Richer per-path
+//! every terminal transition (terminate / cancel / skip / failed). Richer per-path
 //! queueing (auto-serialize same-path ops instead of rejecting) is deferred.
 
 use std::collections::{HashMap, VecDeque};
@@ -289,7 +289,7 @@ impl TransferQueue {
                     self.queued.push_front((tid, spec));
                 }
                 // Skip/Cancel terminate the item here (no copy runs) - release
-                // its lock now, since no `finish` will follow.
+                // its lock now, since no terminal will follow.
                 CollisionChoice::Skip => {
                     self.release(tid);
                     out.skipped.push(tid);
@@ -312,21 +312,46 @@ impl TransferQueue {
         out
     }
 
-    /// Drop a transfer from the running set (it reached a terminal state) and
-    /// release its path locks.
-    pub fn finish(&mut self, id: TransferId) {
-        self.running.remove(&id);
-        self.release(id);
+    /// Remove `id` from the pending queue if present, returning whether it was.
+    fn remove_queued(&mut self, id: TransferId) -> bool {
+        if let Some(pos) = self.queued.iter().position(|(qid, _)| *qid == id) {
+            self.queued.remove(pos);
+            return true;
+        }
+        false
+    }
+
+    /// Terminally remove `id` from whichever **live, non-resumable** map holds it
+    /// (`queued` / `running` / `awaiting`) and release its path lock - exactly
+    /// once. Returns whether it acted.
+    ///
+    /// A duplicate terminal, or a stale terminal for an id that has since moved to
+    /// the resumable `interrupted` state, is a no-op (`false`), so the path lock
+    /// that the still-live transfer needs is preserved. `interrupted` is
+    /// **deliberately excluded**: a transfer paused for resume keeps its lock and
+    /// is terminated only through `cancel` / `drain_interrupted` / `cancel_all`,
+    /// never by a terminal coming off the copy-task channel (no copy runs while
+    /// interrupted, so no real terminal targets it). This is what makes the queue
+    /// safe against the service delivering out-of-order or duplicate terminals.
+    pub fn terminate(&mut self, id: TransferId) -> bool {
+        // Non-short-circuiting `|`: an id lives in at most one map, but check all
+        // so the release is driven by membership, not by call order.
+        let was_live = self.remove_queued(id)
+            | self.running.remove(&id).is_some()
+            | self.awaiting.remove(&id).is_some();
+        if was_live {
+            self.release(id);
+        }
+        was_live
     }
 
     /// Cancel a transfer by id. A queued or parked transfer is dropped
     /// immediately (no task ran); a running one has its cancel flag set (the
-    /// copy loop notices and winds down, then the service `finish`es it through
+    /// copy loop notices and winds down, then the service `terminate`s it through
     /// the normal terminal path).
     pub fn cancel(&mut self, id: TransferId) -> CancelOutcome {
-        if let Some(pos) = self.queued.iter().position(|(qid, _)| *qid == id) {
-            self.queued.remove(pos);
-            // Dropped before it started - no `finish` will follow, so unlock now.
+        if self.remove_queued(id) {
+            // Dropped before it started - no terminal will follow, so unlock now.
             self.release(id);
             return CancelOutcome::WasQueued;
         }
@@ -340,7 +365,7 @@ impl TransferQueue {
             return CancelOutcome::WasQueued;
         }
         if let Some((_, progress)) = self.running.get(&id) {
-            // The copy winds down and the service calls `finish`, which unlocks.
+            // The copy winds down and the service calls `terminate`, which unlocks.
             progress.cancel();
             return CancelOutcome::WasRunning;
         }
@@ -358,9 +383,9 @@ impl TransferQueue {
         let mut dropped: Vec<TransferId> = self.queued.drain(..).map(|(id, _)| id).collect();
         dropped.extend(self.awaiting.drain().map(|(id, _)| id));
         dropped.extend(self.interrupted.drain().map(|(id, _)| id));
-        // The dropped queued/parked/interrupted items get no `finish`, so release
+        // The dropped queued/parked/interrupted items get no terminal, so release
         // their locks now; the flagged running ones release when the service
-        // `finish`es them.
+        // `terminate`s them.
         for id in &dropped {
             self.release(*id);
         }
@@ -492,7 +517,7 @@ mod tests {
         assert!(q.poll_start().is_none());
 
         // Finishing one frees a slot; the 4th (FIFO) starts next.
-        q.finish(ids[0]);
+        q.terminate(ids[0]);
         let fourth = q.poll_start().expect("a slot freed");
         assert_eq!(fourth.id, ids[3]);
         assert!(q.poll_start().is_none());
@@ -509,7 +534,7 @@ mod tests {
 
         assert_eq!(q.cancel(b), CancelOutcome::WasQueued);
         // `b` never starts even once the slot frees.
-        q.finish(a);
+        q.terminate(a);
         assert!(q.poll_start().is_none());
     }
 
@@ -544,7 +569,7 @@ mod tests {
             "cap=1 with one running starts nothing"
         );
         // Draining back under the cap lets the queued one through.
-        q.finish(a);
+        q.terminate(a);
         assert!(q.poll_start().is_some());
     }
 
@@ -574,8 +599,8 @@ mod tests {
         assert!(started_a.progress.is_cancelled());
         assert!(started_b.progress.is_cancelled());
         // Nothing left to start.
-        q.finish(a);
-        q.finish(b);
+        q.terminate(a);
+        q.terminate(b);
         assert!(q.poll_start().is_none());
     }
 
@@ -609,7 +634,7 @@ mod tests {
         // and its resolved policy is stamped.
         let res = q.resolve(a, CollisionChoice::Overwrite, false);
         assert_eq!(res, Resolution::default());
-        q.finish(b);
+        q.terminate(b);
         let restarted = q.poll_start().unwrap();
         assert_eq!(restarted.id, a);
         assert_eq!(
@@ -714,7 +739,7 @@ mod tests {
         assert!(q.is_remote_locked(&RemotePath::new("/r/0")));
         // Once the first reaches a terminal state the path frees up.
         q.poll_start().unwrap();
-        q.finish(a);
+        q.terminate(a);
         assert!(!q.is_remote_locked(&RemotePath::new("/r/0")));
         assert!(q.submit(spec(0)).is_ok());
     }
@@ -825,7 +850,79 @@ mod tests {
         q.resolve(a, CollisionChoice::Overwrite, false);
         assert!(q.is_remote_locked(&RemotePath::new("/r/0")));
         let restarted = q.poll_start().unwrap();
-        q.finish(restarted.id);
+        q.terminate(restarted.id);
+        assert!(!q.is_remote_locked(&RemotePath::new("/r/0")));
+    }
+
+    #[test]
+    fn terminate_is_idempotent_and_frees_once() {
+        let mut q = TransferQueue::new(1);
+        let a = q.submit(spec(0)).unwrap();
+        q.poll_start().unwrap();
+        // The first terminal acts and frees the path…
+        assert!(q.terminate(a));
+        assert!(!q.is_remote_locked(&RemotePath::new("/r/0")));
+        assert!(q.submit(spec(0)).is_ok());
+        // …a duplicate is a no-op and must not touch the now-reused path's lock.
+        assert!(!q.terminate(a));
+        assert!(q.is_remote_locked(&RemotePath::new("/r/0")));
+    }
+
+    #[test]
+    fn stale_terminal_after_interrupt_keeps_lock_and_resume() {
+        // The corruption regression: a terminal arriving for a transfer that has
+        // since been interrupted (paused, resumable) must NOT free its lock.
+        let mut q = TransferQueue::new(1);
+        let a = q.submit(spec(0)).unwrap();
+        let started = q.poll_start().unwrap();
+        assert_eq!(started.id, a);
+
+        let meta = nyx_core::SourceMeta {
+            size: 1000,
+            mtime: Some(7),
+        };
+        assert!(q.interrupt(a, 128, Some(meta)));
+
+        // A stale terminal for the now-interrupted id is a no-op: lock held, and a
+        // resubmit for the same path is still rejected (so no second writer).
+        assert!(!q.terminate(a));
+        assert!(q.is_remote_locked(&RemotePath::new("/r/0")));
+        assert_eq!(q.submit(spec(0)), Err(PathInUse));
+
+        // The interrupted transfer still resumes intact, with its watermark.
+        assert_eq!(q.readmit_interrupted(), 1);
+        let resumed = q.poll_start().unwrap();
+        assert_eq!(resumed.id, a);
+        assert_eq!(resumed.spec.resume_from, 128);
+        assert_eq!(resumed.spec.source_meta, Some(meta));
+    }
+
+    #[test]
+    fn out_of_order_terminate_then_interrupt_is_safe() {
+        // If a terminal lands before a (now-stale) interrupt, the interrupt must
+        // not resurrect the id into the resumable set.
+        let mut q = TransferQueue::new(1);
+        let a = q.submit(spec(0)).unwrap();
+        q.poll_start().unwrap();
+        assert!(q.terminate(a));
+        assert!(!q.interrupt(a, 64, None));
+        assert!(!q.is_remote_locked(&RemotePath::new("/r/0")));
+        assert_eq!(q.readmit_interrupted(), 0);
+    }
+
+    #[test]
+    fn duplicate_terminal_does_not_free_a_reused_path() {
+        let mut q = TransferQueue::new(2);
+        let a = q.submit(spec(0)).unwrap();
+        q.poll_start().unwrap();
+        assert!(q.terminate(a));
+        // The path is reused by a fresh transfer `b`…
+        let b = q.submit(spec(0)).unwrap();
+        q.poll_start().unwrap();
+        // …and a duplicate terminal for the dead `a` must leave `b`'s lock intact.
+        assert!(!q.terminate(a));
+        assert!(q.is_remote_locked(&RemotePath::new("/r/0")));
+        assert!(q.terminate(b));
         assert!(!q.is_remote_locked(&RemotePath::new("/r/0")));
     }
 
@@ -847,7 +944,7 @@ mod tests {
         assert!(q.poll_start().is_none());
         // …until it's re-admitted, which restores it to the queue (front).
         assert_eq!(q.readmit_interrupted(), 1);
-        q.finish(a);
+        q.terminate(a);
         let resumed = q.poll_start().unwrap();
         assert_eq!(resumed.id, b);
         assert_eq!(resumed.spec.on_collision, Some(CollisionChoice::Overwrite));

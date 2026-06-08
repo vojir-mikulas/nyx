@@ -638,7 +638,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
 
     // Internal channels: connect-like task → dispatcher.
     let (register_tx, mut register_rx) = unbounded_channel::<oneshot::Sender<bool>>();
-    let (done_tx, mut done_rx) = unbounded_channel::<TaskOutcome>();
+    let (done_tx, mut done_rx) = unbounded_channel::<(u64, TaskOutcome)>();
     // Internal channel: a finished copy task → dispatcher (mirrors `done`). The
     // `u64` is the session generation the copy ran under (see `generation` below).
     let (xfer_done_tx, mut xfer_done_rx) =
@@ -702,6 +702,8 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                         abort_search(&mut current_search);
                         client = None;
                         in_flight = true;
+                        // Supersede any prior intent (incl. the loop just aborted).
+                        let seq = reconnector.bump();
                         tokio::spawn(run_task(
                             TaskKind::Connect,
                             profile,
@@ -709,6 +711,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                             events.clone(),
                             register_tx.clone(),
                             done_tx.clone(),
+                            seq,
                         ));
                     }
                     Command::TestConnection { profile, secret } => {
@@ -721,6 +724,9 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                             continue;
                         }
                         in_flight = true;
+                        // A probe carries the current epoch but doesn't supersede an
+                        // ongoing connect/auto-reconnect, so it never bumps.
+                        let seq = reconnector.seq();
                         tokio::spawn(run_task(
                             TaskKind::Test,
                             profile,
@@ -728,6 +734,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                             events.clone(),
                             register_tx.clone(),
                             done_tx.clone(),
+                            seq,
                         ));
                     }
                     Command::HostKeyDecision { accept } => {
@@ -936,13 +943,17 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                     }
                     Command::CancelReconnect => {
                         // Stop the backoff loop but keep the session credentials -
-                        // a later manual reconnect re-seeds them anyway.
+                        // a later manual reconnect re-seeds them anyway. Bump the
+                        // epoch so a `Connected` the loop already queued is dropped.
+                        reconnector.bump();
                         reconnector.abort();
                     }
                     Command::Disconnect => {
                         // A disconnect also clears the single-flight slot, the
-                        // active-profile tracking and any auto-reconnect state.
+                        // active-profile tracking and any auto-reconnect state, and
+                        // bumps the epoch so any in-flight connect outcome is dropped.
                         in_flight = false;
+                        reconnector.bump();
                         active_profile = None;
                         reconnector.clear();
                         abort_search(&mut current_search);
@@ -972,8 +983,14 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
             Some(responder) = register_rx.recv() => {
                 pending_host_key = Some(responder);
             }
-            Some(done) = done_rx.recv() => {
-                // Any terminal outcome clears the single-flight slot.
+            Some((seq, done)) = done_rx.recv() => {
+                // Drop an outcome from a superseded attempt (a straggler whose epoch
+                // the dispatcher has since bumped): it must not adopt its session,
+                // bump the generation, or clear the single-flight slot.
+                if seq != reconnector.seq() {
+                    continue;
+                }
+                // A current outcome clears the single-flight slot.
                 in_flight = false;
                 match done {
                     TaskOutcome::Connected { profile_id, protocol, client: session, home } => {
@@ -1060,9 +1077,15 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                         }
                     }
                     // A copy task finished: free its slot, drop its speed counter,
-                    // announce the terminal state.
+                    // announce the terminal state. `terminate` is state-checked and
+                    // idempotent: a duplicate or out-of-order terminal (e.g. for an
+                    // id since moved to the resumable interrupted state) returns
+                    // `false` and we do nothing - no double unlock, no spurious
+                    // event - so it can't free a lock the still-live transfer needs.
                     terminal => {
-                        queue.finish(id);
+                        if !queue.terminate(id) {
+                            continue;
+                        }
                         last_bytes.remove(&id);
                         let resolved = match terminal {
                             TransferOutcome::Completed { message, report } => {
@@ -2214,7 +2237,8 @@ async fn run_task(
     secret: Secret,
     events: FuturesSender<Event>,
     register: TokioSender<oneshot::Sender<bool>>,
-    done: TokioSender<TaskOutcome>,
+    done: TokioSender<(u64, TaskOutcome)>,
+    seq: u64,
 ) {
     let profile_id = profile.id.clone();
     info!(host = %profile.host, port = profile.port, test = kind == TaskKind::Test, "connecting");
@@ -2233,7 +2257,7 @@ async fn run_task(
     let mut client = match build_client(&profile, secret, prompt) {
         Ok(client) => client,
         Err(err) => {
-            let _ = done.send(connect_error_outcome(kind, profile_id, err));
+            let _ = done.send((seq, connect_error_outcome(kind, profile_id, err)));
             return;
         }
     };
@@ -2272,7 +2296,7 @@ async fn run_task(
             message: err.to_string(),
         },
     };
-    let _ = done.send(outcome);
+    let _ = done.send((seq, outcome));
 }
 
 /// Credentials cached for a live session's lifetime so an automatic reconnect
@@ -2292,17 +2316,42 @@ struct Reconnector {
     creds: Option<SessionCreds>,
     task: Option<tokio::task::JoinHandle<()>>,
     register: TokioSender<oneshot::Sender<bool>>,
-    done: TokioSender<TaskOutcome>,
+    done: TokioSender<(u64, TaskOutcome)>,
+    /// A monotonic epoch over connect-like *attempts* (manual Connect, the probe
+    /// `Test`, and the auto-reconnect loop) - the value each spawned attempt is
+    /// stamped with, so [`dispatch`] can drop a straggler whose epoch it has since
+    /// bumped (a reconnect `Connected` already queued before [`abort`](Self::abort),
+    /// which abort can't un-send). Bumped on a *superseding session intent*
+    /// (Connect / Disconnect / CancelReconnect) but **not** on a `Test` probe or a
+    /// reconnect-loop start, neither of which supersedes the current intent.
+    /// Distinct from `generation`, which guards in-flight *transfers*.
+    seq: u64,
 }
 
 impl Reconnector {
-    fn new(register: TokioSender<oneshot::Sender<bool>>, done: TokioSender<TaskOutcome>) -> Self {
+    fn new(
+        register: TokioSender<oneshot::Sender<bool>>,
+        done: TokioSender<(u64, TaskOutcome)>,
+    ) -> Self {
         Self {
             creds: None,
             task: None,
             register,
             done,
+            seq: 0,
         }
+    }
+
+    /// The current connect epoch (for the dispatcher's staleness check).
+    fn seq(&self) -> u64 {
+        self.seq
+    }
+
+    /// Bump and return the epoch: a new superseding connect intent. Any outcome
+    /// still carrying an earlier epoch is now stale and dropped by the dispatcher.
+    fn bump(&mut self) -> u64 {
+        self.seq += 1;
+        self.seq
     }
 
     /// Cache the credentials for the session being (re)connected.
@@ -2338,12 +2387,16 @@ impl Reconnector {
         if !creds.auto_reconnect {
             return;
         }
+        // The loop carries the *current* epoch (a loss recovers the same session,
+        // it is not a new intent); a later supersede bumps past it and drops its
+        // outcome.
         let task = tokio::spawn(run_reconnect(
             creds.profile.clone(),
             creds.secret.clone(),
             events.clone(),
             self.register.clone(),
             self.done.clone(),
+            self.seq,
         ));
         self.task = Some(task);
     }
@@ -2362,7 +2415,8 @@ async fn run_reconnect(
     secret: Secret,
     events: FuturesSender<Event>,
     register: TokioSender<oneshot::Sender<bool>>,
-    done: TokioSender<TaskOutcome>,
+    done: TokioSender<(u64, TaskOutcome)>,
+    seq: u64,
 ) {
     let profile_id = profile.id.clone();
     for attempt in 1..=RECONNECT_MAX_ATTEMPTS {
@@ -2382,10 +2436,13 @@ async fn run_reconnect(
         let mut client = match build_client(&profile, secret.clone(), prompt) {
             Ok(client) => client,
             Err(err) => {
-                let _ = done.send(TaskOutcome::ReconnectFailed {
-                    profile_id,
-                    reason: err.to_string(),
-                });
+                let _ = done.send((
+                    seq,
+                    TaskOutcome::ReconnectFailed {
+                        profile_id,
+                        reason: err.to_string(),
+                    },
+                ));
                 return;
             }
         };
@@ -2395,30 +2452,39 @@ async fn run_reconnect(
                     .default_dir()
                     .await
                     .unwrap_or_else(|_| RemotePath::root());
-                let _ = done.send(TaskOutcome::Connected {
-                    profile_id,
-                    protocol: profile.protocol,
-                    client,
-                    home,
-                });
+                let _ = done.send((
+                    seq,
+                    TaskOutcome::Connected {
+                        profile_id,
+                        protocol: profile.protocol,
+                        client,
+                        home,
+                    },
+                ));
                 return;
             }
             Err(err) if is_transient_connect_error(&err) => {
                 warn!(%profile_id, attempt, "auto-reconnect attempt failed; will retry");
             }
             Err(err) => {
-                let _ = done.send(TaskOutcome::ReconnectFailed {
-                    profile_id,
-                    reason: err.to_string(),
-                });
+                let _ = done.send((
+                    seq,
+                    TaskOutcome::ReconnectFailed {
+                        profile_id,
+                        reason: err.to_string(),
+                    },
+                ));
                 return;
             }
         }
     }
-    let _ = done.send(TaskOutcome::ReconnectFailed {
-        profile_id,
-        reason: "could not reconnect after several attempts".into(),
-    });
+    let _ = done.send((
+        seq,
+        TaskOutcome::ReconnectFailed {
+            profile_id,
+            reason: "could not reconnect after several attempts".into(),
+        },
+    ));
 }
 
 /// Whether a failed connect attempt is worth retrying: a transport / network
