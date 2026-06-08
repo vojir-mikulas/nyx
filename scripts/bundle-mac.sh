@@ -29,6 +29,7 @@ cd "$ROOT"
 APP_NAME="Nyx"
 BUNDLE_ID="com.vojir.nyx"
 BIN_NAME="nyx"            # the [[bin]] name in crates/nyx/Cargo.toml
+EXE_NAME="Nyx"           # name inside the bundle (== how it shows in Activity Monitor)
 SOURCE_PNG="assets/nyx.png"
 MIN_MACOS="11.0"
 
@@ -91,8 +92,8 @@ done
 echo "==> Assembling $APP_DIR"
 rm -rf "$APP_DIR"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
-cp "$BIN_SRC" "$CONTENTS/MacOS/$BIN_NAME"
-chmod +x "$CONTENTS/MacOS/$BIN_NAME"
+cp "$BIN_SRC" "$CONTENTS/MacOS/$EXE_NAME"
+chmod +x "$CONTENTS/MacOS/$EXE_NAME"
 iconutil -c icns "$ICONSET" -o "$CONTENTS/Resources/$APP_NAME.icns"
 
 cat > "$CONTENTS/Info.plist" <<PLIST
@@ -103,7 +104,7 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <key>CFBundleName</key>            <string>$APP_NAME</string>
   <key>CFBundleDisplayName</key>     <string>$APP_NAME</string>
   <key>CFBundleIdentifier</key>      <string>$BUNDLE_ID</string>
-  <key>CFBundleExecutable</key>      <string>$BIN_NAME</string>
+  <key>CFBundleExecutable</key>      <string>$EXE_NAME</string>
   <key>CFBundleIconFile</key>        <string>$APP_NAME</string>
   <key>CFBundleVersion</key>         <string>$VERSION</string>
   <key>CFBundleShortVersionString</key> <string>$VERSION</string>

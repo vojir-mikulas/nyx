@@ -9,7 +9,7 @@ impl AppState {
         // modal trap focus among its own fields/buttons.
         let filter = cx.new(|cx| {
             TextInput::new(cx)
-                .with_placeholder("Filter — “/” searches the tree")
+                .with_placeholder("Filter")
                 .tab_stop(false)
         });
         cx.observe(&filter, |this, _, cx| {
