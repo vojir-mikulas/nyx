@@ -248,8 +248,12 @@ enum TaskOutcome {
         /// The resolved default landing directory (home).
         home: RemotePath,
     },
-    /// A live connect failed with a credential-free message.
-    ConnectFailed { message: String },
+    /// A live connect failed with a credential-free message, tagged with a typed
+    /// [`ConnectErrorKind`] so the UI's re-prompt decision needn't read the text.
+    ConnectFailed {
+        message: String,
+        kind: ConnectErrorKind,
+    },
     /// An auto-reconnect loop gave up after exhausting its attempts or hitting a
     /// non-transport failure.
     ReconnectFailed { profile_id: String, reason: String },
@@ -663,10 +667,10 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                             try_start(&mut queue, &client, &events, &xfer_done_tx, generation);
                         }
                     }
-                    TaskOutcome::ConnectFailed { message } => {
+                    TaskOutcome::ConnectFailed { message, kind } => {
                         // A failed manual connect holds no session to reconnect to.
                         reconnector.clear();
-                        let _ = events.unbounded_send(Event::Error { message });
+                        let _ = events.unbounded_send(Event::ConnectError { message, kind });
                     }
                     TaskOutcome::ReconnectFailed { profile_id, reason } => {
                         reconnector.clear();

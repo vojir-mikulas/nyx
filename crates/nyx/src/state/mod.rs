@@ -26,7 +26,7 @@ use nyx_keyring::{passphrase_account, password_account, CredentialStore, OsKeyri
 use nyx_profile::{
     AuthMethod, FileProfileStore, FileSettingsStore, Profile, ProfileColor, ProfileStore, Settings,
 };
-use nyx_service::{Command, Event, FileOp, SearchHit, ServiceHandle};
+use nyx_service::{Command, ConnectErrorKind, Event, FileOp, SearchHit, ServiceHandle};
 use nyx_ui::{ActiveTheme, TextInput, TextInputEvent, ToastVariant};
 use time::OffsetDateTime;
 

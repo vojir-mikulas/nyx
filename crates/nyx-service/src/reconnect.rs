@@ -58,6 +58,7 @@ pub(crate) async fn run_task(
             }
         }
         (TaskKind::Connect, Err(err)) => TaskOutcome::ConnectFailed {
+            kind: connect_error_kind(&err),
             message: err.to_string(),
         },
         (TaskKind::Test, Ok(())) => {
@@ -396,6 +397,7 @@ pub(crate) fn connect_error_outcome(
 ) -> TaskOutcome {
     match kind {
         TaskKind::Connect => TaskOutcome::ConnectFailed {
+            kind: connect_error_kind(&err),
             message: err.to_string(),
         },
         TaskKind::Test => TaskOutcome::TestResult {
@@ -403,6 +405,17 @@ pub(crate) fn connect_error_outcome(
             ok: false,
             message: err.to_string(),
         },
+    }
+}
+
+/// Classify a connect failure so the UI's re-prompt decision needn't read the
+/// error text. Only auth/passphrase failures drive a re-prompt; everything else
+/// is just surfaced.
+pub(crate) fn connect_error_kind(err: &NyxError) -> ConnectErrorKind {
+    match err {
+        NyxError::Auth => ConnectErrorKind::AuthFailed,
+        NyxError::KeyLocked => ConnectErrorKind::KeyLocked,
+        _ => ConnectErrorKind::Other,
     }
 }
 

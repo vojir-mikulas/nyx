@@ -343,6 +343,30 @@ pub enum Event {
         /// The error detail (a `NyxError` display; never contains a secret).
         message: String,
     },
+    /// A connect attempt failed, tagged with a typed [`ConnectErrorKind`] so the UI
+    /// can decide whether to re-prompt for a password / passphrase **without**
+    /// matching on the error wording. The message is still a credential-free,
+    /// human-readable detail for the toast.
+    ConnectError {
+        /// Human-readable detail (a `NyxError` display; never a secret).
+        message: String,
+        /// Typed reason behind the failure, for the re-prompt decision.
+        kind: ConnectErrorKind,
+    },
+}
+
+/// Why a connect attempt failed - lets the UI react (re-prompt or just toast)
+/// without matching on the error message text, which is free to be reworded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectErrorKind {
+    /// The server rejected the credentials (`NyxError::Auth`). A stored password
+    /// is likely stale, so the UI re-opens the password prompt to correct it.
+    AuthFailed,
+    /// An encrypted key needs a missing/incorrect passphrase
+    /// (`NyxError::KeyLocked`); the UI prompts for it.
+    KeyLocked,
+    /// Any other failure (network, host key, unsupported …) - surfaced as a toast.
+    Other,
 }
 
 /// Which file operation a [`Event::FileOpDone`] refers to.

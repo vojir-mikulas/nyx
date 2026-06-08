@@ -291,28 +291,43 @@ impl AppState {
                 }
             }
             Event::Error { message } => {
+                self.used_stored_password = None;
+                self.connecting_id = None;
+                self.host_key_prompt = None;
+                self.listing_loading = false;
+                self.push_toast(message, ToastVariant::Error, cx);
+            }
+            // A connect attempt failed. The typed `kind` (not the message text)
+            // decides whether to re-prompt for a credential.
+            Event::ConnectError { message, kind } => {
                 let stale = self.used_stored_password.take();
                 let connecting = self.connecting_id.take();
                 self.host_key_prompt = None;
                 self.listing_loading = false;
-                self.push_toast(message.clone(), ToastVariant::Error, cx);
-                // A stored password that fails auth is likely stale - re-open the
-                // prompt so the user can correct (and overwrite) it.
-                if message.contains("authentication failed") {
-                    if let Some(id) = stale {
-                        if let Some(conn) = self.connections.iter().find(|c| c.profile.id == id) {
-                            let profile = conn.profile.clone();
-                            self.show_password_prompt(profile, cx);
+                self.push_toast(message, ToastVariant::Error, cx);
+                match kind {
+                    // A stored password the server rejected is likely stale -
+                    // re-open the prompt so the user can correct (and overwrite) it.
+                    ConnectErrorKind::AuthFailed => {
+                        if let Some(id) = stale {
+                            if let Some(conn) = self.connections.iter().find(|c| c.profile.id == id)
+                            {
+                                let profile = conn.profile.clone();
+                                self.show_password_prompt(profile, cx);
+                            }
                         }
                     }
-                // An encrypted key with no/wrong passphrase - prompt for it.
-                } else if message.contains("key requires a passphrase") {
-                    if let Some(id) = connecting {
-                        if let Some(conn) = self.connections.iter().find(|c| c.profile.id == id) {
-                            let profile = conn.profile.clone();
-                            self.show_passphrase_prompt(profile, cx);
+                    // An encrypted key with no/wrong passphrase - prompt for it.
+                    ConnectErrorKind::KeyLocked => {
+                        if let Some(id) = connecting {
+                            if let Some(conn) = self.connections.iter().find(|c| c.profile.id == id)
+                            {
+                                let profile = conn.profile.clone();
+                                self.show_passphrase_prompt(profile, cx);
+                            }
                         }
                     }
+                    ConnectErrorKind::Other => {}
                 }
             }
             // Surface a deferred startup error (e.g. malformed profiles.toml).
