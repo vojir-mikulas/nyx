@@ -5,6 +5,7 @@
 
 use gpui::{div, prelude::*, App, ClickEvent, SharedString, Window};
 
+use crate::styled_ext::StyledExt;
 use crate::theme::ActiveTheme;
 
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
@@ -116,7 +117,7 @@ impl RenderOnce for ContextMenu {
                     });
 
                 if item.disabled {
-                    row.opacity(0.4).into_any_element()
+                    row.disabled_look().into_any_element()
                 } else {
                     row.cursor_pointer()
                         .hover(move |s| s.bg(hover_bg).text_color(hover_fg))

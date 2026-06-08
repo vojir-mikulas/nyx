@@ -9,6 +9,7 @@ use std::rc::Rc;
 
 use gpui::{anchored, deferred, div, point, prelude::*, px, Anchor, App, SharedString, Window};
 
+use crate::styled_ext::StyledExt;
 use crate::theme::ActiveTheme;
 
 type ToggleHandler = Box<dyn Fn(&mut Window, &mut App) + 'static>;
@@ -78,6 +79,8 @@ impl RenderOnce for Select {
         let selected = self.selected;
         let on_toggle = self.on_toggle.map(Rc::new);
         let on_select = self.on_select.map(Rc::new);
+        let ring = theme.accent;
+        let glow = theme.accent_ghost;
 
         let current = self
             .options
@@ -106,6 +109,8 @@ impl RenderOnce for Select {
             .text_sm()
             .text_color(theme.text)
             .cursor_pointer()
+            .tab_index(0)
+            .focus(move |s| s.focus_ring_color(ring, glow))
             .child(div().flex_1().child(current))
             .child(div().text_xs().text_color(theme.text_faint).child("⌄"))
             .when(!open, |this| {
@@ -135,6 +140,8 @@ impl RenderOnce for Select {
                     theme.text
                 })
                 .cursor_pointer()
+                .tab_index(0)
+                .focus(move |s| s.focus_ring_color(ring, glow))
                 .hover(move |s| s.bg(theme.accent).text_color(theme.on_accent))
                 .child(div().flex_1().child(label))
                 .when(is_selected, |this| this.child(div().text_xs().child("✓")))

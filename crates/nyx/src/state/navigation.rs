@@ -51,10 +51,20 @@ impl AppState {
         self.rebuild_view_order();
     }
 
-    /// Request a listing for the current `cwd` from the backend. The result
-    /// arrives asynchronously as an [`Event::DirListing`].
+    /// Request a listing for the current `cwd` from the backend, blanking the
+    /// table first. The result arrives asynchronously as an [`Event::DirListing`].
     pub(super) fn reload_listing(&mut self, cx: &mut Context<Self>) {
-        self.set_listing(Vec::new());
+        self.request_listing(true, cx);
+    }
+
+    /// Ask the backend for `cwd`'s listing. `clear` blanks the table first —
+    /// right when changing directories, where the old rows are stale. An in-place
+    /// refresh passes `false`: the current rows stay visible and a subtle toolbar
+    /// spinner signals the reload, so the view doesn't flash empty.
+    fn request_listing(&mut self, clear: bool, cx: &mut Context<Self>) {
+        if clear {
+            self.set_listing(Vec::new());
+        }
         self.listing_loading = true;
         if !self.service.send(Command::ListDir {
             path: self.cwd.clone(),
@@ -135,8 +145,8 @@ impl AppState {
         self.go_to_path(path, false, cx);
     }
 
-    /// Refresh the current listing.
+    /// Refresh the current listing in place, keeping the existing rows visible.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        self.reload_listing(cx);
+        self.request_listing(false, cx);
     }
 }

@@ -5,6 +5,7 @@
 
 use gpui::{div, prelude::*, App, ElementId, Window};
 
+use crate::styled_ext::StyledExt;
 use crate::theme::ActiveTheme;
 
 type ChangeHandler = Box<dyn Fn(&bool, &mut Window, &mut App) + 'static>;
@@ -79,7 +80,7 @@ impl RenderOnce for Toggle {
                 .cursor_pointer()
                 .on_click(move |_, window, cx| handler(&next, window, cx)),
             (false, None) => base.cursor_pointer(),
-            (true, _) => base.opacity(0.5),
+            (true, _) => base.disabled_look(),
         }
     }
 }

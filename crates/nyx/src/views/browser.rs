@@ -243,6 +243,12 @@ fn toolbar(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let can_back = state.can_back();
     let can_fwd = state.can_forward();
     let can_up = !state.cwd.is_root();
+    // An in-place refresh keeps the rows; the button itself spins to signal it.
+    let refresh_glyph: gpui::AnyElement = if state.listing_loading && !state.listing.is_empty() {
+        crate::icon::spinner("nav-refresh-spin", 15., theme.text_muted).into_any_element()
+    } else {
+        icon("refresh", 15., theme.text_muted).into_any_element()
+    };
 
     div()
         .flex()
@@ -284,11 +290,12 @@ fn toolbar(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
                         })),
                 )
                 .child(
-                    IconButton::new("nav-refresh", icon("refresh", 15., theme.text_muted))
-                        .on_click(cx.listener(|this, _, _, cx| {
+                    IconButton::new("nav-refresh", refresh_glyph).on_click(cx.listener(
+                        |this, _, _, cx| {
                             this.refresh(cx);
                             cx.notify();
-                        })),
+                        },
+                    )),
                 ),
         )
         .child(separator(cx))

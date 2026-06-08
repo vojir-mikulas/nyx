@@ -5,6 +5,7 @@
 
 use gpui::{div, prelude::*, AnyElement, App, ClickEvent, ElementId, Window};
 
+use crate::styled_ext::StyledExt;
 use crate::theme::ActiveTheme;
 
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
@@ -87,6 +88,8 @@ impl RenderOnce for IconButton {
         };
         let hover_bg = theme.bg_hover;
         let hover_fg = theme.text_muted;
+        let ring = theme.accent;
+        let glow = theme.accent_ghost;
 
         let base = div()
             .id(self.id)
@@ -100,10 +103,12 @@ impl RenderOnce for IconButton {
             .child(self.icon);
 
         let interactive = if self.disabled {
-            base.opacity(0.4)
+            base.disabled_look()
         } else {
             base.cursor_pointer()
                 .hover(move |s| s.bg(hover_bg).text_color(hover_fg))
+                .tab_index(0)
+                .focus(move |s| s.focus_ring_color(ring, glow))
         };
 
         match (self.disabled, self.on_click) {

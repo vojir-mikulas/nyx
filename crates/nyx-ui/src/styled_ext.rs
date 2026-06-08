@@ -3,7 +3,7 @@
 //! `StyledExt` - the "@apply" layer: theme-aware style recipes that compose
 //! common token combinations, so views read `div().panel(cx)`.
 
-use gpui::{px, App, BoxShadow, Styled};
+use gpui::{px, App, BoxShadow, Hsla, Styled};
 
 use crate::theme::ActiveTheme;
 
@@ -29,13 +29,24 @@ pub trait StyledExt: Styled + Sized {
 
     /// Accent focus ring: accent border + a soft 2px accent-ghost glow.
     fn focus_ring(self, cx: &App) -> Self {
-        self.border_color(cx.theme().accent).shadow(vec![BoxShadow {
-            color: cx.theme().accent_ghost,
+        self.focus_ring_color(cx.theme().accent, cx.theme().accent_ghost)
+    }
+
+    /// `focus_ring` with explicit colors, for use inside a `.focus(|s| …)` style
+    /// closure where the theme isn't reachable through `cx`.
+    fn focus_ring_color(self, border: Hsla, glow: Hsla) -> Self {
+        self.border_color(border).shadow(vec![BoxShadow {
+            color: glow,
             offset: gpui::point(px(0.), px(0.)),
             blur_radius: px(0.),
             spread_radius: px(2.),
             inset: false,
         }])
+    }
+
+    /// Standard disabled appearance: uniformly dimmed, non-interactive.
+    fn disabled_look(self) -> Self {
+        self.opacity(0.5)
     }
 }
 

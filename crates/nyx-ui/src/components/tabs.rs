@@ -6,6 +6,7 @@
 
 use gpui::{div, prelude::*, App, SharedString, Window};
 
+use crate::styled_ext::StyledExt;
 use crate::theme::ActiveTheme;
 
 type SelectHandler = Box<dyn Fn(usize, &mut Window, &mut App) + 'static>;
@@ -57,6 +58,8 @@ impl RenderOnce for Tabs {
         let theme = cx.theme();
         let selected = self.selected;
         let on_select = self.on_select.map(std::rc::Rc::new);
+        let ring = theme.accent;
+        let glow = theme.accent_ghost;
 
         let tabs = self.items.into_iter().enumerate().map(|(ix, item)| {
             let is_active = ix == selected;
@@ -101,6 +104,8 @@ impl RenderOnce for Tabs {
                 .text_color(fg)
                 .bg(bg)
                 .cursor_pointer()
+                .tab_index(0)
+                .focus(move |s| s.focus_ring_color(ring, glow))
                 .when(!is_active, |this| {
                     this.hover(|s| s.bg(theme.bg_hover).text_color(theme.text_muted))
                 })

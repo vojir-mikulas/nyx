@@ -4,6 +4,10 @@
 //! browser, transfer dock and status bar. The single root [`AppState`] entity
 //! owns all state and interaction logic.
 
+// Suppress the Windows console window in release builds; keep it in debug for
+// `tracing` output.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod app;
 mod assets;
 mod drag;

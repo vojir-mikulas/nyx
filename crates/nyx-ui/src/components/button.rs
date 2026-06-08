@@ -8,6 +8,7 @@ use gpui::{
     Hsla, SharedString, Window,
 };
 
+use crate::styled_ext::StyledExt;
 use crate::theme::ActiveTheme;
 
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
@@ -154,7 +155,7 @@ impl RenderOnce for Button {
         let glow = theme.accent_ghost;
 
         let interactive = if self.disabled {
-            base.opacity(0.5)
+            base.disabled_look()
         } else {
             let base = base
                 .cursor_pointer()

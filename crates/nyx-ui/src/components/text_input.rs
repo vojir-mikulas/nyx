@@ -142,26 +142,12 @@ impl TextInput {
         cx.bind_keys([
             KeyBinding::new("backspace", Backspace, ctx),
             KeyBinding::new("delete", Delete, ctx),
-            KeyBinding::new("alt-backspace", DeleteWordLeft, ctx),
-            KeyBinding::new("alt-delete", DeleteWordRight, ctx),
             KeyBinding::new("left", Left, ctx),
             KeyBinding::new("right", Right, ctx),
-            KeyBinding::new("alt-left", WordLeft, ctx),
-            KeyBinding::new("alt-right", WordRight, ctx),
-            KeyBinding::new("alt-shift-left", SelectWordLeft, ctx),
-            KeyBinding::new("alt-shift-right", SelectWordRight, ctx),
             KeyBinding::new("shift-left", SelectLeft, ctx),
             KeyBinding::new("shift-right", SelectRight, ctx),
-            KeyBinding::new("cmd-a", SelectAll, ctx),
-            KeyBinding::new("cmd-c", Copy, ctx),
-            KeyBinding::new("cmd-v", Paste, ctx),
-            KeyBinding::new("cmd-x", Cut, ctx),
             KeyBinding::new("home", Home, ctx),
             KeyBinding::new("end", End, ctx),
-            KeyBinding::new("cmd-left", Home, ctx),
-            KeyBinding::new("cmd-right", End, ctx),
-            KeyBinding::new("cmd-shift-left", SelectHome, ctx),
-            KeyBinding::new("cmd-shift-right", SelectEnd, ctx),
             KeyBinding::new("shift-home", SelectHome, ctx),
             KeyBinding::new("shift-end", SelectEnd, ctx),
             // Tab traversal between fields (GPUI has no default `tab` binding).
@@ -170,7 +156,43 @@ impl TextInput {
             // Surfaced to the owner as `TextInputEvent`.
             KeyBinding::new("enter", Submit, ctx),
             KeyBinding::new("escape", Cancel, ctx),
+        ]);
+
+        // Clipboard, word-nav and line-nav modifiers differ by platform: macOS
+        // uses cmd for clipboard and alt for word jumps; Windows/Linux use ctrl
+        // for both. `cmd` maps to the Windows/Super key off macOS, so the mac
+        // bindings are dead there — hence the split.
+        #[cfg(target_os = "macos")]
+        cx.bind_keys([
+            KeyBinding::new("alt-backspace", DeleteWordLeft, ctx),
+            KeyBinding::new("alt-delete", DeleteWordRight, ctx),
+            KeyBinding::new("alt-left", WordLeft, ctx),
+            KeyBinding::new("alt-right", WordRight, ctx),
+            KeyBinding::new("alt-shift-left", SelectWordLeft, ctx),
+            KeyBinding::new("alt-shift-right", SelectWordRight, ctx),
+            KeyBinding::new("cmd-a", SelectAll, ctx),
+            KeyBinding::new("cmd-c", Copy, ctx),
+            KeyBinding::new("cmd-v", Paste, ctx),
+            KeyBinding::new("cmd-x", Cut, ctx),
+            KeyBinding::new("cmd-left", Home, ctx),
+            KeyBinding::new("cmd-right", End, ctx),
+            KeyBinding::new("cmd-shift-left", SelectHome, ctx),
+            KeyBinding::new("cmd-shift-right", SelectEnd, ctx),
             KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, ctx),
+        ]);
+
+        #[cfg(not(target_os = "macos"))]
+        cx.bind_keys([
+            KeyBinding::new("ctrl-backspace", DeleteWordLeft, ctx),
+            KeyBinding::new("ctrl-delete", DeleteWordRight, ctx),
+            KeyBinding::new("ctrl-left", WordLeft, ctx),
+            KeyBinding::new("ctrl-right", WordRight, ctx),
+            KeyBinding::new("ctrl-shift-left", SelectWordLeft, ctx),
+            KeyBinding::new("ctrl-shift-right", SelectWordRight, ctx),
+            KeyBinding::new("ctrl-a", SelectAll, ctx),
+            KeyBinding::new("ctrl-c", Copy, ctx),
+            KeyBinding::new("ctrl-v", Paste, ctx),
+            KeyBinding::new("ctrl-x", Cut, ctx),
         ]);
     }
 
