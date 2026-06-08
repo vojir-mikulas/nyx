@@ -98,6 +98,7 @@ impl RenderOnce for ContextMenu {
             Entry::Item(item) => {
                 let base_color = if item.danger { theme.red } else { theme.text };
                 let hover_bg = if item.danger { theme.red } else { theme.accent };
+                let hover_fg = theme.on_accent;
                 let row = div()
                     .id(item.key.clone())
                     .flex()
@@ -116,7 +117,7 @@ impl RenderOnce for ContextMenu {
                     row.opacity(0.4).into_any_element()
                 } else {
                     row.cursor_pointer()
-                        .hover(move |s| s.bg(hover_bg).text_color(gpui::white()))
+                        .hover(move |s| s.bg(hover_bg).text_color(hover_fg))
                         .when_some(item.on_click, |this, handler| {
                             this.on_click(move |event, window, cx| handler(event, window, cx))
                         })

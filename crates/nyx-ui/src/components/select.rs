@@ -133,7 +133,7 @@ impl RenderOnce for Select {
                     theme.text
                 })
                 .cursor_pointer()
-                .hover(move |s| s.bg(theme.accent).text_color(gpui::white()))
+                .hover(move |s| s.bg(theme.accent).text_color(theme.on_accent))
                 .child(div().flex_1().child(label))
                 .when(is_selected, |this| this.child(div().text_xs().child("✓")))
                 .when_some(handler, |this, handler| {
