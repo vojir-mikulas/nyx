@@ -22,6 +22,10 @@ Sequenced implementation plans live in `plans/`. **Note:** `plans/` (and
 `.gitignore` — the links in this file resolve only in a working checkout, not on
 the GitHub mirror.
 
+- [`plans/beta-release.md`](plans/beta-release.md) — **active.** Pre-release
+  checklist for the first public open-source beta (`v0.1.0-beta.1`): version
+  bump, `CHANGELOG.md`, README screenshot, Gatekeeper/notarization story, issue
+  templates, and the tag-day sequence. Packaging, not code.
 - [`plans/code-review-hardening.md`](plans/code-review-hardening.md) —
   **active.** Remediation of an external security/robustness review: FTPS
   changed-cert rejection and SFTP→local path-traversal (the two blockers),

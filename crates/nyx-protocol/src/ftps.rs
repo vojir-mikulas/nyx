@@ -217,7 +217,12 @@ impl RemoteClient for FtpsClient {
                 }
             }
         }
-        unreachable!("the connect loop returns on both attempts")
+        // The loop above returns on every attempt, so this is reached only if the
+        // attempt count is ever changed without adding a terminating branch. Fail
+        // closed rather than panic the connect path on a misbehaving server.
+        Err(NyxError::Connection(
+            "TLS handshake did not resolve".to_string(),
+        ))
     }
 
     async fn default_dir(&self) -> Result<RemotePath> {

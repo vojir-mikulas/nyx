@@ -1064,18 +1064,24 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                     terminal => {
                         queue.finish(id);
                         last_bytes.remove(&id);
-                        let (status, message, report) = match terminal {
+                        let resolved = match terminal {
                             TransferOutcome::Completed { message, report } => {
-                                (TransferStatus::Completed, message, report)
+                                Some((TransferStatus::Completed, message, report))
                             }
-                            TransferOutcome::Cancelled => (TransferStatus::Cancelled, None, None),
-                            TransferOutcome::Skipped => (TransferStatus::Skipped, None, None),
-                            TransferOutcome::Failed(msg) => (TransferStatus::Failed, Some(msg), None),
+                            TransferOutcome::Cancelled => Some((TransferStatus::Cancelled, None, None)),
+                            TransferOutcome::Skipped => Some((TransferStatus::Skipped, None, None)),
+                            TransferOutcome::Failed(msg) => Some((TransferStatus::Failed, Some(msg), None)),
+                            // Collision and Interrupted are handled by the arms above
+                            // and never fall through here. Ignore rather than panic the
+                            // backend thread if that invariant is ever broken.
                             TransferOutcome::Collision { .. } | TransferOutcome::Interrupted { .. } => {
-                                unreachable!()
+                                warn!(?id, "unexpected non-terminal transfer outcome in terminal arm");
+                                None
                             }
                         };
-                        let _ = events.unbounded_send(Event::TransferDone { id, status, message, report });
+                        if let Some((status, message, report)) = resolved {
+                            let _ = events.unbounded_send(Event::TransferDone { id, status, message, report });
+                        }
                     }
                 }
                 // Backfill any freed slot (a parked item frees its slot too).
