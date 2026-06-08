@@ -109,6 +109,50 @@ fn load_theme_file(path: &Path) -> Result<Theme, String> {
     parse_theme(&contents)
 }
 
+/// Validate a theme file the user picked and copy it into the config `themes/`
+/// dir so it persists and joins the picker. Returns the installed theme's name on
+/// success; the `Err` string is suitable for a toast.
+///
+/// Validation reuses [`parse_theme`], so a bad file is rejected *before* anything
+/// is written. The destination name is a slug of the theme name, so re-importing
+/// an edited theme overwrites rather than duplicates.
+pub fn install_theme(src: &Path) -> Result<String, String> {
+    let contents = fs::read_to_string(src).map_err(|err| format!("can't read file: {err}"))?;
+    let theme = parse_theme(&contents)?;
+
+    if builtin_by_name(&theme.name).is_some() {
+        return Err(format!(
+            "\u{201c}{}\u{201d} is a built-in theme name; rename yours",
+            theme.name
+        ));
+    }
+
+    let dir = themes_dir().ok_or("could not determine the config directory")?;
+    fs::create_dir_all(&dir).map_err(|err| format!("can't create themes folder: {err}"))?;
+    let dest = dir.join(format!("{}.toml", slug(&theme.name)));
+    fs::write(&dest, &contents).map_err(|err| format!("can't save theme: {err}"))?;
+
+    Ok(theme.name)
+}
+
+/// A filesystem-safe slug for a theme name (`"My Theme!" → "my-theme"`).
+fn slug(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let slug = out.trim_matches('-').to_string();
+    if slug.is_empty() {
+        "theme".to_string()
+    } else {
+        slug
+    }
+}
+
 /// Parse a theme document and apply it onto the named (or default) base.
 fn parse_theme(contents: &str) -> Result<Theme, String> {
     let file: ThemeFile = toml::from_str(contents).map_err(|err| err.to_string())?;
@@ -292,5 +336,13 @@ mod tests {
     #[test]
     fn missing_name_is_an_error() {
         assert!(parse_theme("[colors]\naccent = \"#fff\"").is_err());
+    }
+
+    #[test]
+    fn slug_is_filesystem_safe() {
+        assert_eq!(slug("My Theme"), "my-theme");
+        assert_eq!(slug("  Tokyo Night!! "), "tokyo-night");
+        assert_eq!(slug("One/Dark"), "one-dark");
+        assert_eq!(slug("***"), "theme");
     }
 }

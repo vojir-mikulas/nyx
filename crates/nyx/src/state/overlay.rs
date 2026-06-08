@@ -38,6 +38,41 @@ impl AppState {
         self.arm_primary_focus();
     }
 
+    /// Pick a theme `.toml` from disk, install it into the config `themes/` dir,
+    /// then make it the active theme. Validation/copy lives in
+    /// [`crate::theme_load::install_theme`]; a bad file becomes an error toast and
+    /// nothing is written.
+    pub fn import_theme(&mut self, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Add theme".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            this.update(cx, |this, cx| {
+                match crate::theme_load::install_theme(&path) {
+                    Ok(name) => {
+                        this.theme_registry = ThemeRegistry::load();
+                        cx.set_global(this.theme_registry.by_name(&name));
+                        this.save_settings(cx);
+                        this.push_toast(format!("Added theme “{name}”"), ToastVariant::Success, cx);
+                        cx.notify();
+                    }
+                    Err(err) => this.push_toast(err, ToastVariant::Error, cx),
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Toggle the keyboard-shortcuts cheat-sheet (`cmd-/`).
     pub fn toggle_shortcuts(&mut self) {
         self.shortcuts_open = !self.shortcuts_open;

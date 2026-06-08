@@ -887,6 +887,14 @@ fn tweaks_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElemen
                 .flex_col()
                 .gap_4()
                 .child(field("Color scheme", theme_select, cx))
+                .child(
+                    Button::new("tw-add-theme", "Add theme from file…")
+                        .variant(ButtonVariant::Secondary)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.import_theme(cx);
+                            cx.notify();
+                        })),
+                )
                 .child(field(
                     "Row density",
                     Segmented::new("tw-density")

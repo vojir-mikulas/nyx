@@ -2,10 +2,22 @@
 
 Nyx ships with three built-in themes — **One Dark**, **GitHub Dark** and **Ayu
 Dark** — selectable under **Settings → Tweaks → Color scheme** (⌘,). You can also
-write your own: drop a `.toml` file into Nyx's `themes/` folder and it shows up in
-that same picker.
+write your own.
 
-## Where to put a theme
+## The quick way: add from the app
+
+In **Settings → Tweaks** (⌘,), click **Add theme from file…**, pick your `.toml`,
+and Nyx validates it, installs it, and switches to it immediately. If the file has
+a problem (a bad color, a misspelled token, a missing `name`), you get an error
+toast and nothing is changed. This is the same as copying the file into the
+`themes/` folder below — it just does the copying for you.
+
+The rest of this page explains the file format so you can author one.
+
+## Where themes live
+
+Installed themes (whether added from the app or by hand) live in a `themes/`
+folder inside Nyx's config folder. You can also drop files here directly:
 
 Create a `themes/` folder inside Nyx's config folder and put one `.toml` file per
 theme in it:
@@ -16,8 +28,9 @@ theme in it:
 | Linux | `~/.config/dev.nyx.Nyx/themes/` (or `$XDG_CONFIG_HOME/...`) |
 | Windows | `%APPDATA%\dev.nyx.Nyx\themes\` |
 
-Themes are loaded **at startup**, so restart Nyx after adding or editing a file.
-Your theme appears in the picker under the `name` you give it.
+A theme added with **Add theme from file…** applies right away. A file you drop in
+or edit **by hand** is picked up on the next launch, so restart Nyx after. Either
+way, your theme appears in the picker under the `name` you give it.
 
 > **In a hurry?** Grab [`example-theme.toml`](example-theme.toml) — a complete,
 > fully-commented theme. Copy it into the `themes/` folder above, rename it, tweak
