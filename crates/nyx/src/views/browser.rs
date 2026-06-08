@@ -2,7 +2,7 @@
 
 use gpui::{
     actions, canvas, div, prelude::*, px, quad, radians, BorderStyle, Context, DragMoveEvent,
-    ExternalPaths, MouseButton, MouseDownEvent, MouseMoveEvent, SharedString, Transformation,
+    ExternalPaths, MouseButton, MouseDownEvent, SharedString, Transformation,
 };
 use nyx_core::Protocol;
 use nyx_ui::{
@@ -716,21 +716,21 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
             MouseButton::Left,
             cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                 window.focus(&this.browser_focus, cx);
-                // A press on empty space (never over a row) begins a rubber-band.
-                this.marquee_start(ev.position, cx);
+                // A press on empty space (never over a row) begins a rubber-band;
+                // a poll loop then tracks the cursor for the rest of the gesture.
+                this.marquee_start(ev.position, window, cx);
             }),
         )
-        // Grow the rubber-band while the left button is held; ends on release.
-        .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _window, cx| {
-            if ev.pressed_button == Some(MouseButton::Left) {
-                this.marquee_update(ev.position, cx);
-            } else {
-                // The button was released (possibly off the table, so on_mouse_up
-                // never fired) - tidy up any rubber-band left dangling.
-                this.marquee_end(cx);
-            }
-        }))
         .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|this, _, _window, cx| {
+                this.marquee_end(cx);
+            }),
+        )
+        // A release outside the table (even off the window - macOS still delivers
+        // the up to the window that captured the press) also ends the rubber-band,
+        // so it can't get stuck mid-drag.
+        .on_mouse_up_out(
             MouseButton::Left,
             cx.listener(|this, _, _window, cx| {
                 this.marquee_end(cx);

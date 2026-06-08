@@ -123,7 +123,6 @@ impl AppState {
             drop_row_bounds: Rc::new(RefCell::new(Vec::new())),
             file_scroll: UniformListScrollHandle::new(),
             marquee: None,
-            marquee_scrolling: false,
             marquee_gen: 0,
             drag_return_folder: None,
             connecting_id: None,

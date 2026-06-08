@@ -181,12 +181,9 @@ pub struct AppState {
     file_scroll: UniformListScrollHandle,
     /// The in-progress rubber-band selection, if the user is dragging one.
     marquee: Option<Marquee>,
-    /// Whether a rubber-band edge auto-scroll loop is currently running, so a
-    /// fresh pointer move doesn't spawn a second one.
-    marquee_scrolling: bool,
-    /// Bumped on each rubber-band start. An auto-scroll loop captures the value
-    /// it was spawned for and stops once it changes, so a loop never bleeds into a
-    /// later gesture.
+    /// Bumped on each rubber-band start. The gesture's poll loop captures the
+    /// value it was spawned for and stops once it changes, so a loop never bleeds
+    /// into a later gesture.
     marquee_gen: u64,
     /// While an OS drag-out is back inside the window, the folder row currently
     /// under the cursor - highlighted so the (unchangeable native) cursor still

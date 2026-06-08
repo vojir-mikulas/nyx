@@ -168,7 +168,18 @@ impl AppState {
     /// itself (those keep their own click/drag, so a file grab is never hijacked).
     /// Clears the selection, so a press on empty space also deselects. Returns
     /// whether a rubber-band was started.
-    pub fn marquee_start(&mut self, origin: Point<Pixels>, cx: &mut Context<Self>) -> bool {
+    ///
+    /// A 16ms poll loop then drives the whole gesture from the live cursor
+    /// position - including while the cursor is dragged outside the window (macOS
+    /// keeps reporting it to the window that captured the press), so the box and
+    /// selection keep tracking it. The loop ends when the gesture does (via
+    /// [`marquee_end`](Self::marquee_end) on release) or a newer one supersedes it.
+    pub fn marquee_start(
+        &mut self,
+        origin: Point<Pixels>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some((top, height, offset_y)) = self.list_geometry() else {
             return false;
         };
@@ -194,56 +205,101 @@ impl AppState {
             current: origin,
             active: false,
         });
+        let generation = self.marquee_gen;
+        cx.spawn_in(window, async move |this, cx| loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(16))
+                .await;
+            let cont = this
+                .update_in(cx, |this, window, cx| {
+                    this.marquee_drive(window.mouse_position(), generation, cx)
+                })
+                .unwrap_or(false);
+            if !cont {
+                break;
+            }
+        })
+        .detach();
         cx.notify();
         true
     }
 
     /// The rubber-band rectangle in window coordinates, for the table to paint;
     /// `None` unless a rubber-band is active. The vertical anchor is reprojected
-    /// through the live scroll offset so the box tracks the list as it scrolls.
+    /// through the live scroll offset so the box tracks the list as it scrolls,
+    /// and every edge is clamped to the file list's viewport so the box never
+    /// spills over the sidebar, the toolbar, or the column header.
     pub fn marquee_rect(&self) -> Option<Bounds<Pixels>> {
         let marquee = self.marquee.as_ref().filter(|m| m.active)?;
-        let (top, _height, offset_y) = self.list_geometry()?;
-        let anchor_win_y = marquee.anchor_y + top + offset_y;
-        let top_left = point(
-            marquee.origin.x.min(marquee.current.x),
-            anchor_win_y.min(marquee.current.y),
-        );
-        let bottom_right = point(
-            marquee.origin.x.max(marquee.current.x),
-            anchor_win_y.max(marquee.current.y),
-        );
-        Some(Bounds::from_corners(top_left, bottom_right))
-    }
-
-    /// Grow the active rubber-band to `current`, reselect the rows it spans, and
-    /// keep the edge auto-scroll running when the pointer hugs a list edge. A
-    /// no-op without an active rubber-band.
-    pub fn marquee_update(&mut self, current: Point<Pixels>, cx: &mut Context<Self>) {
-        let Some(marquee) = self.marquee.as_mut() else {
-            return;
+        let (bounds, offset_y) = {
+            let state = self.file_scroll.0.borrow();
+            let bounds = state.base_handle.bounds();
+            if bounds.size.height <= px(0.) {
+                return None;
+            }
+            (bounds, state.base_handle.offset().y)
         };
-        marquee.current = current;
-        // Below the start threshold a press still reads as a plain click; don't
-        // draw the box or touch selection yet.
-        let threshold = px(4.);
-        let moved = (current.x - marquee.origin.x).abs() > threshold
-            || (current.y - marquee.origin.y).abs() > threshold;
-        if !marquee.active && !moved {
-            return;
-        }
-        marquee.active = true;
-        self.marquee_select();
-        self.ensure_autoscroll(current, cx);
-        cx.notify();
+        let (left, right) = (bounds.origin.x, bounds.origin.x + bounds.size.width);
+        let (top, bottom) = (bounds.origin.y, bounds.origin.y + bounds.size.height);
+        let anchor_win_y = marquee.anchor_y + top + offset_y;
+        let x0 = marquee.origin.x.min(marquee.current.x).clamp(left, right);
+        let x1 = marquee.origin.x.max(marquee.current.x).clamp(left, right);
+        let y0 = anchor_win_y.min(marquee.current.y).clamp(top, bottom);
+        let y1 = anchor_win_y.max(marquee.current.y).clamp(top, bottom);
+        Some(Bounds::from_corners(point(x0, y0), point(x1, y1)))
     }
 
     /// End the rubber-band gesture (left-release). A no-op if none is active.
+    /// The poll loop notices the cleared marquee and stops on its next tick.
     pub fn marquee_end(&mut self, cx: &mut Context<Self>) {
-        self.marquee_scrolling = false;
         if self.marquee.take().is_some() {
             cx.notify();
         }
+    }
+
+    /// One poll-loop tick: track the cursor to `pos`, activate past the drag
+    /// threshold, auto-scroll when it hugs a list edge, and reselect. Returns
+    /// whether the loop should keep running.
+    fn marquee_drive(
+        &mut self,
+        pos: Point<Pixels>,
+        generation: u64,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        // Stop a stale loop a newer gesture (or a release) has superseded.
+        if self.marquee_gen != generation {
+            return false;
+        }
+        let (active, moved) = {
+            let Some(marquee) = self.marquee.as_mut() else {
+                return false;
+            };
+            let moved = marquee.current != pos;
+            marquee.current = pos;
+            // Below the start threshold a press still reads as a plain click; don't
+            // draw the box or touch selection yet.
+            if !marquee.active {
+                let threshold = px(4.);
+                if (pos.x - marquee.origin.x).abs() > threshold
+                    || (pos.y - marquee.origin.y).abs() > threshold
+                {
+                    marquee.active = true;
+                }
+            }
+            (marquee.active, moved)
+        };
+        if !active {
+            return true;
+        }
+        let velocity = self.marquee_scroll_velocity(pos);
+        if velocity != 0.0 {
+            self.apply_scroll(velocity);
+        } else if !moved {
+            return true; // nothing changed this tick
+        }
+        self.marquee_select();
+        cx.notify();
+        true
     }
 
     /// Replace the selection with every row the current rubber-band rect spans.
@@ -283,79 +339,32 @@ impl AppState {
             .collect();
     }
 
-    /// Start the edge auto-scroll loop if the pointer is in a top/bottom edge zone
-    /// and no loop is already running. The loop self-terminates once the pointer
-    /// leaves the zone or the gesture ends.
-    fn ensure_autoscroll(&mut self, current: Point<Pixels>, cx: &mut Context<Self>) {
-        if self.marquee_scrolling {
-            return;
-        }
+    /// Auto-scroll speed for a pointer at `pos`: proportional to how deep it is in
+    /// a top/bottom edge zone, `0` when clear of both. Positive scrolls down
+    /// (content up); negative scrolls up.
+    fn marquee_scroll_velocity(&self, pos: Point<Pixels>) -> f32 {
         let Some((top, height, _)) = self.list_geometry() else {
-            return;
-        };
-        let margin = px(24.);
-        if current.y >= top + margin && current.y <= top + height - margin {
-            return;
-        }
-        self.marquee_scrolling = true;
-        let generation = self.marquee_gen;
-        cx.spawn(async move |this, cx| loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(16))
-                .await;
-            let cont = this
-                .update(cx, |this, cx| this.autoscroll_tick(generation, cx))
-                .unwrap_or(false);
-            if !cont {
-                break;
-            }
-        })
-        .detach();
-    }
-
-    /// One auto-scroll step: scroll proportionally to how deep the pointer is in
-    /// the edge zone, then reselect. Returns whether the loop should keep going.
-    fn autoscroll_tick(&mut self, generation: u64, cx: &mut Context<Self>) -> bool {
-        // A newer gesture owns the scroll loop now; let this stale one die without
-        // touching the flag the new loop relies on.
-        if self.marquee_gen != generation {
-            return false;
-        }
-        let Some(current) = self
-            .marquee
-            .as_ref()
-            .filter(|m| m.active)
-            .map(|m| m.current)
-        else {
-            self.marquee_scrolling = false;
-            return false;
-        };
-        let Some((top, height, _)) = self.list_geometry() else {
-            self.marquee_scrolling = false;
-            return false;
+            return 0.0;
         };
         let margin = px(24.);
         let max_step = 20.0_f32;
-        // Positive scrolls down (content up); negative scrolls up.
-        let velocity = if current.y > top + height - margin {
-            let depth = f32::from(current.y - (top + height - margin));
+        if pos.y > top + height - margin {
+            let depth = f32::from(pos.y - (top + height - margin));
             (depth / f32::from(margin)).clamp(0.0, 1.0) * max_step
-        } else if current.y < top + margin {
-            let depth = f32::from(top + margin - current.y);
+        } else if pos.y < top + margin {
+            let depth = f32::from(top + margin - pos.y);
             -(depth / f32::from(margin)).clamp(0.0, 1.0) * max_step
         } else {
-            self.marquee_scrolling = false;
-            return false;
-        };
-        {
-            let state = self.file_scroll.0.borrow();
-            let off = state.base_handle.offset();
-            let max = f32::from(state.base_handle.max_offset().y);
-            let new_y = (f32::from(off.y) - velocity).clamp(-max, 0.0);
-            state.base_handle.set_offset(point(off.x, px(new_y)));
+            0.0
         }
-        self.marquee_select();
-        cx.notify();
-        true
+    }
+
+    /// Shift the list's scroll offset by `velocity` pixels, clamped to its range.
+    fn apply_scroll(&self, velocity: f32) {
+        let state = self.file_scroll.0.borrow();
+        let off = state.base_handle.offset();
+        let max = f32::from(state.base_handle.max_offset().y);
+        let new_y = (f32::from(off.y) - velocity).clamp(-max, 0.0);
+        state.base_handle.set_offset(point(off.x, px(new_y)));
     }
 }
