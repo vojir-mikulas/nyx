@@ -3,21 +3,24 @@
 //! is its `Render` impl.
 
 use gpui::{
-    anchored, deferred, div, prelude::*, px, Context, Focusable, FontWeight, MouseButton, Window,
+    anchored, deferred, div, prelude::*, px, Context, Focusable, FontWeight, MouseButton,
+    SharedString, Window,
 };
 use nyx_core::CollisionChoice;
 use nyx_ui::{
-    ActiveTheme, Button, ButtonVariant, ContextMenu, ContextMenuItem, Modal, Segmented, Select,
-    Theme, Toast, Toggle,
+    ActiveTheme, Button, ButtonVariant, ContextMenu, ContextMenuItem, Modal, Segmented, Theme,
+    Toast, Toggle,
 };
 
 use crate::assets::{FONT_MONO, FONT_UI};
+use crate::icon::icon;
 use crate::keymap::{
     CloseTab, Dismiss, FocusFilter, FocusNext, FocusPrev, NewConnection, OpenSettings, Quit,
     Refresh, ShowShortcuts, ToggleSidebar,
 };
 use crate::state::models::Density;
-use crate::state::{AppState, View};
+use crate::state::{AppState, SettingsTab, View};
+use crate::theme_load::ThemeInfo;
 use crate::views;
 
 impl Render for AppState {
@@ -127,7 +130,7 @@ impl Render for AppState {
             )
             .child(views::status_bar::render(self, cx))
             .when(self.tweaks_open, |this| {
-                let modal = tweaks_modal(self, cx);
+                let modal = settings_modal(self, cx);
                 this.child(modal)
             })
             .when(self.shortcuts_open, |this| {
@@ -824,154 +827,428 @@ fn connecting_overlay(state: &AppState, cx: &Context<AppState>) -> impl IntoElem
         )
 }
 
-/// The in-memory tweaks modal (density, permissions column, theme).
-fn tweaks_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+/// The theme manager: a selectable list of every theme (built-in + custom), with
+/// a remove control on the custom ones, plus the "add from file" action.
+fn theme_manager(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
-    let density_ix = state.density.index();
-    let show_perms = state.show_perms;
-    let auto_reconnect = state.auto_reconnect;
-    let theme_names = state.theme_registry.names();
-    let theme_ix = theme_names
-        .iter()
-        .position(|n| n.as_str() == cx.theme().name.as_str())
-        .unwrap_or(0);
-    let view = cx.entity();
+    let active = cx.theme().name.clone();
 
-    let theme_select = theme_names
-        .iter()
-        .fold(Select::new("tw-theme"), |sel, name| {
-            sel.option(name.clone())
-        })
-        .selected(theme_ix)
-        .open(state.theme_select_open)
-        .on_toggle({
-            let view = view.clone();
-            move |_window, cx| {
-                view.update(cx, |this, cx| {
-                    this.theme_select_open = !this.theme_select_open;
-                    cx.notify();
-                });
-            }
-        })
-        .on_select({
-            let view = view.clone();
-            move |ix, _window, cx| {
-                let Some(name) = theme_names.get(ix).cloned() else {
-                    return;
-                };
-                view.update(cx, |this, cx| {
-                    cx.set_global(this.theme_registry.by_name(&name));
-                    this.theme_select_open = false;
-                    this.save_settings(cx);
-                    cx.notify();
-                });
-            }
-        });
+    let mut list = div().flex().flex_col().gap_0p5();
+    for (ix, info) in state.theme_registry.list().into_iter().enumerate() {
+        list = list.child(theme_row(ix, info, &active, &theme, cx));
+    }
 
-    Modal::new("tweaks")
-        .title("Tweaks")
-        .width(px(420.))
-        .on_close({
-            let view = view.clone();
-            move |_window, cx| {
-                view.update(cx, |this, cx| {
-                    this.tweaks_open = false;
-                    this.theme_select_open = false;
-                    cx.notify();
-                });
-            }
-        })
+    div().flex().flex_col().gap_2().child(list).child(
+        Button::new("tw-add-theme", "Add theme from file…")
+            .variant(ButtonVariant::Secondary)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.import_theme(cx);
+                cx.notify();
+            })),
+    )
+}
+
+/// One row in the theme manager: click the name to activate it; custom themes get
+/// a trash button that deletes the file.
+fn theme_row(
+    ix: usize,
+    info: ThemeInfo,
+    active: &str,
+    theme: &Theme,
+    cx: &mut Context<AppState>,
+) -> impl IntoElement {
+    let is_active = info.name == active;
+    let select_name = info.name.clone();
+    let remove_name = info.name.clone();
+
+    let check: gpui::AnyElement = if is_active {
+        icon("check", 14., theme.accent).into_any_element()
+    } else {
+        div().size(px(14.)).into_any_element()
+    };
+
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
         .child(
+            div()
+                .id(SharedString::from(format!("theme-pick-{ix}")))
+                .flex_1()
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_1()
+                .rounded(theme.radius_sm)
+                .cursor_pointer()
+                .when(is_active, |d| d.bg(theme.bg_active))
+                .when(!is_active, |d| d.hover(|s| s.bg(theme.bg_hover)))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.select_theme(&select_name, cx);
+                }))
+                .child(check)
+                .child(div().text_sm().text_color(theme.text).child(info.name)),
+        )
+        .when(info.custom, |row| {
+            row.child(
+                div()
+                    .id(SharedString::from(format!("theme-del-{ix}")))
+                    .flex_shrink_0()
+                    .p_1p5()
+                    .rounded(theme.radius_sm)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme.bg_hover))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.remove_theme(&remove_name, cx);
+                    }))
+                    .child(icon("trash", 14., theme.text_faint)),
+            )
+        })
+}
+
+/// The settings panel, laid out Zed-style: a left category nav beside a scrolling
+/// content pane. Built as a custom scrim+card (not the shared `Modal`) so the nav
+/// stays fixed while only the page scrolls.
+fn settings_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    let theme = cx.theme().clone();
+
+    let mut nav = div()
+        .flex()
+        .flex_col()
+        .flex_shrink_0()
+        .w(px(184.))
+        .p_2()
+        .gap_0p5()
+        .bg(theme.bg_panel)
+        .border_r_1()
+        .border_color(theme.border_soft)
+        .child(
+            div()
+                .px_2()
+                .pt_1()
+                .pb_2()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.text_faint)
+                .child("SETTINGS"),
+        );
+    for tab in SettingsTab::ALL {
+        nav = nav.child(settings_nav_item(tab, state.settings_tab, &theme, cx));
+    }
+
+    let content = div()
+        .flex_1()
+        .flex()
+        .flex_col()
+        .min_w_0()
+        .child(
+            div()
+                .id("settings-body")
+                .flex_1()
+                .overflow_y_scroll()
+                .px_6()
+                .py_5()
+                .child(settings_page(state.settings_tab, state, cx)),
+        )
+        .child(settings_footer(state, cx));
+
+    div()
+        .id("settings")
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(gpui::black().opacity(0.55))
+        .occlude()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _, _, cx| {
+                this.tweaks_open = false;
+                cx.notify();
+            }),
+        )
+        .child(
+            div()
+                .occlude()
+                .flex()
+                .w(px(760.))
+                .h(gpui::relative(0.82))
+                .bg(theme.bg_elevated)
+                .border_1()
+                .border_color(theme.border_strong)
+                .rounded(px(10.))
+                .shadow_lg()
+                .overflow_hidden()
+                .child(nav)
+                .child(content),
+        )
+}
+
+/// One left-nav row in the settings panel.
+fn settings_nav_item(
+    tab: SettingsTab,
+    active: SettingsTab,
+    theme: &Theme,
+    cx: &mut Context<AppState>,
+) -> impl IntoElement {
+    let is_active = tab == active;
+    div()
+        .id(SharedString::from(format!("settings-nav-{}", tab.label())))
+        .flex()
+        .items_center()
+        .px_3()
+        .py_1p5()
+        .rounded(theme.radius_sm)
+        .text_sm()
+        .cursor_pointer()
+        .when(is_active, |d| d.bg(theme.bg_active).text_color(theme.text))
+        .when(!is_active, |d| {
+            d.text_color(theme.text_muted)
+                .hover(|s| s.bg(theme.bg_hover).text_color(theme.text))
+        })
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.set_settings_tab(tab);
+            cx.notify();
+        }))
+        .child(tab.label())
+}
+
+/// The content page for the selected settings category.
+fn settings_page(
+    tab: SettingsTab,
+    state: &AppState,
+    cx: &mut Context<AppState>,
+) -> gpui::AnyElement {
+    let theme = cx.theme().clone();
+    let view = cx.entity();
+    match tab {
+        SettingsTab::Appearance => {
+            let density = Segmented::new("tw-density")
+                .segment("Compact")
+                .segment("Comfortable")
+                .segment("Spacious")
+                .selected(state.density.index())
+                .on_select({
+                    let view = view.clone();
+                    move |ix, _window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.density = Density::ALL[ix.min(2)];
+                            this.save_settings(cx);
+                            cx.notify();
+                        });
+                    }
+                });
+            let perms_toggle = Toggle::new("tw-perms", state.show_perms).on_change({
+                let view = view.clone();
+                move |on, _window, cx| {
+                    let on = *on;
+                    view.update(cx, |this, cx| {
+                        this.show_perms = on;
+                        this.save_settings(cx);
+                        cx.notify();
+                    });
+                }
+            });
+            settings_page_scaffold(
+                "Appearance",
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(setting_block(
+                        "Theme",
+                        "Switch the color theme, or add your own from a file.",
+                        theme_manager(state, cx),
+                        &theme,
+                    ))
+                    .child(settings_header("File browser", &theme))
+                    .child(setting_row(
+                        "Row density",
+                        "Vertical spacing of rows in the file browser.",
+                        density,
+                        &theme,
+                    ))
+                    .child(setting_row(
+                        "Permissions column",
+                        "Show the Unix permissions column in the file browser.",
+                        perms_toggle,
+                        &theme,
+                    )),
+                &theme,
+            )
+            .into_any_element()
+        }
+        SettingsTab::Connection => {
+            let reconnect_toggle = Toggle::new("tw-auto-reconnect", state.auto_reconnect)
+                .on_change({
+                    let view = view.clone();
+                    move |on, _window, cx| {
+                        let on = *on;
+                        view.update(cx, |this, cx| {
+                            this.auto_reconnect = on;
+                            this.save_settings(cx);
+                            cx.notify();
+                        });
+                    }
+                });
+            settings_page_scaffold(
+                "Connection",
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(settings_header("Reconnect", &theme))
+                    .child(setting_row(
+                        "Auto-reconnect",
+                        "Reconnect automatically (with backoff) after a dropped session.",
+                        reconnect_toggle,
+                        &theme,
+                    )),
+                &theme,
+            )
+            .into_any_element()
+        }
+        SettingsTab::About => settings_page_scaffold(
+            "About",
             div()
                 .flex()
                 .flex_col()
-                .gap_4()
-                .child(field("Color scheme", theme_select, cx))
-                .child(
-                    Button::new("tw-add-theme", "Add theme from file…")
-                        .variant(ButtonVariant::Secondary)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.import_theme(cx);
-                            cx.notify();
-                        })),
-                )
-                .child(field(
-                    "Row density",
-                    Segmented::new("tw-density")
-                        .segment("Compact")
-                        .segment("Comfortable")
-                        .segment("Spacious")
-                        .selected(density_ix)
-                        .on_select({
-                            let view = view.clone();
-                            move |ix, _window, cx| {
-                                view.update(cx, |this, cx| {
-                                    this.density = Density::ALL[ix.min(2)];
-                                    this.save_settings(cx);
-                                    cx.notify();
-                                });
-                            }
-                        }),
-                    cx,
-                ))
                 .child(
                     div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(theme.text_muted)
-                                .child("Permissions column"),
-                        )
-                        .child(Toggle::new("tw-perms", show_perms).on_change({
-                            let view = view.clone();
-                            move |on, _window, cx| {
-                                let on = *on;
-                                view.update(cx, |this, cx| {
-                                    this.show_perms = on;
-                                    this.save_settings(cx);
-                                    cx.notify();
-                                });
-                            }
-                        })),
+                        .pb_2()
+                        .text_sm()
+                        .text_color(theme.text_muted)
+                        .child("Nyx — a fast, native SFTP / FTP / FTPS client."),
                 )
-                .child(
+                .child(settings_header("Build", &theme))
+                .child(setting_row(
+                    "Version",
+                    "The installed application version.",
                     div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(theme.text_muted)
-                                .child("Auto-reconnect"),
-                        )
-                        .child(Toggle::new("tw-auto-reconnect", auto_reconnect).on_change({
-                            let view = view.clone();
-                            move |on, _window, cx| {
-                                let on = *on;
-                                view.update(cx, |this, cx| {
-                                    this.auto_reconnect = on;
-                                    this.save_settings(cx);
-                                    cx.notify();
-                                });
-                            }
-                        })),
-                ),
+                        .text_sm()
+                        .text_color(theme.text_muted)
+                        .child(SharedString::from(env!("CARGO_PKG_VERSION"))),
+                    &theme,
+                )),
+            &theme,
         )
-        .footer(
-            div().flex().w_full().justify_end().child(
-                Button::new("tw-done", "Done")
-                    .variant(ButtonVariant::Primary)
-                    .focus_handle(state.modal_primary_focus.clone())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.tweaks_open = false;
-                        this.theme_select_open = false;
-                        cx.notify();
-                    })),
-            ),
+        .into_any_element(),
+    }
+}
+
+/// A page heading above its sections (the large title at the top of the pane).
+fn settings_page_scaffold(title: &str, body: impl IntoElement, theme: &Theme) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .pb_2()
+                .text_lg()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.text)
+                .child(SharedString::from(title.to_string())),
+        )
+        .child(body)
+}
+
+/// The settings panel's footer: the Done button that closes it.
+fn settings_footer(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    let theme = cx.theme();
+    div()
+        .flex()
+        .items_center()
+        .justify_end()
+        .gap_2p5()
+        .px_4()
+        .py_3()
+        .border_t_1()
+        .border_color(theme.border_soft)
+        .bg(theme.bg_bar)
+        .child(
+            Button::new("tw-done", "Done")
+                .variant(ButtonVariant::Primary)
+                .focus_handle(state.modal_primary_focus.clone())
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.tweaks_open = false;
+                    cx.notify();
+                })),
+        )
+}
+
+/// A small uppercase section header above a group of settings rows.
+fn settings_header(title: &str, theme: &Theme) -> impl IntoElement {
+    div()
+        .pt_4()
+        .pb_1()
+        .text_xs()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme.text_faint)
+        .child(SharedString::from(title.to_uppercase()))
+}
+
+/// One settings row: a title + description on the left, a control on the right,
+/// with a hairline divider beneath (the Zed settings-row idiom).
+fn setting_row(
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    control: impl IntoElement,
+    theme: &Theme,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap_6()
+        .py_3()
+        .border_b_1()
+        .border_color(theme.border_soft)
+        .child(setting_label(title, description, theme))
+        .child(div().flex_shrink_0().child(control))
+}
+
+/// A full-width settings entry: the title/description, then a block of content
+/// below it (for controls too large to sit on the right, like the theme list).
+fn setting_block(
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    body: impl IntoElement,
+    theme: &Theme,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .py_3()
+        .border_b_1()
+        .border_color(theme.border_soft)
+        .child(setting_label(title, description, theme))
+        .child(body)
+}
+
+/// The stacked title + description used by both settings-row shapes.
+fn setting_label(
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    theme: &Theme,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap_0p5()
+        .min_w_0()
+        .child(
+            div()
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text)
+                .child(title.into()),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme.text_muted)
+                .child(description.into()),
         )
 }
 
@@ -1049,23 +1326,4 @@ fn shortcuts_section(
         );
     }
     section
-}
-
-fn field(
-    label: &'static str,
-    control: impl IntoElement,
-    cx: &Context<AppState>,
-) -> impl IntoElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap_2()
-        .child(
-            div()
-                .text_xs()
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(cx.theme().text_muted)
-                .child(label),
-        )
-        .child(control)
 }

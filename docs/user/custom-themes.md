@@ -4,13 +4,18 @@ Nyx ships with three built-in themes — **One Dark**, **GitHub Dark** and **Ayu
 Dark** — selectable under **Settings → Tweaks → Color scheme** (⌘,). You can also
 write your own.
 
-## The quick way: add from the app
+## Managing themes in the app
 
-In **Settings → Tweaks** (⌘,), click **Add theme from file…**, pick your `.toml`,
-and Nyx validates it, installs it, and switches to it immediately. If the file has
-a problem (a bad color, a misspelled token, a missing `name`), you get an error
-toast and nothing is changed. This is the same as copying the file into the
-`themes/` folder below — it just does the copying for you.
+Open **Settings → Tweaks** (⌘,). The **Theme** section lists every theme:
+
+- **Click a theme** to switch to it.
+- **Add theme from file…** picks a `.toml`, validates it, installs it into the
+  `themes/` folder, and switches to it immediately. If the file has a problem (a
+  bad color, a misspelled token, a missing `name`), you get an error toast and
+  nothing changes.
+- **Trash icon** (custom themes only) removes that theme and deletes its file. The
+  built-in themes have no trash icon — they can't be removed. If you delete the
+  theme that's currently active, Nyx falls back to One Dark.
 
 The rest of this page explains the file format so you can author one.
 

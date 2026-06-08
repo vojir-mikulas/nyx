@@ -32,10 +32,40 @@ impl AppState {
         self.sidebar_open = !self.sidebar_open;
     }
 
-    /// Open the Tweaks (settings) modal (`cmd-,`).
+    /// Open the settings panel (`cmd-,`).
     pub fn open_settings(&mut self) {
         self.tweaks_open = true;
         self.arm_primary_focus();
+    }
+
+    /// Switch the settings panel's selected category.
+    pub fn set_settings_tab(&mut self, tab: SettingsTab) {
+        self.settings_tab = tab;
+    }
+
+    /// Make `name` the active theme and persist the choice.
+    pub fn select_theme(&mut self, name: &str, cx: &mut Context<Self>) {
+        cx.set_global(self.theme_registry.by_name(name));
+        self.save_settings(cx);
+        cx.notify();
+    }
+
+    /// Delete a custom theme's file, then reload the registry. If the removed
+    /// theme was active, fall back to the default. Built-ins can't be removed.
+    pub fn remove_theme(&mut self, name: &str, cx: &mut Context<Self>) {
+        match self.theme_registry.remove(name) {
+            Ok(()) => {
+                let was_active = cx.theme().name.as_str() == name;
+                self.theme_registry = ThemeRegistry::load();
+                if was_active {
+                    cx.set_global(self.theme_registry.by_name("One Dark"));
+                    self.save_settings(cx);
+                }
+                self.push_toast(format!("Removed theme “{name}”"), ToastVariant::Success, cx);
+                cx.notify();
+            }
+            Err(err) => self.push_toast(err, ToastVariant::Error, cx),
+        }
     }
 
     /// Pick a theme `.toml` from disk, install it into the config `themes/` dir,
@@ -108,7 +138,6 @@ impl AppState {
             self.cancel_input();
         } else if self.tweaks_open {
             self.tweaks_open = false;
-            self.theme_select_open = false;
         } else {
             return false;
         }

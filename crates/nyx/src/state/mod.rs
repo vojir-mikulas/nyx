@@ -142,8 +142,8 @@ pub struct AppState {
     pub tweaks_open: bool,
     /// Whether the keyboard-shortcuts cheat-sheet is open.
     pub shortcuts_open: bool,
-    /// Whether the color-scheme dropdown inside the tweaks modal is open.
-    pub theme_select_open: bool,
+    /// Which category the settings panel's left nav shows.
+    pub settings_tab: SettingsTab,
     /// File-row density (exercises `Table::row_height`).
     pub density: Density,
     /// Whether the permissions column is shown.

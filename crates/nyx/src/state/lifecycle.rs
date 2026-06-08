@@ -108,7 +108,7 @@ impl AppState {
             row_focus,
             tweaks_open: false,
             shortcuts_open: false,
-            theme_select_open: false,
+            settings_tab: SettingsTab::default(),
             density,
             show_perms,
             toast: None,

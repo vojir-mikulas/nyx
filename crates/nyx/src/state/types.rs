@@ -11,6 +11,36 @@ pub enum View {
     Browse,
 }
 
+/// Which category the settings panel's left nav has selected.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum SettingsTab {
+    /// Theme + file-browser display.
+    #[default]
+    Appearance,
+    /// Connection behavior.
+    Connection,
+    /// App version and links.
+    About,
+}
+
+impl SettingsTab {
+    /// Every tab, in nav order.
+    pub const ALL: [SettingsTab; 3] = [
+        SettingsTab::Appearance,
+        SettingsTab::Connection,
+        SettingsTab::About,
+    ];
+
+    /// The nav label / page title.
+    pub fn label(self) -> &'static str {
+        match self {
+            SettingsTab::Appearance => "Appearance",
+            SettingsTab::Connection => "Connection",
+            SettingsTab::About => "About",
+        }
+    }
+}
+
 /// A transient toast notification.
 pub struct ToastMsg {
     /// The message text.

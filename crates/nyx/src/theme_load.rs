@@ -25,50 +25,100 @@ fn builtin_by_name(name: &str) -> Option<Theme> {
     builtins().into_iter().find(|t| t.name == name)
 }
 
+/// Where a theme came from: a compiled-in built-in, or a user file on disk.
+#[derive(Clone)]
+enum ThemeSource {
+    Builtin,
+    User(PathBuf),
+}
+
+#[derive(Clone)]
+struct ThemeEntry {
+    theme: Theme,
+    source: ThemeSource,
+}
+
+/// A theme's identity for the manager UI: its name and whether it's removable.
+pub struct ThemeInfo {
+    pub name: String,
+    pub custom: bool,
+}
+
 /// The active set of themes: built-ins followed by valid user themes. Owned by
-/// `AppState`, built once at startup.
+/// `AppState`, rebuilt whenever a theme is added or removed.
 #[derive(Clone)]
 pub struct ThemeRegistry {
-    themes: Vec<Theme>,
+    entries: Vec<ThemeEntry>,
 }
 
 impl ThemeRegistry {
     /// Build the registry: the built-ins, then every well-formed `*.toml` in the
     /// config `themes/` dir whose name doesn't collide with an existing one.
     pub fn load() -> Self {
-        let mut themes = builtins();
-        for theme in load_user_themes() {
-            if themes.iter().any(|t| t.name == theme.name) {
+        let mut entries: Vec<ThemeEntry> = builtins()
+            .into_iter()
+            .map(|theme| ThemeEntry {
+                theme,
+                source: ThemeSource::Builtin,
+            })
+            .collect();
+        for (path, theme) in load_user_themes() {
+            if entries.iter().any(|e| e.theme.name == theme.name) {
                 tracing::warn!(
                     name = %theme.name,
                     "ignoring user theme: its name collides with an existing theme"
                 );
                 continue;
             }
-            themes.push(theme);
+            entries.push(ThemeEntry {
+                theme,
+                source: ThemeSource::User(path),
+            });
         }
-        Self { themes }
+        Self { entries }
     }
 
-    /// Theme display names in picker order.
-    pub fn names(&self) -> Vec<String> {
-        self.themes.iter().map(|t| t.name.clone()).collect()
+    /// Every theme in picker order, tagged built-in vs. custom.
+    pub fn list(&self) -> Vec<ThemeInfo> {
+        self.entries
+            .iter()
+            .map(|e| ThemeInfo {
+                name: e.theme.name.clone(),
+                custom: matches!(e.source, ThemeSource::User(_)),
+            })
+            .collect()
     }
 
     /// Resolve a name to its [`Theme`], falling back to the default built-in for
     /// an unknown name (a user theme that was renamed or removed).
     pub fn by_name(&self, name: &str) -> Theme {
-        self.themes
+        self.entries
             .iter()
-            .find(|t| t.name == name)
-            .cloned()
+            .find(|e| e.theme.name == name)
+            .map(|e| e.theme.clone())
             .unwrap_or_else(Theme::one_dark)
+    }
+
+    /// Delete a custom theme's file from disk. Errors for a built-in (which has no
+    /// file) or an unknown name. The caller reloads the registry afterwards.
+    pub fn remove(&self, name: &str) -> Result<(), String> {
+        let entry = self
+            .entries
+            .iter()
+            .find(|e| e.theme.name == name)
+            .ok_or_else(|| format!("no theme named “{name}”"))?;
+        match &entry.source {
+            ThemeSource::Builtin => Err("built-in themes can't be removed".to_string()),
+            ThemeSource::User(path) => {
+                fs::remove_file(path).map_err(|err| format!("can't delete theme file: {err}"))
+            }
+        }
     }
 }
 
 /// Read and parse every `*.toml` under the config `themes/` dir. A missing dir
 /// (the common case) is an empty list; a malformed file is skipped with a warn.
-fn load_user_themes() -> Vec<Theme> {
+fn load_user_themes() -> Vec<(PathBuf, Theme)> {
     let Some(dir) = themes_dir() else {
         return Vec::new();
     };
@@ -88,7 +138,7 @@ fn load_user_themes() -> Vec<Theme> {
             continue;
         }
         match load_theme_file(&path) {
-            Ok(theme) => out.push(theme),
+            Ok(theme) => out.push((path, theme)),
             Err(err) => {
                 tracing::warn!(path = %path.display(), %err, "skipping malformed theme file")
             }
