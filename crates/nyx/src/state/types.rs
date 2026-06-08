@@ -43,12 +43,17 @@ impl SettingsTab {
 
 /// An in-progress rubber-band (rectangle) selection in the file table. Begun by
 /// a left-press on empty space (never over a row, so it can't fight a file grab),
-/// it grows with the pointer and selects every row its rect crosses. Coordinates
-/// are GPUI window coordinates, matching the painted row rects it hit-tests.
+/// it grows with the pointer and selects every row its rect spans - including
+/// rows it auto-scrolled into view.
 pub struct Marquee {
-    /// Where the press began (the fixed corner).
+    /// The press point in window coordinates. Kept to detect the drag threshold
+    /// and to anchor the rectangle horizontally (the x axis never scrolls).
     pub origin: Point<Pixels>,
-    /// The current pointer position (the moving corner).
+    /// The fixed vertical corner in list-*content* coordinates (scroll-
+    /// independent), so the selection and the drawn box stay pinned to the same
+    /// row while edge auto-scroll moves the list under the pointer.
+    pub anchor_y: Pixels,
+    /// The current pointer position in window coordinates (the moving corner).
     pub current: Point<Pixels>,
     /// Whether the pointer has moved past the start threshold. Until then the
     /// rectangle isn't drawn, so a plain click doesn't flash a zero-size box.

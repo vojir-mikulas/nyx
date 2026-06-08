@@ -257,17 +257,6 @@ impl AppState {
         self.drop_row_bounds.clone()
     }
 
-    /// Clear the recorded all-row rects (start of a file-table render pass).
-    /// Paint then repopulates them via [`AppState::row_bounds_sink`].
-    pub fn clear_row_bounds(&self) {
-        self.row_bounds.borrow_mut().clear();
-    }
-
-    /// A handle to the all-row-bounds sink, for the table's paint callback.
-    pub fn row_bounds_sink(&self) -> DropRowBounds {
-        self.row_bounds.clone()
-    }
-
     /// The returning OS drag moved: highlight the folder row under the cursor (or
     /// clear the highlight when it's over nothing droppable). Only notifies on a
     /// change, so the frequent move callback doesn't thrash rendering.

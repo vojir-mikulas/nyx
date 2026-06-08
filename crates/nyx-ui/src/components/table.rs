@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use gpui::{
     canvas, div, prelude::*, uniform_list, App, Bounds, ClickEvent, ExternalPaths, MouseButton,
-    Pixels, Point, SharedString, Styled, Window,
+    Pixels, Point, SharedString, Styled, UniformListScrollHandle, Window,
 };
 
 use crate::theme::ActiveTheme;
@@ -145,6 +145,7 @@ pub struct Table<D: 'static = ()> {
     on_row_bounds: Option<RowBoundsHandler>,
     highlighted_rows: Option<RowPredicate>,
     draggable_rows: Option<RowPredicate>,
+    scroll_handle: Option<UniformListScrollHandle>,
 }
 
 impl<D: 'static> Table<D> {
@@ -172,7 +173,15 @@ impl<D: 'static> Table<D> {
             on_row_bounds: None,
             highlighted_rows: None,
             draggable_rows: None,
+            scroll_handle: None,
         }
+    }
+
+    /// Bind the list's scroll position to a caller-owned handle, so the owner can
+    /// read the offset and scroll programmatically (e.g. rubber-band auto-scroll).
+    pub fn track_scroll(mut self, handle: &UniformListScrollHandle) -> Self {
+        self.scroll_handle = Some(handle.clone());
+        self
     }
 
     pub fn row_count(mut self, row_count: usize) -> Self {
@@ -552,6 +561,10 @@ impl<D: 'static> RenderOnce for Table<D> {
             rows
         })
         .flex_1();
+        let list = match self.scroll_handle.as_ref() {
+            Some(handle) => list.track_scroll(handle),
+            None => list,
+        };
 
         div()
             .id(self.id)

@@ -15,7 +15,7 @@ use futures::channel::oneshot;
 use futures::StreamExt;
 use gpui::{
     point, prelude::*, px, App, Bounds, ClipboardItem, Context, Entity, FocusHandle, Focusable,
-    PathPromptOptions, Pixels, Point, SharedString, Window,
+    PathPromptOptions, Pixels, Point, SharedString, UniformListScrollHandle, Window,
 };
 use nyx_core::{
     CollisionChoice, EntryKind, EntryOutcomeKind, Filter, FtpsMode, Protocol, RemotePath, Scope,
@@ -175,12 +175,19 @@ pub struct AppState {
     /// when an OS drag-out returns inside the window, to find the folder under the
     /// drop point. See [`AppState::handoff_drag_out`].
     drop_row_bounds: DropRowBounds,
-    /// Painted bounds of *every* visible file row (name → window-coord rect),
-    /// refreshed each render. Hit-tested by the rubber-band selection to decide
-    /// which rows its rectangle crosses, and whether a press landed on a row.
-    row_bounds: DropRowBounds,
+    /// The file table's scroll position. Owned here so the rubber-band can read
+    /// the offset (to map the rectangle to row indices) and scroll it while the
+    /// drag hugs an edge.
+    file_scroll: UniformListScrollHandle,
     /// The in-progress rubber-band selection, if the user is dragging one.
     marquee: Option<Marquee>,
+    /// Whether a rubber-band edge auto-scroll loop is currently running, so a
+    /// fresh pointer move doesn't spawn a second one.
+    marquee_scrolling: bool,
+    /// Bumped on each rubber-band start. An auto-scroll loop captures the value
+    /// it was spawned for and stops once it changes, so a loop never bleeds into a
+    /// later gesture.
+    marquee_gen: u64,
     /// While an OS drag-out is back inside the window, the folder row currently
     /// under the cursor - highlighted so the (unchangeable native) cursor still
     /// has a visible drop target. `None` when outside or over a non-folder.

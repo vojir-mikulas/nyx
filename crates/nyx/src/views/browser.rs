@@ -1,9 +1,8 @@
 //! The file browser: tab strip, breadcrumb toolbar, and the remote file table.
 
 use gpui::{
-    actions, canvas, div, point, prelude::*, px, quad, radians, BorderStyle, Bounds, Context,
-    DragMoveEvent, ExternalPaths, MouseButton, MouseDownEvent, MouseMoveEvent, SharedString,
-    Transformation,
+    actions, canvas, div, prelude::*, px, quad, radians, BorderStyle, Context, DragMoveEvent,
+    ExternalPaths, MouseButton, MouseDownEvent, MouseMoveEvent, SharedString, Transformation,
 };
 use nyx_core::Protocol;
 use nyx_ui::{
@@ -429,10 +428,6 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
     // resolve an OS drag-out that returns inside the window (Phase 3 re-entry).
     state.clear_drop_row_bounds();
     let bounds_sink = state.drop_row_bounds_sink();
-    // Reset and re-capture every visible row's rect each paint, for rubber-band
-    // hit testing (which rows the rectangle crosses, and empty-space presses).
-    state.clear_row_bounds();
-    let row_bounds_sink = state.row_bounds_sink();
     // Snapshot of the current selection, to mint the drag payload and size the
     // drag-preview count badge (the drag closures must be `'static`).
     let selected_for_drag = state.selected.clone();
@@ -455,6 +450,7 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
         Table::new("files", columns)
             .row_count(row_count)
             .row_height(px(row_height))
+            .track_scroll(state.file_scroll())
             .selected_set({
                 let listing = listing.clone();
                 let order = order.clone();
@@ -628,10 +624,10 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                 let order = order.clone();
                 move |ix, bounds, _window, _cx| {
                     if let Some(row) = row_at(&listing, &order, ix) {
-                        let name = SharedString::from(row.entry.name.clone());
-                        row_bounds_sink.borrow_mut().push((name.clone(), bounds));
                         if row.entry.is_dir() {
-                            bounds_sink.borrow_mut().push((name, bounds));
+                            bounds_sink
+                                .borrow_mut()
+                                .push((SharedString::from(row.entry.name.clone()), bounds));
                         }
                     }
                 }
@@ -699,10 +695,7 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
 
     // The rubber-band rectangle (window coords), painted over the rows once the
     // drag passes the start threshold.
-    let marquee = state
-        .marquee()
-        .filter(|m| m.active)
-        .map(|m| (m.origin, m.current));
+    let marquee = state.marquee_rect();
     let marquee_fill = {
         let mut c = theme.accent;
         c.a = 0.12;
@@ -821,14 +814,11 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
         // The rubber-band overlay: a no-hitbox canvas so it never intercepts the
         // clicks/drags beneath it. Paints in window coordinates, matching the
         // recorded row rects the selection hit-tests.
-        .when_some(marquee, |this, (origin, current)| {
+        .when_some(marquee, |this, rect| {
             this.child(
                 canvas(
                     |_, _, _| (),
                     move |_bounds, _, window, _cx| {
-                        let top_left = point(origin.x.min(current.x), origin.y.min(current.y));
-                        let bottom_right = point(origin.x.max(current.x), origin.y.max(current.y));
-                        let rect = Bounds::from_corners(top_left, bottom_right);
                         window.paint_quad(quad(
                             rect,
                             px(1.),
