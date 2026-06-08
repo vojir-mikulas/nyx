@@ -1,4 +1,4 @@
-//! `ContextMenu` — a floating list of actions. Renders only the menu surface;
+//! `ContextMenu` - a floating list of actions. Renders only the menu surface;
 //! the caller anchors it (via [`gpui::anchored`] / [`gpui::deferred`]).
 
 use gpui::{div, prelude::*, App, ClickEvent, SharedString, Window};

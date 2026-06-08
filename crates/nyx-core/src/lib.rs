@@ -1,6 +1,6 @@
 //! Shared domain types for Nyx.
 //!
-//! This crate has **no UI and no runtime knowledge** — it is the common
+//! This crate has **no UI and no runtime knowledge** - it is the common
 //! vocabulary (errors, remote entries, the transfer model) that the protocol,
 //! service and UI layers all speak. Keep it dependency-light and side-effect
 //! free.

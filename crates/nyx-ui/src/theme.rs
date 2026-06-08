@@ -1,6 +1,6 @@
 //! The semantic theme layer: the [`Theme`] token set as a GPUI [`Global`], plus
 //! the [`ActiveTheme`] accessor. Tokens are semantic and generic (`bg_panel`,
-//! `accent`) — never app-specific. Concrete values live in `tokens.rs`.
+//! `accent`) - never app-specific. Concrete values live in `tokens.rs`.
 
 use gpui::{App, Global, Hsla, Pixels};
 
@@ -39,7 +39,7 @@ pub struct Theme {
 
     pub accent: Hsla,
     pub accent_hover: Hsla,
-    /// Translucent accent — focus-ring glow, ghost-accent surfaces.
+    /// Translucent accent - focus-ring glow, ghost-accent surfaces.
     pub accent_ghost: Hsla,
     /// Foreground used on top of `accent`.
     pub on_accent: Hsla,

@@ -1,4 +1,4 @@
-//! `nyx-ui` — an in-house GPUI component library and semantic theme layer.
+//! `nyx-ui` - an in-house GPUI component library and semantic theme layer.
 //!
 //! Hard rule: this crate **must never depend on any `nyx-*` crate** or domain
 //! type, so the future extraction into the standalone **Flint** crate stays a

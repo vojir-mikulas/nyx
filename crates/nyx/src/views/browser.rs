@@ -73,7 +73,7 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
 }
 
 /// The non-modal connection banner: stays put under the tab strip, leaving the
-/// last listing visible beneath it. It reflects three states —
+/// last listing visible beneath it. It reflects three states -
 /// auto-reconnecting (title "Reconnecting…", a **Cancel**), gave-up
 /// ("Reconnect failed", a **Reconnect**), and a plain manual loss ("Connection
 /// lost", a **Reconnect**).
@@ -401,7 +401,7 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
 
     // The listing and its visible order are precomputed and cached on the state;
     // here we only clone the `Rc`s and hand them to the row closures, so nothing
-    // O(n) runs per frame — rows are formatted lazily for the visible range only.
+    // O(n) runs per frame - rows are formatted lazily for the visible range only.
     let listing = state.listing.clone();
     let order = state.view_order();
     let row_count = order.len();
@@ -574,7 +574,7 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                     drag_chip(row, count, &chip_theme)
                 }
             })
-            // Directory rows accept a dropped item — an external file (upload) or
+            // Directory rows accept a dropped item - an external file (upload) or
             // an in-app selection (move) into that folder.
             .droppable_rows({
                 let listing = listing.clone();
@@ -834,7 +834,7 @@ fn drag_chip(row: &EntryRow, count: usize, theme: &Theme) -> gpui::AnyElement {
 
 /// The tree-search results view: a status header over a table of hits, shown in
 /// place of the file table while a `/`-scoped filter is active. Deliberately
-/// simpler than the file table — no drag/drop or rename, just open-on-activate
+/// simpler than the file table - no drag/drop or rename, just open-on-activate
 /// (which navigates to the hit's folder).
 fn search_view(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
@@ -966,7 +966,7 @@ fn search_header(search: &SearchState, client_side_walk: bool, theme: &Theme) ->
     } else if count == 0 {
         "No matches".to_string()
     } else if search.truncated {
-        format!("{count} matches (capped — narrow your search)")
+        format!("{count} matches (capped - narrow your search)")
     } else if count == 1 {
         "1 match".to_string()
     } else {
@@ -1006,7 +1006,7 @@ fn search_header(search: &SearchState, client_side_walk: bool, theme: &Theme) ->
                     .child(icon("alert", 13., theme.yellow))
                     .tooltip(Tooltip::text(
                         "FTP has no server-side search, so Nyx crawls the tree from \
-                         here — this can be slow on large directories.",
+                         here - this can be slow on large directories.",
                     )),
             )
         })

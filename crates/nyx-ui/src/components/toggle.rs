@@ -1,4 +1,4 @@
-//! `Toggle` — a binary on/off switch. Stateless: the caller owns the boolean,
+//! `Toggle` - a binary on/off switch. Stateless: the caller owns the boolean,
 //! reacting via [`on_change`](Toggle::on_change).
 
 use gpui::{div, prelude::*, App, ElementId, Window};

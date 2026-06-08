@@ -1,4 +1,4 @@
-//! `StyledExt` — the "@apply" layer: theme-aware style recipes that compose
+//! `StyledExt` - the "@apply" layer: theme-aware style recipes that compose
 //! common token combinations, so views read `div().panel(cx)`.
 
 use gpui::{px, App, BoxShadow, Styled};

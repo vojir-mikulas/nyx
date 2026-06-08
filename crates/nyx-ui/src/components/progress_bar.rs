@@ -1,4 +1,4 @@
-//! `ProgressBar` — a thin determinate (`0.0..=1.0`) / indeterminate (animated
+//! `ProgressBar` - a thin determinate (`0.0..=1.0`) / indeterminate (animated
 //! sweep) progress track.
 
 use std::time::Duration;

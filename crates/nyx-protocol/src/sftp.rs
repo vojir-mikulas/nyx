@@ -116,7 +116,7 @@ impl RemoteClient for SftpClient {
         };
 
         // Handshake (this is where `check_server_key` runs). A handshake failure
-        // may be a rejected/mismatched host key — surface that precisely.
+        // may be a rejected/mismatched host key - surface that precisely.
         let mut handle =
             match client::connect(config, (self.host.as_str(), self.port), handler).await {
                 Ok(handle) => handle,
@@ -237,7 +237,7 @@ impl RemoteClient for SftpClient {
     }
 
     /// Server-side search via an SSH `exec` of `find`. One remote command walks
-    /// the server's own disk and streams back matched paths — vastly cheaper than
+    /// the server's own disk and streams back matched paths - vastly cheaper than
     /// thousands of client `readdir` round-trips. Falls back (`Ok(None)`) when the
     /// server has no shell/`find` or rejects exec, so jailed sftp-only servers
     /// degrade to the client walk. Cancellation is by the caller dropping this
@@ -255,7 +255,7 @@ impl RemoteClient for SftpClient {
         let command = build_find_command(root, predicates, limit);
 
         // A failure to open a channel / run exec means "can't search server-side"
-        // (e.g. exec disabled), not a hard error — fall back to the walk.
+        // (e.g. exec disabled), not a hard error - fall back to the walk.
         let Ok(mut channel) = handle.channel_open_session().await else {
             return Ok(None);
         };
@@ -285,7 +285,7 @@ impl RemoteClient for SftpClient {
         }
 
         // No output plus a non-zero exit usually means the shell couldn't run
-        // `find` (missing, or no shell at all) — fall back rather than report
+        // `find` (missing, or no shell at all) - fall back rather than report
         // "no matches".
         if !got_data && exit_status.is_some_and(|code| code != 0) {
             return Ok(None);
@@ -351,7 +351,7 @@ impl RemoteClient for SftpClient {
         let sftp = self.sftp()?;
         let mut reader = tokio::fs::File::open(local).await.map_err(map_io_err)?;
         // offset 0 truncates/creates; a resume opens the existing remote partial
-        // for writing (no truncate) and seeks both ends to the watermark — the
+        // for writing (no truncate) and seeks both ends to the watermark - the
         // russh-sftp handle does positioned writes from its seek position.
         let mut writer = if offset == 0 {
             sftp.create(remote.as_str()).await.map_err(map_sftp_err)?
@@ -422,7 +422,7 @@ impl RemoteClient for SftpClient {
     }
 }
 
-/// The russh client handler — its only job is host-key verification.
+/// The russh client handler - its only job is host-key verification.
 struct ClientHandler {
     host: String,
     known_hosts: KnownHosts,
@@ -582,7 +582,7 @@ fn map_key_load_err(err: russh::keys::Error, path: &Path, had_passphrase: bool) 
         }
         KeyError::IO(e) => NyxError::Io(e.to_string()),
         // A decode failure once a passphrase *was* supplied is, in practice, a
-        // wrong passphrase — re-prompt rather than claim the server refused us.
+        // wrong passphrase - re-prompt rather than claim the server refused us.
         _ if had_passphrase => NyxError::KeyLocked,
         other => NyxError::Io(format!("invalid private key: {other}")),
     }
@@ -599,12 +599,12 @@ fn map_russh_err(err: russh::Error) -> NyxError {
 }
 
 /// Map an SFTP protocol error to [`NyxError`]. The SFTP error `Display` carries
-/// only status codes and server messages — no credentials.
+/// only status codes and server messages - no credentials.
 ///
 /// Transport-level failures on an established session (the channel I/O died, a
 /// response never came, or the reader task vanished mid-request) map to
 /// [`NyxError::ConnectionLost`] so the service can flip the session to "lost".
-/// Server `Status` packets are *not* a lost connection — they are ordinary op
+/// Server `Status` packets are *not* a lost connection - they are ordinary op
 /// failures (missing file, permission denied, …).
 fn map_sftp_err(err: russh_sftp::client::error::Error) -> NyxError {
     use russh_sftp::client::error::Error as SftpError;
@@ -615,7 +615,7 @@ fn map_sftp_err(err: russh_sftp::client::error::Error) -> NyxError {
             _ => NyxError::Io(err.to_string()),
         },
         // Channel I/O died, the response timed out, or the session's reader task
-        // ended (surfaced as an `UnexpectedBehavior` RecvError) — the transport
+        // ended (surfaced as an `UnexpectedBehavior` RecvError) - the transport
         // is gone.
         SftpError::IO(_) | SftpError::Timeout | SftpError::UnexpectedBehavior(_) => {
             NyxError::ConnectionLost(err.to_string())

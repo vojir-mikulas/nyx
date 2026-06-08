@@ -1,4 +1,4 @@
-//! FTPS implementation of [`RemoteClient`] — FTP over TLS, with trust-on-first-use
+//! FTPS implementation of [`RemoteClient`] - FTP over TLS, with trust-on-first-use
 //! certificate pinning.
 //!
 //! The command logic is shared verbatim with plain FTP (the `op_*` helpers in
@@ -6,14 +6,14 @@
 //! transport in TLS (explicit `AUTH TLS` by default, implicit on connect as an
 //! option) and **encrypts the data channel too** (`PBSZ 0` + `PROT P`).
 //!
-//! ## Certificate trust — the FTPS analogue of SSH host-key TOFU
+//! ## Certificate trust - the FTPS analogue of SSH host-key TOFU
 //!
 //! A CA-valid chain is accepted silently. Anything else (self-signed, private CA,
 //! pinned) is gated by the SHA-256 fingerprint of the leaf certificate against a
 //! [`KnownHosts`]-backed `known_certs` store: a recorded match is trusted, an
 //! *unknown* fingerprint prompts the user (the same [`ServerTrustPrompt`] the SSH
 //! path uses, with [`ServerTrustKind::Certificate`]), and a *changed* fingerprint
-//! — a previously-pinned cert that no longer matches — is **rejected outright**,
+//! (a previously-pinned cert that no longer matches) is **rejected outright**,
 //! never prompted, exactly as the SSH host-key path rejects a changed key. (A
 //! server that legitimately rotated its cert is recovered by removing its line
 //! from the certs store, which makes the next connect a clean first-use prompt.)
@@ -69,7 +69,7 @@ pub struct FtpsClient {
     password: String,
     mode: FtpsMode,
     /// The TOFU store of accepted (self-signed / pinned) certificate fingerprints,
-    /// keyed by host — the certificate parallel to `known_hosts`.
+    /// keyed by host - the certificate parallel to `known_hosts`.
     known_certs: KnownHosts,
     prompt: Arc<dyn ServerTrustPrompt>,
     stream: Mutex<Option<AsyncRustlsFtpStream>>,
@@ -185,7 +185,7 @@ impl RemoteClient for FtpsClient {
                 Err(err) => {
                     let captured = captured.lock().unwrap().take();
                     match (attempt, captured) {
-                        // A changed pin is rejected outright on any attempt — no
+                        // A changed pin is rejected outright on any attempt - no
                         // trust prompt, mirroring the SSH host-key path.
                         (_, Some(CapturedCert::Changed)) => {
                             return Err(NyxError::HostKey(format!(
@@ -263,7 +263,7 @@ impl RemoteClient for FtpsClient {
         offset: u64,
     ) -> Result<()> {
         // FTPS resume (REST) is a follow-up; `supports_resume` is false, so a
-        // non-zero offset never reaches here — reject it defensively.
+        // non-zero offset never reaches here - reject it defensively.
         reject_offset(offset)?;
         let mut guard = self.stream.lock().await;
         op_download(connected(&mut guard)?, remote, local, progress).await
@@ -319,7 +319,7 @@ fn connected(guard: &mut Option<AsyncRustlsFtpStream>) -> Result<&mut AsyncRustl
 
 /// Send `PBSZ 0` + `PROT P` so the data channel is encrypted (used after an
 /// implicit connect, which doesn't negotiate it). A server that refuses `PROT P`
-/// is a hard error — we never silently fall back to a clear data channel.
+/// is a hard error - we never silently fall back to a clear data channel.
 async fn assert_data_protection(stream: &mut AsyncRustlsFtpStream) -> Result<()> {
     stream
         .custom_command("PBSZ 0", &[Status::CommandOk])
@@ -336,9 +336,9 @@ async fn assert_data_protection(stream: &mut AsyncRustlsFtpStream) -> Result<()>
 /// `connect` to act on out-of-band (the synchronous verifier can't await).
 #[derive(Debug)]
 enum CapturedCert {
-    /// First sight of this host — eligible for a trust-on-first-use prompt.
+    /// First sight of this host - eligible for a trust-on-first-use prompt.
     Unknown(String),
-    /// A previously-pinned cert that has changed — the classic interception
+    /// A previously-pinned cert that has changed - the classic interception
     /// signal. Never offered in-band trust; `connect` rejects it outright.
     Changed,
 }
@@ -374,7 +374,7 @@ impl ServerCertVerifier for TofuVerifier {
             return Ok(ServerCertVerified::assertion());
         }
         // Otherwise gate on the pinned leaf fingerprint (TOFU). A changed pin is
-        // the interception signal — capture it distinctly so `connect` rejects it
+        // the interception signal - capture it distinctly so `connect` rejects it
         // outright instead of offering the same first-use trust prompt (mirrors
         // the SSH host-key path, which never auto-trusts a changed key).
         let fingerprint = fingerprint(end_entity);
@@ -393,7 +393,7 @@ impl ServerCertVerifier for TofuVerifier {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> std::result::Result<HandshakeSignatureValid, TlsError> {
-        // Signature checks only need the leaf's public key, not chain trust — so
+        // Signature checks only need the leaf's public key, not chain trust - so
         // delegating to the provider's algorithms is correct even for a pinned
         // self-signed cert.
         suppaftp::tokio_rustls::rustls::crypto::verify_tls12_signature(
@@ -482,7 +482,7 @@ mod tests {
     }
 
     // The leaf bytes are not a CA-valid chain, so the verifier falls through to
-    // the TOFU branch — exactly the path these tests exercise.
+    // the TOFU branch - exactly the path these tests exercise.
     #[test]
     fn changed_pin_is_captured_as_changed_and_rejected() {
         let store = temp_store("changed");

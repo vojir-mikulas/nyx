@@ -184,7 +184,7 @@ pub struct Rwx {
 /// A file's Unix permission bits, kept as the raw mode reported by the server.
 ///
 /// The classic `rwxr-xr-x` string is a *rendered view* ([`rwx_string`]), not
-/// stored data — this keeps the real mode available for sorting and a future
+/// stored data - this keeps the real mode available for sorting and a future
 /// chmod.
 ///
 /// [`rwx_string`]: Permissions::rwx_string
@@ -271,14 +271,14 @@ fn triad(rwx: Rwx, special: bool, special_ch: char, out: &mut String) {
 
 /// Listing size past which a directory is treated as "very large": the backend
 /// logs a warning and the UI shows a subtle cue. The listing is still delivered
-/// and rendered in full (rendering is virtualized) — this is a heads-up, not a
+/// and rendered in full (rendering is virtualized) - this is a heads-up, not a
 /// hard cap.
 pub const LARGE_LISTING_WARN: usize = 100_000;
 
 /// A single entry in a remote directory listing.
 ///
 /// This is the unit the file browser renders. The UI maps it to its own row
-/// props — `nyx-ui` components never see this type directly (see plan-02).
+/// props - `nyx-ui` components never see this type directly (see plan-02).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RemoteEntry {
     /// File or directory name (the final path component).

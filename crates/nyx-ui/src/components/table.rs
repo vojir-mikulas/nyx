@@ -1,4 +1,4 @@
-//! `Table` — a virtualized, fixed-row-height data table on GPUI's
+//! `Table` - a virtualized, fixed-row-height data table on GPUI's
 //! [`uniform_list`](gpui::uniform_list). Fully generic and stateless: the caller
 //! declares [`Column`]s + a row renderer and owns selection/sort, which the table
 //! renders and reports clicks against.
@@ -103,11 +103,11 @@ type RowBoundsHandler = Rc<dyn Fn(usize, Bounds<Pixels>, &mut Window, &mut App) 
 
 type PreviewFn = Box<dyn Fn(&mut Window, &mut App) -> gpui::AnyElement + 'static>;
 /// Per-row boolean predicate (selected / draggable / droppable / highlighted).
-/// Queried only for visible rows, so it stays O(1) even for huge listings — the
+/// Queried only for visible rows, so it stays O(1) even for huge listings - the
 /// caller never materializes a set spanning every row.
 type RowPredicate = Rc<dyn Fn(usize) -> bool + 'static>;
 
-/// Wraps a caller-built element as the floating in-app drag preview view —
+/// Wraps a caller-built element as the floating in-app drag preview view -
 /// GPUI's `on_drag` requires an `Entity<impl Render>`, so we box the builder.
 struct DragPreview {
     build: PreviewFn,

@@ -23,7 +23,7 @@ pub struct ToastMsg {
 
 /// The secret prompt shown on a keychain miss or a locked key. The secret is read
 /// straight from the masked input into the `Connect` command, never stored on
-/// `AppState`. It prompts for a password or — when [`is_passphrase`] — a key
+/// `AppState`. It prompts for a password or - when [`is_passphrase`] - a key
 /// passphrase.
 ///
 /// [`is_passphrase`]: PasswordPrompt::is_passphrase
@@ -80,7 +80,7 @@ pub struct TestStatus {
 
 /// The connection editor modal's mutable state (create or edit a profile).
 pub struct ConnectionEditor {
-    /// The profile id — freshly generated on create, preserved on edit.
+    /// The profile id - freshly generated on create, preserved on edit.
     pub id: String,
     /// `true` when creating (vs. editing an existing profile).
     pub is_new: bool,
@@ -158,7 +158,7 @@ pub enum InputAction {
     },
 }
 
-/// A reusable single-field input modal — shared by **New folder** (blank) and
+/// A reusable single-field input modal - shared by **New folder** (blank) and
 /// **Rename** (prefilled). Validated on submit (non-empty, no `/`).
 pub struct InputPrompt {
     /// Modal title.
@@ -205,7 +205,7 @@ pub struct SearchRow {
     pub row: EntryRow,
     /// The hit's parent directory, shown in the Path column.
     pub parent: SharedString,
-    /// The hit's absolute path — `go_to_path`'d when the row is opened.
+    /// The hit's absolute path - `go_to_path`'d when the row is opened.
     pub path: RemotePath,
 }
 

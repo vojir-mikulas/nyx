@@ -1,4 +1,4 @@
-//! `Modal` — a centered dialog over a dimming scrim. Body and footer are
+//! `Modal` - a centered dialog over a dimming scrim. Body and footer are
 //! arbitrary `impl IntoElement`. Place it last in a positioned container (or
 //! behind a [`gpui::deferred`] layer) so it paints above the rest of the UI.
 

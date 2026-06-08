@@ -21,7 +21,7 @@ pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
         .text_color(color)
 }
 
-/// A continuously-rotating ring spinner — the app-wide loading indicator. `id`
+/// A continuously-rotating ring spinner - the app-wide loading indicator. `id`
 /// must be unique among siblings so each spinner keeps its own animation state.
 pub fn spinner(id: impl Into<ElementId>, size: f32, color: Hsla) -> impl IntoElement {
     icon("spinner", size, color).with_animation(

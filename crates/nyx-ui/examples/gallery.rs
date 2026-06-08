@@ -1,4 +1,4 @@
-//! The component gallery — `nyx-ui`'s "storybook".
+//! The component gallery - `nyx-ui`'s "storybook".
 //!
 //! Run with `cargo run -p nyx-ui --example gallery`. It installs a theme global
 //! and renders every component in its key states. The header toggles One Dark ↔
@@ -386,8 +386,8 @@ impl Gallery {
             )
     }
 
-    /// A table whose **right-click** opens a `ContextMenu` anchored at the cursor
-    /// — exercising `Table::on_secondary` (index + position, no domain types).
+    /// A table whose **right-click** opens a `ContextMenu` anchored at the cursor,
+    /// exercising `Table::on_secondary` (index + position, no domain types).
     fn secondary_table(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
         let theme = cx.theme();
@@ -465,7 +465,7 @@ impl Gallery {
     /// An **in-app drag** table: drag any row onto a folder row to move it in
     /// (the item then disappears from the top level). Exercises `Table`'s
     /// `on_row_drag` (payload), `drag_preview` (cursor chip) and
-    /// `on_row_drop_item` (typed in-app drop) — no OS involvement.
+    /// `on_row_drop_item` (typed in-app drop) - no OS involvement.
     fn drag_table(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
         let theme = cx.theme();
@@ -568,7 +568,7 @@ impl Gallery {
                     .child(table),
             )
             .child(div().text_xs().text_color(muted).child(format!(
-                "Drag a row onto a folder to move it in — {moved} moved."
+                "Drag a row onto a folder to move it in - {moved} moved."
             )))
     }
 
@@ -691,8 +691,8 @@ impl Render for Gallery {
                 ),
             )
             .child(self.section("Table", table, cx))
-            .child(self.section("Table — right-click menu", secondary_table, cx))
-            .child(self.section("Table — in-app drag to folder", drag_table, cx));
+            .child(self.section("Table - right-click menu", secondary_table, cx))
+            .child(self.section("Table - in-app drag to folder", drag_table, cx));
 
         div()
             .size_full()

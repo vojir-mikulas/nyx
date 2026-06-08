@@ -1,4 +1,4 @@
-//! `nyx-drag` — drag files **out** of the app and into the OS file manager.
+//! `nyx-drag` - drag files **out** of the app and into the OS file manager.
 //!
 //! GPUI handles drag-*in* (`ExternalPaths` drops) but has no drag-*source* API,
 //! so this crate is the platform adapter for the export direction. It is
@@ -8,7 +8,7 @@
 //! [`start_file_drag`] without touching the app.
 //!
 //! The hard part is that our files aren't local: they live on a remote server
-//! and don't exist on disk when the drag begins. We use **promised files** — the
+//! and don't exist on disk when the drag begins. We use **promised files** - the
 //! drag starts instantly, and the OS calls back at drop time with the
 //! destination, at which point [`DragFetch::fetch`] streams the bytes there. The
 //! caller wires `fetch` to its normal download pipeline; the OS-supplied
@@ -94,7 +94,7 @@ pub struct DragEnd {
     /// The drop point in the originating window's GPUI coordinate space (logical
     /// pixels, top-left origin), or `None` if it couldn't be mapped.
     pub local: Option<(f32, f32)>,
-    /// Whether an external target accepted the drop — a real drop-to-local. When
+    /// Whether an external target accepted the drop - a real drop-to-local. When
     /// `false`, the gesture ended without any target taking the files (commonly a
     /// release back inside the app window).
     pub accepted: bool,
@@ -127,7 +127,7 @@ pub enum DragError {
     /// This platform has no drag-out backend.
     #[error("drag-out is not supported on this platform")]
     Unsupported,
-    /// `files` was empty — nothing to drag.
+    /// `files` was empty - nothing to drag.
     #[error("no files to drag")]
     NoFiles,
     /// Not called on the platform's main/UI thread.
@@ -156,7 +156,7 @@ impl DragError {
 ///
 /// Returns immediately (the OS drives the drag and calls `fetch` lazily at drop
 /// time). `icon` is an optional drag preview (currently advisory on macOS).
-/// `handlers` carries optional UI-thread feedback hooks (drag end / drag move) —
+/// `handlers` carries optional UI-thread feedback hooks (drag end / drag move) -
 /// letting the caller turn a drop back inside the window into an in-app action
 /// and show feedback while the drag is inside.
 ///

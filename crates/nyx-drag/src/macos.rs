@@ -7,7 +7,7 @@
 //! *source* (which AppKit retains until the drag ends).
 //!
 //! The promise resolver ([`PromiseDelegate`]) returns a background
-//! `NSOperationQueue`, so the OS calls `writePromiseToURL:` off the main thread —
+//! `NSOperationQueue`, so the OS calls `writePromiseToURL:` off the main thread -
 //! there [`DragFetch::fetch`] can block on the download without freezing the UI.
 
 use std::cell::RefCell;

@@ -2,7 +2,7 @@
 //! shows an icon in Explorer and carries version strings in its properties.
 //!
 //! Gated by `#[cfg(windows)]` (the build script's *host*), which matches the
-//! host-gated build-dependencies below — the release `.exe` is produced by a
+//! host-gated build-dependencies below - the release `.exe` is produced by a
 //! native Windows runner, so host == target there. A no-op on every other host.
 
 fn main() {
@@ -35,7 +35,7 @@ fn embed_windows_resources() {
     let mut res = winresource::WindowsResource::new();
     res.set_icon(ico_path.to_str().unwrap());
     res.set("ProductName", "Nyx");
-    res.set("FileDescription", "Nyx — a fast, reliable SFTP/FTP client");
+    res.set("FileDescription", "Nyx - a fast, reliable SFTP/FTP client");
     res.set("LegalCopyright", "Apache-2.0");
     // FileVersion / ProductVersion are filled from CARGO_PKG_VERSION by winresource.
     res.compile().expect("embed Windows resources");

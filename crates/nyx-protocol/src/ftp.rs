@@ -2,7 +2,7 @@
 //!
 //! FTP keeps a single stateful control connection and opens one data connection
 //! at a time, so the [`suppaftp`] stream is held behind a [`tokio::sync::Mutex`]
-//! and every operation serializes over it — there is no safe concurrency on one
+//! and every operation serializes over it - there is no safe concurrency on one
 //! FTP connection. The protocol-level command logic (listing, walking, transfers,
 //! removal) is written **generically** over the suppaftp stream type so the
 //! [`FtpsClient`](crate::FtpsClient) reuses it verbatim over a TLS stream.
@@ -118,7 +118,7 @@ impl RemoteClient for FtpClient {
         offset: u64,
     ) -> Result<()> {
         // FTP resume (REST) is a follow-up; `supports_resume` is false, so a
-        // non-zero offset never reaches here — reject it defensively rather than
+        // non-zero offset never reaches here - reject it defensively rather than
         // silently corrupt by ignoring it.
         reject_offset(offset)?;
         let mut guard = self.stream.lock().await;
@@ -184,7 +184,7 @@ where
 // implementation. The `'static` bound is required by suppaftp's `abort`, which we
 // use to tear down a data connection on cancel.
 
-/// Put the connection in passive mode and binary (`TYPE I`) transfers — the
+/// Put the connection in passive mode and binary (`TYPE I`) transfers - the
 /// defaults every other op assumes (passive for NAT-friendliness, binary so
 /// sizes and bytes are exact).
 pub(crate) async fn op_setup<T>(stream: &mut ImplAsyncFtpStream<T>) -> Result<()>
@@ -222,7 +222,7 @@ where
         // An MLSD that returns nothing is an empty directory.
         Ok(_) => Vec::new(),
         Err(err) if is_not_found(&err) => return Err(map_ftp_err(err)),
-        // MLSD unsupported (or otherwise refused) — fall back to LIST.
+        // MLSD unsupported (or otherwise refused) - fall back to LIST.
         Err(_) => stream.list(Some(p)).await.map_err(map_ftp_err)?,
     };
     let mut entries = Vec::with_capacity(lines.len());
@@ -249,7 +249,7 @@ where
 
 /// Recursively walk `root` pre-order (parent before children), reusing
 /// [`op_list_dir`]. FTP has no native recursive list, so this drives an explicit
-/// stack — no async recursion. Symlinks/specials are skipped and tallied.
+/// stack - no async recursion. Symlinks/specials are skipped and tallied.
 pub(crate) async fn op_walk_dir<T>(
     stream: &mut ImplAsyncFtpStream<T>,
     root: &RemotePath,
@@ -468,7 +468,7 @@ where
             }
         }
         Err(err) if is_not_found(&err) => return Ok(None),
-        // MLST unsupported — fall through to SIZE/CWD probing.
+        // MLST unsupported - fall through to SIZE/CWD probing.
         Err(_) => {}
     }
     match stream.size(p).await {

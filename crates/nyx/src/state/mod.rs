@@ -1,4 +1,4 @@
-//! [`AppState`] — the single source of truth for the app shell.
+//! [`AppState`] - the single source of truth for the app shell.
 //!
 //! One root `Entity<AppState>` holds all mutable state plus the interaction
 //! logic (navigation, sort, filter, selection, dock). Views are `RenderOnce`
@@ -82,7 +82,7 @@ pub struct AppState {
     pub listing: Rc<Vec<EntryRow>>,
     /// Indices into [`listing`](Self::listing) giving the visible order (filtered
     /// by [`filter_query`](Self::filter_query), then sorted, folders first).
-    /// Rebuilt only when the listing, sort, or filter changes — never per frame.
+    /// Rebuilt only when the listing, sort, or filter changes - never per frame.
     view_order: Rc<Vec<usize>>,
     /// The stateful filter box.
     pub filter: Entity<TextInput>,
@@ -90,13 +90,13 @@ pub struct AppState {
     /// [`rebuild_view_order`](Self::rebuild_view_order) needs no `cx`.
     filter_query: Filter,
     /// Active recursive tree search, when the filter is in `/`-scope. `None` while
-    /// browsing — the file table renders the current directory; `Some` swaps it
+    /// browsing - the file table renders the current directory; `Some` swaps it
     /// for streamed search results.
     search: Option<SearchState>,
     /// Monotonic token; each new tree search bumps it so stale streamed batches
     /// (from a superseded search) are dropped.
     search_seq: u64,
-    /// An entry to select once its directory listing arrives — set when a search
+    /// An entry to select once its directory listing arrives - set when a search
     /// hit is activated, so landing in its folder lands on the file too.
     pending_select: Option<SharedString>,
     /// Active sort: `(key, ascending)`.
@@ -127,12 +127,12 @@ pub struct AppState {
     /// so global shortcuts and modal Enter/Esc fire even when nothing else holds
     /// focus (GPUI only dispatches keys along the focused element's ancestry).
     pub root_focus: FocusHandle,
-    /// A focus target to apply on the next render — modal autofocus, focusing the
+    /// A focus target to apply on the next render - modal autofocus, focusing the
     /// file table on connect, etc. Consumed once.
     pending_focus: Option<FocusHandle>,
     /// Handle for the open modal's primary button. Field-less modals autofocus it
     /// so Enter activates the default action (GPUI fires the focused button's
-    /// click natively — no separate confirm action that would double-fire).
+    /// click natively - no separate confirm action that would double-fire).
     pub modal_primary_focus: FocusHandle,
     /// Stable per-row focus handles for Tab navigation of the welcome connection
     /// list, keyed `"card:<id>"`, `"recent:<id>"`, and `"new"`.
@@ -173,12 +173,12 @@ pub struct AppState {
     /// drop point. See [`AppState::handoff_drag_out`].
     drop_row_bounds: DropRowBounds,
     /// While an OS drag-out is back inside the window, the folder row currently
-    /// under the cursor — highlighted so the (unchangeable native) cursor still
+    /// under the cursor - highlighted so the (unchangeable native) cursor still
     /// has a visible drop target. `None` when outside or over a non-folder.
     pub drag_return_folder: Option<SharedString>,
     /// The profile id of an in-flight connection attempt, if any.
     pub connecting_id: Option<String>,
-    /// The profile id whose connect used a *stored* password — set so an auth
+    /// The profile id whose connect used a *stored* password - set so an auth
     /// failure can re-open the prompt to correct a stale keychain entry.
     used_stored_password: Option<String>,
     /// A pending password prompt (shown before connecting).
@@ -205,7 +205,7 @@ pub struct AppState {
     /// Whether a directory listing is in flight (drives the loading hint).
     pub listing_loading: bool,
     /// Set when the active connection's transport dropped: a credential-free
-    /// reason that drives the non-modal "Connection lost — Reconnect" banner.
+    /// reason that drives the non-modal "Connection lost - Reconnect" banner.
     /// `None` while connected. The last listing stays visible underneath.
     pub connection_lost: Option<SharedString>,
     /// While auto-reconnect is running after a loss: the current attempt number,
@@ -228,7 +228,7 @@ pub fn theme_from_name(name: &str) -> Theme {
     }
 }
 
-/// The keychain account holding a profile's connection secret — the password for
+/// The keychain account holding a profile's connection secret - the password for
 /// password auth, the key passphrase for key auth.
 fn secret_account(profile: &Profile) -> String {
     match profile.auth {

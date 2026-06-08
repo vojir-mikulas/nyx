@@ -4,8 +4,8 @@
 //! written to profile files. They live only in the platform keychain (Keychain
 //! on macOS), behind the [`keyring`] crate via [`OsKeyring`].
 //!
-//! The API is sync and blocking — and on macOS the *first* access pops a system
-//! "allow" dialog — so callers run these methods off the UI thread (see the app's
+//! The API is sync and blocking - and on macOS the *first* access pops a system
+//! "allow" dialog - so callers run these methods off the UI thread (see the app's
 //! `open_connection` / editor flow).
 
 use std::collections::HashMap;
@@ -13,13 +13,13 @@ use std::sync::Mutex;
 
 use nyx_core::{NyxError, Result};
 
-/// The keychain account for a profile's **password** — the bare profile id, kept
+/// The keychain account for a profile's **password** - the bare profile id, kept
 /// unchanged so credentials stored before key-auth existed still resolve.
 pub fn password_account(profile_id: &str) -> String {
     profile_id.to_string()
 }
 
-/// The keychain account for a profile's **key passphrase** — namespaced so it
+/// The keychain account for a profile's **key passphrase** - namespaced so it
 /// can never clobber the same profile's password entry.
 pub fn passphrase_account(profile_id: &str) -> String {
     format!("{profile_id}/passphrase")
@@ -57,7 +57,7 @@ fn entry(service: &str, account: &str) -> Result<keyring::Entry> {
 }
 
 /// Map a `keyring` error to a credential-free [`NyxError`]. The `keyring` error
-/// `Display` carries only API/status detail — never the password.
+/// `Display` carries only API/status detail - never the password.
 fn map_err(err: keyring::Error) -> NyxError {
     NyxError::Other(format!("keychain error: {err}"))
 }
@@ -66,7 +66,7 @@ impl CredentialStore for OsKeyring {
     fn get_password(&self, service: &str, account: &str) -> Result<Option<String>> {
         match entry(service, account)?.get_password() {
             Ok(password) => Ok(Some(password)),
-            // A missing entry is not an error — it means "prompt the user".
+            // A missing entry is not an error - it means "prompt the user".
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(err) => Err(map_err(err)),
         }
@@ -184,7 +184,7 @@ mod tests {
         assert_eq!(store.get_password("nyx", &pp).unwrap(), None);
     }
 
-    /// Exercises the real OS keychain — ignored by default (CI has none, and it
+    /// Exercises the real OS keychain - ignored by default (CI has none, and it
     /// would pop a system dialog). Run locally with `--ignored`.
     #[test]
     #[ignore = "touches the real OS keychain"]

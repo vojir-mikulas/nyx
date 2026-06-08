@@ -118,7 +118,7 @@ fn transfer_row(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
     let status = t.transfer.status;
     let id = t.transfer.id;
 
-    // A folder that completed with skips/failures carries a report — surface its
+    // A folder that completed with skips/failures carries a report - surface its
     // summary in a warning color and let the row expand to the per-entry detail.
     let has_report = status == TransferStatus::Completed && t.report.is_some();
     let summary = t.report.as_ref().and_then(|r| r.summary());
@@ -396,7 +396,7 @@ fn report_panel(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
         )
 }
 
-/// The cancel (`x`) button on a running/queued row — sends a real cancel command.
+/// The cancel (`x`) button on a running/queued row - sends a real cancel command.
 fn cancel_button(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
     let id = t.transfer.id;
     IconButton::new(
@@ -410,7 +410,7 @@ fn cancel_button(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
     }))
 }
 
-/// The retry (`refresh`) button on a failed row — re-issues the transfer.
+/// The retry (`refresh`) button on a failed row - re-issues the transfer.
 fn retry_button(t: &TransferVm, cx: &Context<AppState>) -> impl IntoElement {
     let id = t.transfer.id;
     IconButton::new(

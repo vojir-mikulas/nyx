@@ -14,7 +14,7 @@
 //! the shallow root, so a deeper `"Browser"` or `"TextInput"` binding of the same
 //! key shadows it: `enter` is *Open* over the file table and *Submit* in a field.
 //! A `None`-context binding, by contrast, binds at max depth and fires even
-//! inside fields — the footgun this module exists to avoid.
+//! inside fields - the footgun this module exists to avoid.
 //!
 //! Modal Enter/Space are *not* bound here: GPUI fires the focused (or autofocused
 //! primary) button's click natively, so a single keystroke can't both activate a
@@ -53,12 +53,12 @@ gpui::actions!(
         FocusNext,
         /// Move focus to the previous focusable item (Shift-Tab).
         FocusPrev,
-        /// Dismiss the topmost overlay — modal, prompt or menu (Esc).
+        /// Dismiss the topmost overlay - modal, prompt or menu (Esc).
         Dismiss,
     ]
 );
 
-/// The cheat-sheet section a binding is listed under (display only — distinct
+/// The cheat-sheet section a binding is listed under (display only - distinct
 /// from the binding's key context).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Group {
@@ -93,7 +93,7 @@ struct Shortcut {
     make: MakeFn,
 }
 
-/// The full set of app/browser bindings — the single source of truth shared by
+/// The full set of app/browser bindings - the single source of truth shared by
 /// [`bind_all`] and [`cheat_sheet`].
 #[rustfmt::skip]
 const SHORTCUTS: &[Shortcut] = &[
@@ -105,11 +105,11 @@ const SHORTCUTS: &[Shortcut] = &[
     Shortcut { keys: "tab",       label: "Next item",     group: Group::Application, context: Some("App"), make: |k, c| KeyBinding::new(k, FocusNext, c) },
     Shortcut { keys: "shift-tab", label: "Previous item", group: Group::Application, context: Some("App"), make: |k, c| KeyBinding::new(k, FocusPrev, c) },
 
-    // Browser — navigation/global (App context so they don't fight text fields)
+    // Browser - navigation/global (App context so they don't fight text fields)
     Shortcut { keys: "cmd-f", label: "Filter folder",      group: Group::Browser, context: Some("App"), make: |k, c| KeyBinding::new(k, FocusFilter, c) },
     Shortcut { keys: "cmd-r", label: "Refresh",            group: Group::Browser, context: Some("App"), make: |k, c| KeyBinding::new(k, Refresh, c) },
     Shortcut { keys: "cmd-w", label: "Close connection",   group: Group::Browser, context: Some("App"), make: |k, c| KeyBinding::new(k, CloseTab, c) },
-    // Browser — table actions (Browser context; live only while the table is focused)
+    // Browser - table actions (Browser context; live only while the table is focused)
     Shortcut { keys: "enter",     label: "Open / download", group: Group::Browser, context: Some("Browser"), make: |k, c| KeyBinding::new(k, Open, c) },
     Shortcut { keys: "backspace", label: "Go up",           group: Group::Browser, context: Some("Browser"), make: |k, c| KeyBinding::new(k, GoUp, c) },
     Shortcut { keys: "f2",        label: "Rename",          group: Group::Browser, context: Some("Browser"), make: |k, c| KeyBinding::new(k, Rename, c) },
@@ -150,7 +150,7 @@ pub fn bind_all(cx: &mut App) {
             .map(|(keys, ctx, make)| make(&platform_keystrokes(keys), *ctx)),
     );
     // Quit is platform-specific: ⌘Q on macOS. Windows/Linux quit via the native
-    // window close (Alt+F4 / the close button), already wired in `main` — so no
+    // window close (Alt+F4 / the close button), already wired in `main` - so no
     // app-level binding there (Ctrl+Q is not a standard quit key).
     if cfg!(target_os = "macos") {
         bindings.push(KeyBinding::new("cmd-q", Quit, Some("App")));

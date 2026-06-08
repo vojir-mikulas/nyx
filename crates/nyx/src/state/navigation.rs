@@ -5,7 +5,7 @@ use super::*;
 impl AppState {
     /// Enter the browser for a freshly-connected profile and list its starting
     /// directory: the profile's configured remote path if set, otherwise the
-    /// server-resolved home (`home`) — so the user lands somewhere writable
+    /// server-resolved home (`home`) - so the user lands somewhere writable
     /// instead of the filesystem root.
     pub(super) fn enter_browser(
         &mut self,

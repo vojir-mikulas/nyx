@@ -1,4 +1,4 @@
-//! `Tooltip` — a small elevated label shown on hover. GPUI's `.tooltip(..)`
+//! `Tooltip` - a small elevated label shown on hover. GPUI's `.tooltip(..)`
 //! wants a closure returning an `AnyView`, so a tooltip must be a view;
 //! [`Tooltip::text`] returns a ready-made builder closure.
 

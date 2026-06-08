@@ -46,7 +46,7 @@ impl AppState {
         match result {
             Ok(Some(secret)) => self.send_connect(profile, secret, true, cx),
             // No stored secret. For password auth, prompt. For key auth, try with
-            // no passphrase (an unencrypted key needs none) — an encrypted key
+            // no passphrase (an unencrypted key needs none) - an encrypted key
             // comes back as `KeyLocked` and we prompt for the passphrase then.
             Ok(None) => match profile.auth {
                 AuthMethod::Password => self.show_password_prompt(profile, cx),
@@ -73,7 +73,7 @@ impl AppState {
         self.show_secret_prompt(profile, true, cx);
     }
 
-    /// Build and show the secret prompt — a password or, when `is_passphrase`, a
+    /// Build and show the secret prompt - a password or, when `is_passphrase`, a
     /// key passphrase. The "Save to keychain" toggle defaults on.
     pub(super) fn show_secret_prompt(
         &mut self,
@@ -153,7 +153,7 @@ impl AppState {
     }
 
     /// Save a secret to the keychain off-thread, then send `Connect` once the
-    /// write completes (a failed save is a non-fatal toast — we still connect).
+    /// write completes (a failed save is a non-fatal toast - we still connect).
     pub(super) fn save_secret_then_connect(
         &mut self,
         profile: Profile,

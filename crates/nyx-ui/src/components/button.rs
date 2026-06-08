@@ -1,4 +1,4 @@
-//! `Button` — the reference component for the variant API. Stateless
+//! `Button` - the reference component for the variant API. Stateless
 //! [`RenderOnce`]; an id is required so the click handler can be attached.
 
 use gpui::{
@@ -71,7 +71,7 @@ impl Button {
         self
     }
 
-    /// Leading icon — any `impl IntoElement`, never an icon enum (domain-free).
+    /// Leading icon - any `impl IntoElement`, never an icon enum (domain-free).
     pub fn icon(mut self, icon: impl IntoElement) -> Self {
         self.icon = Some(icon.into_any_element());
         self

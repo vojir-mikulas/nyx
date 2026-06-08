@@ -1,6 +1,6 @@
 //! Connection profiles for Nyx.
 //!
-//! A [`Profile`] is the persisted, shareable description of a connection — host,
+//! A [`Profile`] is the persisted, shareable description of a connection - host,
 //! port, protocol, username, default path, plus two presentation fields that
 //! travel with it (accent [`color`](Profile::color) and a `last_connected`
 //! timestamp). **Credentials are never stored here**; passwords live in the OS
@@ -42,7 +42,7 @@ pub struct Profile {
     /// How this connection authenticates (password or private key).
     ///
     /// `#[serde(default)]` so profiles written before this field existed still
-    /// parse — they take [`AuthMethod::Password`]. The key *path* lives here (it
+    /// parse - they take [`AuthMethod::Password`]. The key *path* lives here (it
     /// is not a secret); the password / key passphrase lives in the keychain.
     #[serde(default)]
     pub auth: AuthMethod,
@@ -50,7 +50,7 @@ pub struct Profile {
     pub remote_path: Option<String>,
     /// The accent color shown for this connection (presentation, persisted).
     ///
-    /// Stored here — not on `nyx-core` — because it is config that travels with
+    /// Stored here - not on `nyx-core` - because it is config that travels with
     /// the saved connection, not a protocol invariant. Mapped to a UI accent in
     /// the app.
     #[serde(default)]
@@ -71,7 +71,7 @@ pub struct Profile {
 /// method = "key"
 /// path = "/home/me/.ssh/id_ed25519"
 /// ```
-/// The secret (password or key passphrase) is **never** stored here — only the
+/// The secret (password or key passphrase) is **never** stored here - only the
 /// non-secret key *path* travels with the profile.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "lowercase")]
@@ -101,14 +101,14 @@ impl Profile {
 
 /// A connection's accent color (presentation, persisted with the profile).
 ///
-/// Owned here — not pulled from `nyx-ui` — so `nyx-profile` keeps zero UI
+/// Owned here - not pulled from `nyx-ui` - so `nyx-profile` keeps zero UI
 /// coupling; the app maps this to a concrete theme accent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProfileColor {
     /// Blue accent.
     Blue,
-    /// Purple accent (the default — matches SFTP, the V1 protocol).
+    /// Purple accent (the default - matches SFTP, the V1 protocol).
     #[default]
     Purple,
     /// Green accent.
@@ -194,7 +194,7 @@ impl FileProfileStore {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).map_err(|err| NyxError::Io(err.to_string()))?;
             // No credentials live here (those are in the keychain), but hostnames,
-            // usernames and key paths do — keep the store owner-only.
+            // usernames and key paths do - keep the store owner-only.
             restrict_to_owner(parent, 0o700);
         }
         let file = ProfilesFile {
@@ -214,7 +214,7 @@ impl FileProfileStore {
 }
 
 /// Best-effort tighten `path` to owner-only (`0600` files / `0700` dirs) on Unix.
-/// A failure here is non-fatal — never block a profile save on a perms quirk — and
+/// A failure here is non-fatal - never block a profile save on a perms quirk - and
 /// it is a no-op on platforms without Unix mode bits (Windows ACLs are out of
 /// scope).
 #[cfg(unix)]
@@ -327,7 +327,7 @@ mod tests {
         let on_disk = fs::read_to_string(store.path()).unwrap();
         let lower = on_disk.to_lowercase();
         // `method = "password"` (the auth *method* name) is expected; what must
-        // never appear is a secret value — a stored password/passphrase field.
+        // never appear is a secret value - a stored password/passphrase field.
         assert!(!lower.contains("passphrase"));
         assert!(!lower.contains("password ="));
         assert!(!lower.contains("secret"));

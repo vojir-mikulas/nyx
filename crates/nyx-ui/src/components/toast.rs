@@ -1,4 +1,4 @@
-//! `Toast` — a single notification pill. Stacking, positioning and auto-dismiss
+//! `Toast` - a single notification pill. Stacking, positioning and auto-dismiss
 //! are the caller's concern; this is just the visual.
 
 use gpui::{div, prelude::*, App, Hsla, SharedString, Window};

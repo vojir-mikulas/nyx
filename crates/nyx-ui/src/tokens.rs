@@ -11,7 +11,7 @@ fn h(hex: u32) -> Hsla {
 }
 
 impl Theme {
-    /// Zed's **One Dark** — the primary theme.
+    /// Zed's **One Dark** - the primary theme.
     pub fn one_dark() -> Self {
         Theme {
             name: "One Dark",
@@ -53,7 +53,7 @@ impl Theme {
         }
     }
 
-    /// **GitHub Dark** — the alternate theme.
+    /// **GitHub Dark** - the alternate theme.
     pub fn github_dark() -> Self {
         Theme {
             name: "GitHub Dark",
@@ -95,7 +95,7 @@ impl Theme {
         }
     }
 
-    /// **Ayu Dark** — warm-gold accent on near-black surfaces.
+    /// **Ayu Dark** - warm-gold accent on near-black surfaces.
     pub fn ayu_dark() -> Self {
         Theme {
             name: "Ayu Dark",

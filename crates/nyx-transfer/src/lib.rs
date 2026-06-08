@@ -2,7 +2,7 @@
 //!
 //! A **sans-IO scheduler**: pure policy with no tokio, no protocol and no
 //! spawning. It owns the concurrency cap, the queue of pending specs, id
-//! allocation and — per running transfer — a shared [`TransferProgress`] handle
+//! allocation and - per running transfer - a shared [`TransferProgress`] handle
 //! (a byte counter + a one-way cancel flag). The service drives it: it `submit`s
 //! specs, `poll_start`s to promote queued transfers into running slots (spawning
 //! the actual copy tasks), `finish`es them on completion and `cancel`s on
@@ -17,7 +17,7 @@
 //! and [`is_remote_locked`](TransferQueue::is_remote_locked) lets the service
 //! reject a mutating op (`Remove` / `Rename`) against a path with a live
 //! transfer. This is the safe, predictable first cut: a duplicate active op on a
-//! locked path is refused (surfacing the conflict) rather than racing — a
+//! locked path is refused (surfacing the conflict) rather than racing - a
 //! delete-during-download or a double-upload to one path can't corrupt state.
 //! Independent paths still run concurrently up to the cap. Locks release on
 //! every terminal transition (finish / cancel / skip / failed). Richer per-path
@@ -53,7 +53,7 @@ pub struct TransferSpec {
     /// stamp) skips the prompt round-trip.
     pub on_collision: Option<CollisionChoice>,
     /// Byte offset to resume from; `0` means start fresh. Set when the queue
-    /// re-admits an interrupted transfer — the copy only actually seeks to it if
+    /// re-admits an interrupted transfer - the copy only actually seeks to it if
     /// the source is verifiably unchanged, otherwise it restarts from `0`.
     pub resume_from: u64,
     /// The source fingerprint captured on the first run, carried across an
@@ -115,7 +115,7 @@ pub struct TransferQueue {
     awaiting: HashMap<TransferId, TransferSpec>,
     /// Transfers paused by a connection loss, retaining their spec (with the
     /// resume offset stamped on it). They hold a running slot for no one but keep
-    /// their path lock — [`readmit_interrupted`](Self::readmit_interrupted) puts
+    /// their path lock - [`readmit_interrupted`](Self::readmit_interrupted) puts
     /// them back on the queue on reconnect.
     interrupted: HashMap<TransferId, TransferSpec>,
     /// Per-transfer record of the paths it locked (and the kind, which decides
@@ -165,7 +165,7 @@ impl TransferQueue {
     }
 
     /// Set the concurrency cap (clamped to at least 1). The queue stays
-    /// protocol-agnostic; the caller chooses the number — e.g. the service drops
+    /// protocol-agnostic; the caller chooses the number - e.g. the service drops
     /// it to 1 for FTP/FTPS, whose single control connection serializes every op,
     /// so the queue never starts a transfer that would only stall behind another.
     /// Lowering the cap below the number already running starts nothing new until
@@ -175,7 +175,7 @@ impl TransferQueue {
     }
 
     /// Assign an id, lock the spec's paths and push it onto the queue, returning
-    /// the new id — unless the remote or local path already has a live transfer,
+    /// the new id - unless the remote or local path already has a live transfer,
     /// in which case it is **rejected** with [`PathInUse`] (the path-lock policy).
     pub fn submit(&mut self, spec: TransferSpec) -> Result<TransferId, PathInUse> {
         if self.path_conflict(&spec) {
@@ -201,12 +201,12 @@ impl TransferQueue {
         })
     }
 
-    /// Whether a remote path currently has a live transfer — the service checks
+    /// Whether a remote path currently has a live transfer - the service checks
     /// this to reject a mutating op (`Remove` / `Rename`) that would race a copy.
     ///
     /// `path` is treated as covering its own subtree (a `Remove`/`Rename` of a
     /// directory disturbs every transfer beneath it), and a live **dir** lock
-    /// covers its descendants — so deleting a child of a folder being downloaded,
+    /// covers its descendants - so deleting a child of a folder being downloaded,
     /// or an ancestor of a file being transferred, is both caught.
     pub fn is_remote_locked(&self, path: &RemotePath) -> bool {
         self.locks.values().any(|lock| {
@@ -264,7 +264,7 @@ impl TransferQueue {
     /// still-queued transfer (so they won't prompt when they reach the gate).
     ///
     /// `Overwrite` re-queues the parked item (with the policy resolved) so it
-    /// runs next; `Skip`/`Cancel` terminate it immediately — the returned
+    /// runs next; `Skip`/`Cancel` terminate it immediately - the returned
     /// [`Resolution`] lists those for the service to announce.
     pub fn resolve(
         &mut self,
@@ -288,7 +288,7 @@ impl TransferQueue {
                     // Re-admit at the front so the resolved item runs next.
                     self.queued.push_front((tid, spec));
                 }
-                // Skip/Cancel terminate the item here (no copy runs) — release
+                // Skip/Cancel terminate the item here (no copy runs) - release
                 // its lock now, since no `finish` will follow.
                 CollisionChoice::Skip => {
                     self.release(tid);
@@ -326,7 +326,7 @@ impl TransferQueue {
     pub fn cancel(&mut self, id: TransferId) -> CancelOutcome {
         if let Some(pos) = self.queued.iter().position(|(qid, _)| *qid == id) {
             self.queued.remove(pos);
-            // Dropped before it started — no `finish` will follow, so unlock now.
+            // Dropped before it started - no `finish` will follow, so unlock now.
             self.release(id);
             return CancelOutcome::WasQueued;
         }
@@ -335,7 +335,7 @@ impl TransferQueue {
             return CancelOutcome::WasQueued;
         }
         if self.interrupted.remove(&id).is_some() {
-            // Paused by a loss and never resumed — drop it like a queued one.
+            // Paused by a loss and never resumed - drop it like a queued one.
             self.release(id);
             return CancelOutcome::WasQueued;
         }
@@ -599,7 +599,7 @@ mod tests {
         assert_eq!(started_a.id, a);
         assert!(q.poll_start().is_none());
 
-        // The gate parks `a` (its destination exists) — the slot frees and `b`
+        // The gate parks `a` (its destination exists) - the slot frees and `b`
         // can start while `a` awaits a decision.
         assert!(q.park(a).is_some());
         let started_b = q.poll_start().unwrap();
@@ -722,7 +722,7 @@ mod tests {
     #[test]
     fn a_partial_path_overlap_still_collides() {
         // Same remote but different local (two downloads of one file to two
-        // places) — still a conflict; same local but different remote likewise.
+        // places) - still a conflict; same local but different remote likewise.
         let mut q = TransferQueue::new(2);
         q.submit(spec(0)).unwrap();
         let same_remote = TransferSpec {

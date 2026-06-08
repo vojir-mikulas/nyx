@@ -1,6 +1,6 @@
 //! The Nyx application binary.
 //!
-//! Assembles the app shell — sidebar, welcome / connection manager, file
+//! Assembles the app shell - sidebar, welcome / connection manager, file
 //! browser, transfer dock and status bar. The single root [`AppState`] entity
 //! owns all state and interaction logic.
 
@@ -52,7 +52,7 @@ fn main() {
     });
 }
 
-/// macOS: seamless titlebar — hide the native bar and inset the traffic lights
+/// macOS: seamless titlebar - hide the native bar and inset the traffic lights
 /// into our top-left strip (the sidebar header doubles as the drag region).
 #[cfg(target_os = "macos")]
 fn titlebar_options() -> TitlebarOptions {
@@ -108,7 +108,7 @@ fn log_dir() -> Option<std::path::PathBuf> {
     let dir = dirs.data_dir().to_path_buf();
     std::fs::create_dir_all(&dir).ok()?;
     // The daily-rolling appender creates dated files lazily, so we can't chmod the
-    // file up front — instead lock the directory to owner-only on Unix, which
+    // file up front - instead lock the directory to owner-only on Unix, which
     // stops other users traversing in regardless of per-file mode. Best-effort.
     #[cfg(unix)]
     {

@@ -1,4 +1,4 @@
-//! `TextInput` — a single-line, themed text field built in-house on GPUI's
+//! `TextInput` - a single-line, themed text field built in-house on GPUI's
 //! text/element primitives. Owns cursor movement, selection, clipboard and
 //! IME/marked-text. Stateful: a [`Render`] view held in an `Entity`; mechanics
 //! ported from GPUI's `input` example. Call [`TextInput::bind_keys`] once at
@@ -49,13 +49,13 @@ actions!(
     ]
 );
 
-/// Emitted so the owner can react via `cx.subscribe` — the field can't know
+/// Emitted so the owner can react via `cx.subscribe` - the field can't know
 /// whether submit means *create folder* or *save profile*.
 #[derive(Clone, Copy, Debug)]
 pub enum TextInputEvent {
-    /// Enter — confirm the field's form.
+    /// Enter - confirm the field's form.
     Submit,
-    /// Escape — dismiss the field's form.
+    /// Escape - dismiss the field's form.
     Cancel,
 }
 

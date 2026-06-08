@@ -4,7 +4,7 @@ use super::*;
 
 impl AppState {
     /// Download the current selection. A single file opens a save-as dialog;
-    /// anything else — several entries, or a single folder — opens a folder
+    /// anything else - several entries, or a single folder - opens a folder
     /// picker and issues one `Download` per top-level entry (folders recurse).
     pub fn download_selection(&mut self, cx: &mut Context<Self>) {
         self.close_file_menu();
@@ -141,8 +141,8 @@ impl AppState {
     /// Promote an in-app drag to a native OS drag-out of `names` to
     /// Finder/desktop; a folder drops as a recursive download. Each item streams
     /// through the download queue via the promise callback in [`crate::drag`].
-    /// Returns whether the native session actually started — `false` when nothing
-    /// was draggable (all symlinks/missing) or the platform refused — so the
+    /// Returns whether the native session actually started - `false` when nothing
+    /// was draggable (all symlinks/missing) or the platform refused - so the
     /// caller can keep the in-app drag alive on failure.
     pub fn start_native_drag(
         &mut self,
@@ -232,7 +232,7 @@ impl AppState {
     }
 
     /// The in-app drag's pointer left the window: hand off to the native OS drag
-    /// of `names`. Promotion is **one-way** — once the native session starts we
+    /// of `names`. Promotion is **one-way** - once the native session starts we
     /// end the in-app drag so macOS owns the gesture (it can only finish as a
     /// drop-to-local). On failure the in-app drag stays live.
     pub fn handoff_drag_out(
@@ -281,7 +281,7 @@ impl AppState {
 
     /// The OS drag-out ended. If no external target accepted it and it was
     /// released over one of our folder rows, treat it as an in-app move instead
-    /// of a drop-to-local — the Phase 3 re-entry case (the cursor can't be
+    /// of a drop-to-local - the Phase 3 re-entry case (the cursor can't be
     /// demoted back to an in-app drag, but the *drop* still becomes a move).
     pub(super) fn on_drag_returned(
         &mut self,
@@ -426,8 +426,8 @@ impl AppState {
         }
     }
 
-    /// Copy a folder transfer's per-entry report to the clipboard as plain text
-    /// — the whole point of surfacing the detail is that it can be pasted into a
+    /// Copy a folder transfer's per-entry report to the clipboard as plain text;
+    /// the whole point of surfacing the detail is that it can be pasted into a
     /// bug report. The text mirrors the (capped) retained list and notes any
     /// truncated tail so the paste is never silently partial.
     pub fn copy_transfer_report(&mut self, id: TransferId, cx: &mut Context<Self>) {
@@ -453,7 +453,7 @@ impl AppState {
             }
             out.push_str(&format!("\n{label}:\n"));
             for issue in group {
-                out.push_str(&format!("  {} — {}\n", issue.rel, issue.reason));
+                out.push_str(&format!("  {} - {}\n", issue.rel, issue.reason));
             }
         };
         push_group(EntryOutcomeKind::Failed, "Failed");
@@ -467,7 +467,7 @@ impl AppState {
     }
 
     /// Re-issue a failed transfer (the dock's retry button). Resends the original
-    /// `Upload`/`Download` command and drops the stale failed row — the retry
+    /// `Upload`/`Download` command and drops the stale failed row - the retry
     /// re-enters the queue as a fresh transfer (its own `TransferQueued` event).
     pub fn retry_transfer(&mut self, id: TransferId, cx: &mut Context<Self>) {
         let Some(vm) = self.transfers.iter().find(|t| t.transfer.id == id) else {

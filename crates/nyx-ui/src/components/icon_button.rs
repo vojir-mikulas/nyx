@@ -1,4 +1,4 @@
-//! `IconButton` — a compact square icon-only button. Takes its glyph as a
+//! `IconButton` - a compact square icon-only button. Takes its glyph as a
 //! generic `impl IntoElement` child (never an icon enum), staying domain-free.
 
 use gpui::{div, prelude::*, AnyElement, App, ClickEvent, ElementId, Window};

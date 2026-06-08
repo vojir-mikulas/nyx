@@ -19,7 +19,7 @@ pub(crate) const COPY_CHUNK: usize = 64 * 1024;
 /// checking for a requested cancel between chunks.
 ///
 /// Both halves are driven through tokio's `AsyncRead`/`AsyncWrite`, which surface
-/// `std::io::Error` regardless of which side errors — hence the single
+/// `std::io::Error` regardless of which side errors - hence the single
 /// [`map_io_err`]. A cancel short-circuits with [`NyxError::Cancelled`]; the
 /// caller (service) does any partial-file cleanup.
 pub(crate) async fn copy_counting<R, W>(
@@ -55,7 +55,7 @@ pub(crate) fn map_io_err(err: std::io::Error) -> NyxError {
 
 /// Reject a non-zero resume offset for a protocol that can't resume (its
 /// [`supports_resume`](crate::RemoteClient::supports_resume) is `false`, so the
-/// service never hands it one — this is a defensive guard, not a live path).
+/// service never hands it one - this is a defensive guard, not a live path).
 pub(crate) fn reject_offset(offset: u64) -> Result<()> {
     if offset != 0 {
         return Err(NyxError::Unsupported);
@@ -76,7 +76,7 @@ pub(crate) enum RemoveOp {
 /// Plan the depth-first removal of `root` without async recursion.
 ///
 /// A file target yields a single [`RemoveOp::File`]. A directory target is
-/// walked with an explicit work-stack: each directory is visited twice — once to
+/// walked with an explicit work-stack: each directory is visited twice - once to
 /// list its children (pushing sub-directories back on the stack and emitting its
 /// files), and once (after its children) to emit the directory's own
 /// [`RemoveOp::Dir`]. `list_dir` yields each directory's `(path, is_dir)`
@@ -123,7 +123,7 @@ where
 ///
 /// `list_dir` yields each visited directory's `(name, kind, size)` children. A
 /// directory's [`WalkItem`] is emitted while listing its *parent*, before the
-/// directory itself is listed — so the result orders every parent ahead of its
+/// directory itself is listed - so the result orders every parent ahead of its
 /// descendants. Symlinks (and other non-file/non-dir entries) are skipped and
 /// tallied; we don't follow links in v1.
 pub(crate) async fn plan_walk<F, Fut>(root: &str, mut list_dir: F) -> Result<DirWalk>
@@ -138,7 +138,7 @@ where
         for (name, kind, size) in list_dir(dir.clone()).await? {
             // A server-supplied name that isn't a single ordinary component (`..`,
             // an absolute path, a separator) could escape the local destination
-            // when joined — reject it before it becomes a path, and never recurse
+            // when joined - reject it before it becomes a path, and never recurse
             // into it remotely. Surface it as a skip rather than failing the walk.
             if !is_safe_local_segment(&name) {
                 let shown = format!("{}/{name}", rel.join("/"));
@@ -167,7 +167,7 @@ where
                     });
                 }
                 // Links and special files (sockets, devices, …) aren't copyable
-                // byte streams — skip and record why, never follow.
+                // byte streams - skip and record why, never follow.
                 EntryKind::Symlink => walk
                     .skips
                     .push(EntryIssue::skipped(child_rel.join("/"), "symlink skipped")),

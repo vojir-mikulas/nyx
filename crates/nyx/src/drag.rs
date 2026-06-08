@@ -4,7 +4,7 @@
 //! promise drag; at drop time the OS calls [`DragFetch::fetch`] **on a background
 //! thread** with the chosen destination. We turn that into an ordinary
 //! [`Command::Download`] and block the callback until the transfer's terminal
-//! [`Event::TransferDone`] arrives — so the drop streams through the existing
+//! [`Event::TransferDone`] arrives - so the drop streams through the existing
 //! queue, path-locks, collision handling and progress dock for free.
 //!
 //! [`DragDownloads`] is the correlation seam: the UI event loop feeds it the

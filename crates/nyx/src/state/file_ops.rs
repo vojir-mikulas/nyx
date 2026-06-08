@@ -45,7 +45,7 @@ impl AppState {
         self.open_rename_prompt(name, cx);
     }
 
-    /// Open the **Rename** modal for the current single-row selection — the
+    /// Open the **Rename** modal for the current single-row selection - the
     /// keyboard (F2) entry point that has no context menu to read.
     pub fn rename_selection(&mut self, cx: &mut Context<Self>) {
         if self.selected.len() != 1 {
@@ -114,7 +114,7 @@ impl AppState {
 
     /// Resolve a symlink on click: ask the backend to follow it. The reply
     /// ([`Event::SymlinkResolved`]) navigates into a directory target or
-    /// downloads a file target — one round-trip, paid only on activation.
+    /// downloads a file target - one round-trip, paid only on activation.
     pub fn open_symlink(&mut self, name: &SharedString, cx: &mut Context<Self>) {
         let path = self.cwd.join(name);
         if !self.service.send(Command::ResolveSymlink { path }) {

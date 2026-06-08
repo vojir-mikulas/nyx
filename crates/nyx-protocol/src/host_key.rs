@@ -1,9 +1,9 @@
 //! The server-identity trust prompt callback.
 //!
 //! When a connection meets a server it has never seen, the protocol layer must
-//! ask *someone* whether to trust the presented identity (trust-on-first-use) —
+//! ask *someone* whether to trust the presented identity (trust-on-first-use) -
 //! an SSH host key for SFTP, a TLS certificate for FTPS. That decision lives in
-//! the UI, but the protocol layer must not know about the UI — so it depends only
+//! the UI, but the protocol layer must not know about the UI - so it depends only
 //! on this small async trait. The service implements it by surfacing a modal and
 //! awaiting the user's choice; tests can implement it as a constant.
 

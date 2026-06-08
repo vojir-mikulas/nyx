@@ -8,8 +8,8 @@ impl AppState {
         self.recent_collapsed = !self.recent_collapsed;
     }
 
-    /// Whether any overlay — a modal, prompt, context menu, the cheat-sheet, or
-    /// the connecting spinner — is currently on screen. The browser drops its key
+    /// Whether any overlay - a modal, prompt, context menu, the cheat-sheet, or
+    /// the connecting spinner - is currently on screen. The browser drops its key
     /// context while this holds, so global Enter/Esc route to the overlay instead
     /// of the file table beneath it.
     pub fn has_overlay(&self) -> bool {
@@ -46,7 +46,7 @@ impl AppState {
         }
     }
 
-    /// Esc handler: dismiss the topmost overlay — menus first, then the cheat
+    /// Esc handler: dismiss the topmost overlay - menus first, then the cheat
     /// sheet, then prompts/modals in z-order. Returns whether anything closed.
     /// Each dismissal is the modal's own cancel (e.g. a collision Skip), never a
     /// destructive default.

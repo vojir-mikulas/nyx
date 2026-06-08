@@ -48,12 +48,12 @@ impl ConnectionVm {
         }
     }
 
-    /// `user@host` — the faint mono subtitle in the sidebar.
+    /// `user@host` - the faint mono subtitle in the sidebar.
     pub fn user_host(&self) -> String {
         format!("{}@{}", self.profile.username, self.profile.host)
     }
 
-    /// `user@host:port` — the full host label (welcome card, status bar).
+    /// `user@host:port` - the full host label (welcome card, status bar).
     pub fn user_host_port(&self) -> String {
         format!(
             "{}@{}:{}",

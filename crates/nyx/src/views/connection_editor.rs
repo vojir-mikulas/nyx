@@ -1,4 +1,4 @@
-//! The connection editor modal — create or edit a profile.
+//! The connection editor modal - create or edit a profile.
 //!
 //! A [`Modal`] wrapping the `nyx-ui` form kit. All mutation goes back through
 //! [`AppState`] methods; this file only reads `state.editor` and emits elements.
@@ -127,7 +127,7 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                         div()
                             .text_xs()
                             .text_color(theme.red)
-                            .child("⚠ FTP is unencrypted — credentials and files cross the network in the clear."),
+                            .child("⚠ FTP is unencrypted - credentials and files cross the network in the clear."),
                     )
                 })
                 .child(
@@ -249,7 +249,7 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
 }
 
 /// A labelled form field (label above the control).
-/// A row of clickable color swatches — the connection's accent picker. The
+/// A row of clickable color swatches - the connection's accent picker. The
 /// selected swatch carries a ring in its own color.
 fn color_picker(selected: AccentKind, theme: &Theme, view: &Entity<AppState>) -> impl IntoElement {
     div()

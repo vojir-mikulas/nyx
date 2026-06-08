@@ -1,4 +1,4 @@
-//! `Badge` — a small colored label chip. Variants are semantic; the fill is the
+//! `Badge` - a small colored label chip. Variants are semantic; the fill is the
 //! text color at low opacity, so it tracks the active theme.
 
 use gpui::{div, prelude::*, App, Hsla, SharedString, Window};

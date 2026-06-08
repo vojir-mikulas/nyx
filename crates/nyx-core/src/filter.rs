@@ -8,7 +8,7 @@
 //! Anything that doesn't parse as a predicate falls back to a substring, so a
 //! literal `foo:bar` filename still filters as typed.
 //!
-//! Matching is pure and allocation-light — the caller passes a precomputed
+//! Matching is pure and allocation-light - the caller passes a precomputed
 //! lowercased name (the browser caches one per row; the tree search lowercases on
 //! the fly), so a substring/sort never re-lowercases.
 
@@ -92,7 +92,7 @@ impl Filter {
     }
 
     /// Whether `entry` satisfies every term. `name_lower` must be the entry's
-    /// lowercased name; `now` anchors relative `modified:` ages — pass one
+    /// lowercased name; `now` anchors relative `modified:` ages - pass one
     /// snapshot for a whole pass.
     pub fn matches(&self, entry: &RemoteEntry, name_lower: &str, now: SystemTime) -> bool {
         self.terms.iter().all(|t| t.matches(entry, name_lower, now))
@@ -116,7 +116,7 @@ impl Filter {
                 Term::Ext(e) => FindPredicate::Iname(format!("*.{}", glob_escape(e))),
                 Term::Kind(k) => FindPredicate::Kind(*k),
                 // `find` can express these, but units/semantics diverge from our
-                // matcher — defer to the client walk for exact fidelity.
+                // matcher - defer to the client walk for exact fidelity.
                 Term::Size(..) | Term::Age { .. } => return None,
             });
         }

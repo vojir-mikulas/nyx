@@ -1,7 +1,7 @@
-//! [`RemotePath`] — the canonical remote-path newtype.
+//! [`RemotePath`] - the canonical remote-path newtype.
 //!
-//! The invariant — **absolute, `/`-rooted, normalized** (no empty / `.` / `..`
-//! components, no repeated or trailing slashes) — is enforced **once at
+//! The invariant - **absolute, `/`-rooted, normalized** (no empty / `.` / `..`
+//! components, no repeated or trailing slashes) - is enforced **once at
 //! construction** via [`normalize`] and trusted by every operation. This keeps
 //! navigation, breadcrumbs and the transfer specs keyed on one canonical string
 //! instead of ad-hoc `format!`/`join` math at each call site.
@@ -39,7 +39,7 @@ impl RemotePath {
     }
 
     /// Construct a normalized path, **sanitizing** the input: control characters
-    /// are stripped and a non-absolute input is rooted. Never fails — use
+    /// are stripped and a non-absolute input is rooted. Never fails - use
     /// [`RemotePath::try_new`] when control characters should be rejected
     /// instead (e.g. a path echoed back by a server).
     pub fn new(s: impl AsRef<str>) -> Self {
@@ -119,8 +119,8 @@ impl RemotePath {
 /// A recursive download mirrors server-supplied names into local paths; a hostile
 /// or buggy server returning `..`, an absolute path, or a name with a separator
 /// could otherwise escape the chosen folder and overwrite arbitrary files. This
-/// accepts only a name that is exactly one ordinary component — rejecting empty,
-/// `.`, `..`, separators and absolute/prefixed forms — evaluated with the **local
+/// accepts only a name that is exactly one ordinary component - rejecting empty,
+/// `.`, `..`, separators and absolute/prefixed forms - evaluated with the **local
 /// OS's** path semantics (so `\` and drive prefixes are caught on Windows, where
 /// the file is actually written). Names that merely contain dots (`..foo`,
 /// `foo..bar`) are fine.
@@ -278,11 +278,11 @@ mod tests {
 
     #[test]
     fn safe_local_segment_rejects_traversal_and_separators() {
-        // Ordinary names — accepted, including dotted ones.
+        // Ordinary names - accepted, including dotted ones.
         for ok in ["file.txt", "..foo", "foo..bar", "...", ".hidden", "a b"] {
             assert!(is_safe_local_segment(ok), "{ok:?} should be safe");
         }
-        // Traversal / escape attempts — rejected.
+        // Traversal / escape attempts - rejected.
         for bad in [
             "",
             ".",

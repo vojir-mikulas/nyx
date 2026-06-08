@@ -269,7 +269,7 @@ fn password_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElem
 }
 
 /// The host-key trust-on-first-use prompt (an unknown key was presented). A
-/// mismatch never reaches here — it is rejected outright and surfaced as a toast.
+/// mismatch never reaches here - it is rejected outright and surfaced as a toast.
 fn host_key_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
     let view = cx.entity();
@@ -350,7 +350,7 @@ fn host_key_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElem
 
 /// The file-collision prompt: the destination already exists. Overwrite / Skip /
 /// Cancel, with an "Apply to all" toggle when more than one transfer is parked.
-/// Dismissing (Esc / backdrop) is a Skip — never a silent overwrite.
+/// Dismissing (Esc / backdrop) is a Skip - never a silent overwrite.
 fn collision_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     use crate::state::models::fmt_size;
     use nyx_core::TransferDirection;
@@ -506,7 +506,7 @@ fn delete_confirm_modal(state: &AppState, cx: &mut Context<AppState>) -> impl In
             }
         })
         .child(div().text_sm().text_color(theme.text_muted).child(format!(
-            "Remove “{}”? This deletes the saved profile and its keychain password — this can't be undone.",
+            "Remove “{}”? This deletes the saved profile and its keychain password - this can't be undone.",
             confirm.profile_name
         )))
         .footer(

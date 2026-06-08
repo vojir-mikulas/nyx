@@ -5,9 +5,9 @@
 //! runtime, the active connection and (later) the transfer queue. The UI talks to
 //! it over two channels:
 //!
-//! - [`Command`] — UI → service (sent synchronously from the GPUI thread over a
+//! - [`Command`] - UI → service (sent synchronously from the GPUI thread over a
 //!   Tokio mpsc; a send never blocks the UI).
-//! - [`Event`] — service → UI. This side is a `futures::channel::mpsc` so the
+//! - [`Event`] - service → UI. This side is a `futures::channel::mpsc` so the
 //!   GPUI **foreground** executor can `await` it as a `Stream` inside `cx.spawn`
 //!   (a blocking `std` recv there would freeze the UI).
 //!
@@ -56,7 +56,7 @@ const MAX_CONCURRENT_TRANSFERS: usize = 3;
 
 /// The transfer concurrency cap for a protocol. FTP/FTPS keep a single stateful
 /// control connection and serialize every operation over one stream mutex, so
-/// more than one in-flight transfer can't actually run — cap them at 1 to keep
+/// more than one in-flight transfer can't actually run - cap them at 1 to keep
 /// the queue (and the dock) honest rather than showing stalled "running" slots.
 /// SFTP multiplexes channels and gets the full cap.
 fn transfer_cap_for(protocol: Protocol) -> usize {
@@ -76,7 +76,7 @@ const PROGRESS_TICK: Duration = Duration::from_millis(150);
 const SEARCH_MAX_DEPTH: u32 = 32;
 
 /// Hard cap on hits a single tree search returns. Beyond this the result is
-/// marked truncated and the walk stops — keeps a wildcard query over a huge tree
+/// marked truncated and the walk stops - keeps a wildcard query over a huge tree
 /// from flooding the UI. Lift once `large-listings` lazifies the row precompute.
 const SEARCH_MAX_RESULTS: usize = 5_000;
 
@@ -87,7 +87,7 @@ const SEARCH_BATCH: usize = 128;
 /// How many directory listings a tree search keeps in flight at once. A deep
 /// search is round-trip bound, and SFTP pipelines requests over its single
 /// connection, so concurrency cuts wall-clock time sharply. FTP serializes
-/// internally, so it simply ignores the extra parallelism — no benefit, no harm.
+/// internally, so it simply ignores the extra parallelism - no benefit, no harm.
 const SEARCH_CONCURRENCY: usize = 16;
 
 /// How many automatic reconnect attempts to make on a transport loss before
@@ -114,7 +114,7 @@ fn known_hosts() -> PathBuf {
 }
 
 /// The per-OS path to the FTPS trust-on-first-use `known_certs` store
-/// (`<data_dir>/known_certs`) — the certificate parallel to [`known_hosts`].
+/// (`<data_dir>/known_certs`) - the certificate parallel to [`known_hosts`].
 fn known_certs() -> PathBuf {
     match directories::ProjectDirs::from("dev", "nyx", "Nyx") {
         Some(dirs) => dirs.data_dir().join("known_certs"),
@@ -141,7 +141,7 @@ pub struct SearchHit {
 pub enum Command {
     /// Connect to `profile`, authenticating with `secret`.
     ///
-    /// `secret` is the password or — for key auth — the key passphrase (empty for
+    /// `secret` is the password or - for key auth - the key passphrase (empty for
     /// an unencrypted key); the method itself comes from `profile.auth`. It is
     /// wrapped in [`Secret`] so it can never reach a log.
     Connect {
@@ -319,7 +319,7 @@ pub enum Event {
         token: u64,
         /// The matches in this batch (may be empty on the terminal batch).
         hits: Vec<SearchHit>,
-        /// `true` on the final batch — the walk has finished (or was capped).
+        /// `true` on the final batch - the walk has finished (or was capped).
         done: bool,
         /// `true` when the result cap stopped the walk before the tree was
         /// exhausted, so the UI can say results are partial.
@@ -543,7 +543,7 @@ pub fn spawn() -> (ServiceHandle, FuturesReceiver<Event>) {
     // the progress sampler, already coalesced to one `TransferProgress` per running
     // transfer per `PROGRESS_TICK` (≤ the concurrency cap, so a small constant
     // rate). Every other event is one-per-user-action or one-per-transfer-terminal
-    // — naturally bounded by what the user did. So the queue can only grow if the
+    // - naturally bounded by what the user did. So the queue can only grow if the
     // GPUI foreground executor stops draining entirely, which means the UI is
     // already wedged (a fatal condition, not backpressure to manage). Bounding here
     // would buy nothing but a risk of dropping a consequential terminal event.
@@ -579,15 +579,15 @@ fn run(commands: TokioReceiver<Command>, events: FuturesSender<Event>) {
 /// Whether a connect-like task is a live connect or a throwaway test probe.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TaskKind {
-    /// A live `Connect` — its session is kept on success.
+    /// A live `Connect` - its session is kept on success.
     Connect,
-    /// A `TestConnection` probe — the client is dropped after reporting.
+    /// A `TestConnection` probe - the client is dropped after reporting.
     Test,
 }
 
 /// The result of a connect-like task, handed back to the dispatcher.
 enum TaskOutcome {
-    /// A live connect succeeded — the dispatcher takes ownership of the session.
+    /// A live connect succeeded - the dispatcher takes ownership of the session.
     Connected {
         profile_id: String,
         /// The connected protocol, so the dispatcher can size the transfer
@@ -650,7 +650,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
     // Bumped on every successful connect. Each spawned copy task carries the
     // generation it ran under, so a straggler that only notices a drop *after* a
     // reconnect already succeeded can't be mistaken for a fresh loss of the new,
-    // healthy session — it's resumed instead of flipping the session again.
+    // healthy session - it's resumed instead of flipping the session again.
     let mut generation: u64 = 0;
 
     // The in-flight tree search, if any: its cancel flag (stops the client walk
@@ -679,7 +679,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                         // A manual connect supersedes any backoff loop. A manual
                         // *reconnect* (same profile) keeps interrupted transfers so
                         // they resume on `Connected`; connecting to a *different*
-                        // profile cancels them — they belong to the old session.
+                        // profile cancels them - they belong to the old session.
                         reconnector.abort();
                         let same_profile = reconnector
                             .creds
@@ -878,7 +878,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                         }
                     }
                     // Transfers go through the queue: submit → announce → try to
-                    // start (subject to the cap). The dock row is the feedback —
+                    // start (subject to the cap). The dock row is the feedback -
                     // no `FileOpDone` toast for transfers.
                     Command::Download { remote, local, is_dir } => {
                         submit_transfer(
@@ -935,7 +935,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                         try_start(&mut queue, &client, &events, &xfer_done_tx, generation);
                     }
                     Command::CancelReconnect => {
-                        // Stop the backoff loop but keep the session credentials —
+                        // Stop the backoff loop but keep the session credentials -
                         // a later manual reconnect re-seeds them anyway.
                         reconnector.abort();
                     }
@@ -949,7 +949,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                         // Cancel everything: flag the running transfers (their
                         // tasks wind down and report Cancelled via `xfer_done`)
                         // and drain the queued ones (no task ran, so emit their
-                        // terminal Cancelled here) — then drop the session.
+                        // terminal Cancelled here) - then drop the session.
                         for id in queue.cancel_all() {
                             last_bytes.remove(&id);
                             let _ = events.unbounded_send(Event::TransferDone {
@@ -1014,7 +1014,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                 match outcome {
                     // The pre-flight gate found an existing destination: park the
                     // item and ask the UI. If there is no UI to answer (the event
-                    // channel is closed), default to Skip — never silent overwrite.
+                    // channel is closed), default to Skip - never silent overwrite.
                     TransferOutcome::Collision { existing_size } => {
                         if let Some(spec) = queue.park(id) {
                             let sent = events
@@ -1043,7 +1043,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                         }
                         if gen == generation {
                             // First sign of loss for the *current* session (a sibling
-                            // may have flipped it already — note_connection_lost is
+                            // may have flipped it already - note_connection_lost is
                             // idempotent). Flips the session, interrupts the pending
                             // transfers and starts the backoff loop.
                             note_connection_lost(
@@ -1053,7 +1053,7 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                             );
                         } else if client.is_some() {
                             // A straggler from an already-replaced session noticing
-                            // the *old* drop after we reconnected — don't flip the
+                            // the *old* drop after we reconnected - don't flip the
                             // healthy session; re-admit it so the trailing try_start
                             // resumes it on the new one.
                             queue.readmit_interrupted();
@@ -1196,7 +1196,7 @@ fn submit_transfer(
 /// Promote and spawn as many queued transfers as the cap allows.
 ///
 /// A missing session is a guard, not an error: queued transfers only exist while
-/// connected (the senders check), and `Disconnect` drains the queue — so this is
+/// connected (the senders check), and `Disconnect` drains the queue - so this is
 /// just belt-and-braces against promoting a transfer with no session to run it.
 fn try_start(
     queue: &mut TransferQueue,
@@ -1246,7 +1246,7 @@ fn spawn_transfer(
 }
 
 /// Copy a single file: capture the source fingerprint, decide the resume offset,
-/// announce the start, run the protocol copy, and classify the outcome — a
+/// announce the start, run the protocol copy, and classify the outcome - a
 /// transport death keeps the partial for a resume; any other error cleans it up.
 async fn copy_file(
     client: &dyn RemoteClient,
@@ -1263,13 +1263,13 @@ async fn copy_file(
     // Atomic destination: bytes are written to a sibling temp (`<name>.nyxpart`),
     // and the final path only ever appears via the atomic rename on success. A
     // cancelled/failed copy removes the temp; an interrupted one keeps it for the
-    // resume — so the final path is never a half-written file masquerading as
+    // resume - so the final path is never a half-written file masquerading as
     // complete, and a cancelled *overwrite* leaves the original intact.
     let tmp_local = local_part_path(&spec.local);
     let tmp_remote = remote_part_path(&spec.remote);
 
     // The effective offset is the **temp partial's actual on-disk size**, not the
-    // watermark — the watermark can run ahead of durably-written bytes (an upload's
+    // watermark - the watermark can run ahead of durably-written bytes (an upload's
     // SFTP writes ack lazily), and resuming past the real EOF would leave a gap.
     // Only resume when the client can, the source is verifiably unchanged, and the
     // partial fits within it; otherwise restart from zero.
@@ -1369,7 +1369,7 @@ async fn capture_source_meta(
     }
 }
 
-/// The current size of a copy's **temp partial** — the local temp for a
+/// The current size of a copy's **temp partial** - the local temp for a
 /// download, the remote temp for an upload. This is the source of truth for the
 /// resume offset (the watermark can run ahead of durably-written bytes), and the
 /// partial lives at the temp path, not the final one.
@@ -1388,8 +1388,8 @@ async fn partial_temp_size(
 /// The byte offset a file copy should actually start from: the destination's
 /// real `dest_size`, but only when this is a resume (`resume_from > 0`), the
 /// client supports it, the source is verifiably unchanged (same size + mtime),
-/// and the partial fits within the source. On any doubt — a changed source, a
-/// missing mtime, an unverifiable fingerprint, an oversized partial — restart
+/// and the partial fits within the source. On any doubt - a changed source, a
+/// missing mtime, an unverifiable fingerprint, an oversized partial - restart
 /// from `0` rather than splice bytes blind. Silent corruption is worse than a
 /// re-transfer.
 fn resume_offset(
@@ -1413,7 +1413,7 @@ fn resume_offset(
 
 /// Whether a failed file copy was a transport loss (→ resumable) rather than a
 /// genuine error (→ terminal). An error already typed [`NyxError::ConnectionLost`]
-/// is decisive; otherwise probe the session with a cheap stat — if that itself
+/// is decisive; otherwise probe the session with a cheap stat - if that itself
 /// reports the connection gone, the copy died with it.
 async fn is_transport_lost(client: &dyn RemoteClient, remote: &RemotePath, err: &NyxError) -> bool {
     if matches!(err, NyxError::ConnectionLost(_)) {
@@ -1436,7 +1436,7 @@ async fn is_transport_lost(client: &dyn RemoteClient, remote: &RemotePath, err: 
 /// a failed/unreadable file is **skipped and tallied** (one bad file never aborts
 /// the folder), symlinks are skipped during the walk, and empty directories are
 /// created. Each file rides the atomic temp-then-rename, so the tree never holds a
-/// half-written file — only a subset of complete ones. Cancellation is checked
+/// half-written file - only a subset of complete ones. Cancellation is checked
 /// between items; a cancelled folder keeps the complete files it copied (we never
 /// delete a merge destination), pruning only a root we created and left empty.
 async fn copy_dir(
@@ -1458,7 +1458,7 @@ async fn copy_dir(
 
     // Create the destination root, remembering whether it pre-existed: a root we
     // created (no merge) is safe to prune back if the transfer is cancelled before
-    // any file lands; a pre-existing merge target is the user's data — never touch.
+    // any file lands; a pre-existing merge target is the user's data - never touch.
     let created_root = match make_root(client, spec).await {
         Ok(created) => created,
         Err(err) => return TransferOutcome::Failed(err.to_string()),
@@ -1503,7 +1503,7 @@ async fn copy_dir(
     TransferOutcome::Completed { message, report }
 }
 
-/// Append `issue` to the retained list only while it is under the cap — full
+/// Append `issue` to the retained list only while it is under the cap - full
 /// counts stay exact, but a folder with thousands of bad entries never ships a
 /// thousands-long report. The dropped tail is surfaced via
 /// [`TransferReport::truncated`].
@@ -1514,7 +1514,7 @@ fn push_capped(issues: &mut Vec<EntryIssue>, issue: EntryIssue) {
     }
 }
 
-/// Enumerate a directory transfer's work items + totals — a remote walk for a
+/// Enumerate a directory transfer's work items + totals - a remote walk for a
 /// download, a local-filesystem walk for an upload.
 async fn enumerate_dir(
     client: &dyn RemoteClient,
@@ -1527,7 +1527,7 @@ async fn enumerate_dir(
 }
 
 /// Create the destination root of a directory transfer (idempotent: an existing
-/// root is fine — that is the merge case). Returns `true` when the root did **not**
+/// root is fine - that is the merge case). Returns `true` when the root did **not**
 /// pre-exist (we created it), so a later cancel can safely prune it.
 async fn make_root(client: &dyn RemoteClient, spec: &TransferSpec) -> Result<bool, NyxError> {
     match spec.direction {
@@ -1548,7 +1548,7 @@ async fn make_root(client: &dyn RemoteClient, spec: &TransferSpec) -> Result<boo
 
 /// Copy one walk item to its mirrored destination under the transfer's root. File
 /// items go through the atomic temp-then-rename so the tree never holds a
-/// half-written file — only a subset of complete ones. A folder transfer is a
+/// half-written file - only a subset of complete ones. A folder transfer is a
 /// sanctioned merge, so an item may overwrite an existing file in the tree.
 async fn copy_walk_item(
     client: &dyn RemoteClient,
@@ -1557,7 +1557,7 @@ async fn copy_walk_item(
     progress: &nyx_core::TransferProgress,
 ) -> Result<(), NyxError> {
     // Defense in depth: the walker already rejects unsafe names, but never let a
-    // server-derived component reach a local `push` without re-checking — a `..`
+    // server-derived component reach a local `push` without re-checking - a `..`
     // or absolute segment must not escape the download destination.
     if spec.direction == TransferDirection::Download
         && !item.rel.iter().all(|seg| is_safe_local_segment(seg))
@@ -1573,7 +1573,7 @@ async fn copy_walk_item(
         (TransferDirection::Download, true) => tokio::fs::create_dir_all(&local)
             .await
             .map_err(|e| NyxError::Io(e.to_string())),
-        // Directory transfers don't resume per-item yet — always copy from 0.
+        // Directory transfers don't resume per-item yet - always copy from 0.
         (TransferDirection::Download, false) => {
             atomic_download_file(client, &remote, &local, progress).await
         }
@@ -1653,7 +1653,7 @@ fn join_local(root: &std::path::Path, rel: &[String]) -> PathBuf {
 
 /// Walk a local directory tree on the service thread, mirroring the remote
 /// [`RemoteClient::walk_dir`]: pre-order, symlinks (and non-utf8 / special
-/// entries) skipped and tallied, file sizes summed. No async recursion — an
+/// entries) skipped and tallied, file sizes summed. No async recursion - an
 /// explicit stack of directories to visit.
 async fn local_walk(root: &std::path::Path) -> Result<DirWalk, NyxError> {
     let mut walk = DirWalk::default();
@@ -1669,7 +1669,7 @@ async fn local_walk(root: &std::path::Path) -> Result<DirWalk, NyxError> {
         {
             let raw_name = entry.file_name();
             let Some(name) = raw_name.to_str() else {
-                // Non-UTF-8 names are not representable remotely — skip, but still
+                // Non-UTF-8 names are not representable remotely - skip, but still
                 // surface a (lossy) path so the report names the offending entry.
                 let mut shown = rel.clone();
                 shown.push(raw_name.to_string_lossy().into_owned());
@@ -1727,11 +1727,11 @@ async fn local_walk(root: &std::path::Path) -> Result<DirWalk, NyxError> {
 ///   (the dispatcher parks the item and prompts);
 /// - it exists and the policy is `Skip`/`Cancel` → the matching terminal.
 ///
-/// Returns `None` to proceed with the copy — either no collision, or the policy
+/// Returns `None` to proceed with the copy - either no collision, or the policy
 /// is `Overwrite`.
 ///
 /// A stat **error** (permission denied, transient I/O) is treated as *possibly
-/// present*, not *absent* — so an unreadable destination prompts the user (or
+/// present*, not *absent* - so an unreadable destination prompts the user (or
 /// honors a `Skip`) instead of being silently overwritten. Only a definite
 /// `Ok(false)` skips the gate. A genuine `Overwrite` still proceeds regardless,
 /// since the user already sanctioned replacing whatever is there.
@@ -1765,7 +1765,7 @@ async fn collision_gate(client: &dyn RemoteClient, spec: &TransferSpec) -> Optio
 
 /// How the collision gate reads a destination-existence probe. Only a definite
 /// `Ok(false)` (the destination is absent) skips the gate; an error is treated as
-/// *possibly present* so an unreadable destination is never silently overwritten —
+/// *possibly present* so an unreadable destination is never silently overwritten -
 /// it prompts (or honors `Skip`) instead. Pinned by a test so a future "simplify
 /// to `unwrap_or(false)`" can't quietly reintroduce the blind-overwrite footgun.
 fn treat_as_present<E>(probe: std::result::Result<bool, E>) -> bool {
@@ -1788,7 +1788,7 @@ fn local_part_path(local: &Path) -> PathBuf {
     local.with_file_name(name)
 }
 
-/// Sibling temp path for an atomic remote write — the remote mirror of
+/// Sibling temp path for an atomic remote write - the remote mirror of
 /// [`local_part_path`].
 fn remote_part_path(remote: &RemotePath) -> RemotePath {
     match (remote.parent(), remote.file_name()) {
@@ -1813,7 +1813,7 @@ async fn commit_local(tmp: &Path, final_path: &Path) -> Result<(), NyxError> {
 }
 
 /// Promote a remote temp into its final path. SFTP/FTP `rename` is the atomic
-/// case, but some servers refuse to rename onto an existing path — so when (and
+/// case, but some servers refuse to rename onto an existing path - so when (and
 /// only when) overwriting was sanctioned and the final exists, remove it and
 /// retry. Never a blind delete of a destination the user didn't choose to replace.
 async fn commit_remote(
@@ -1838,7 +1838,7 @@ async fn commit_remote(
 /// Best-effort removal of a cancelled/failed file transfer's temp partial: the
 /// local temp for a download, the remote temp for an upload. The final path was
 /// never touched (only a successful rename creates it), so there is nothing else
-/// to clean. Errors are logged at `debug` — the terminal `TransferDone` tells the
+/// to clean. Errors are logged at `debug` - the terminal `TransferDone` tells the
 /// real story.
 async fn cleanup_file_temp(
     client: &dyn RemoteClient,
@@ -1897,7 +1897,7 @@ async fn prune_created_root(client: &dyn RemoteClient, spec: &TransferSpec, crea
     }
 }
 
-/// Whether a local tree holds only (empty-of-files) directories — `None` on any
+/// Whether a local tree holds only (empty-of-files) directories - `None` on any
 /// read error, so the caller leaves the tree alone when it can't be sure.
 async fn local_tree_fileless(root: &Path) -> Option<bool> {
     let walk = local_walk(root).await.ok()?;
@@ -1935,7 +1935,7 @@ fn abort_search(current: &mut Option<(Arc<AtomicBool>, tokio::task::JoinHandle<(
 }
 
 /// Run a tree search: try to offload it to the server (`find` over SSH `exec`),
-/// and fall back to the client-side walk when the protocol/server can't — FTP, a
+/// and fall back to the client-side walk when the protocol/server can't - FTP, a
 /// jailed sftp-only server, or a query with `size:`/`modified:` terms `find`
 /// can't express here.
 async fn run_tree_search(
@@ -1961,7 +1961,7 @@ async fn run_tree_search(
 }
 
 /// Stream server-`find` matches to the UI. The paths carry no metadata, so each
-/// entry is synthesized — kind from a `-type` predicate when present (else file),
+/// entry is synthesized - kind from a `-type` predicate when present (else file),
 /// size/mtime unknown (the UI renders those as "—").
 fn emit_find_results(
     events: &FuturesSender<Event>,
@@ -2016,7 +2016,7 @@ fn emit_find_results(
 
 /// Breadth-first walk of `root`, streaming matched entries back in batches.
 ///
-/// Up to [`SEARCH_CONCURRENCY`] directory listings run **in flight at once** —
+/// Up to [`SEARCH_CONCURRENCY`] directory listings run **in flight at once** -
 /// the dominant cost of a deep search is sequential round-trips, and SFTP
 /// multiplexes requests over its one connection, so concurrency is the big win.
 /// Bounded by [`SEARCH_MAX_DEPTH`] (also the symlink-loop backstop) and
@@ -2024,7 +2024,7 @@ fn emit_find_results(
 /// vanished path) is skipped, not fatal. A completed directory's matches are
 /// flushed right away so results appear as they're found, not only at the end.
 /// The walk checks `cancel` each turn and bails when a newer search supersedes
-/// it — the UI ignores that token anyway, so no terminal batch is owed.
+/// it - the UI ignores that token anyway, so no terminal batch is owed.
 async fn run_search(
     client: &(impl DirLister + ?Sized),
     root: RemotePath,
@@ -2152,7 +2152,7 @@ fn report_op_error(
 /// transfers (queued/parked) into the resumable interrupted state, and kick off
 /// an auto-reconnect backoff loop (a no-op when the setting is off or no
 /// credentials are cached). In-flight transfers interrupt themselves as their
-/// copy tasks notice the drop. The `client.take()` guard makes this idempotent —
+/// copy tasks notice the drop. The `client.take()` guard makes this idempotent -
 /// a later op that also sees a transport error finds no client and is a no-op.
 fn note_connection_lost(
     client: &mut Option<Arc<dyn RemoteClient>>,
@@ -2277,7 +2277,7 @@ async fn run_task(
 
 /// Credentials cached for a live session's lifetime so an automatic reconnect
 /// needs no UI round-trip per attempt. Held only while the session is alive and
-/// dropped — zeroizing the [`Secret`] — on disconnect or when reconnect gives up.
+/// dropped - zeroizing the [`Secret`] - on disconnect or when reconnect gives up.
 struct SessionCreds {
     profile: Profile,
     secret: Secret,
@@ -2327,7 +2327,7 @@ impl Reconnector {
         self.creds = None;
     }
 
-    /// Start a backoff reconnect loop for the lost session — but only when
+    /// Start a backoff reconnect loop for the lost session - but only when
     /// auto-reconnect is enabled and credentials are cached. A no-op otherwise,
     /// leaving the session lost for a manual reconnect.
     fn start(&mut self, events: &FuturesSender<Event>) {
@@ -2352,8 +2352,8 @@ impl Reconnector {
 /// Drive the auto-reconnect backoff loop for a lost session.
 ///
 /// Each attempt emits [`Event::Reconnecting`], waits the backoff delay, then dials
-/// the profile. A success hands the live session back via [`TaskOutcome::Connected`]
-/// — the same path a manual connect uses. A *transport* failure is retried; an
+/// the profile. A success hands the live session back via [`TaskOutcome::Connected`],
+/// the same path a manual connect uses. A *transport* failure is retried; an
 /// auth / host-key / locked-key failure is terminal (retrying bad credentials is
 /// pointless and can lock accounts). Exhausting the attempts ends in
 /// [`TaskOutcome::ReconnectFailed`].
@@ -2423,7 +2423,7 @@ async fn run_reconnect(
 
 /// Whether a failed connect attempt is worth retrying: a transport / network
 /// failure (the server may still be down) is, but an auth, host-key or locked-key
-/// rejection is not — see [`run_reconnect`].
+/// rejection is not - see [`run_reconnect`].
 fn is_transient_connect_error(err: &NyxError) -> bool {
     matches!(
         err,
@@ -2442,7 +2442,7 @@ fn backoff_delay(attempt: u32) -> Duration {
     Duration::from_millis(base_ms + jitter_ms(base_ms / 2))
 }
 
-/// A cheap, non-cryptographic jitter in `0..max_ms`, seeded from the wall clock —
+/// A cheap, non-cryptographic jitter in `0..max_ms`, seeded from the wall clock -
 /// used only to desynchronize backoff, so randomness quality is irrelevant.
 fn jitter_ms(max_ms: u64) -> u64 {
     if max_ms == 0 {
@@ -2558,7 +2558,7 @@ fn connect_error_outcome(kind: TaskKind, profile_id: String, err: NyxError) -> T
 
 /// The service-side trust prompt: surface a [`Event::HostKeyPrompt`] to the UI
 /// and await the user's [`Command::HostKeyDecision`]. Serves both SSH host keys
-/// (SFTP) and TLS certificates (FTPS) — the single decision slot is safe because
+/// (SFTP) and TLS certificates (FTPS) - the single decision slot is safe because
 /// the single-flight guard allows only one connect-like op at a time.
 mod host_key {
     use super::*;
@@ -2702,7 +2702,7 @@ mod tests {
     #[test]
     fn part_paths_are_siblings_keeping_the_full_name() {
         // The temp sits in the same directory (same volume → atomic rename) and
-        // appends — never replaces — the extension, so `foo.txt` stays distinct
+        // appends - never replaces - the extension, so `foo.txt` stays distinct
         // from a sibling `foo.tar`.
         assert_eq!(
             local_part_path(Path::new("/home/u/foo.txt")),
@@ -2845,7 +2845,7 @@ mod tests {
     use nyx_core::Permissions;
 
     /// In-memory directory tree for [`run_search`] tests. A path absent from the
-    /// map lists as an error — modeling an unreadable (skipped) directory.
+    /// map lists as an error - modeling an unreadable (skipped) directory.
     struct FakeTree {
         dirs: HashMap<String, Vec<RemoteEntry>>,
     }

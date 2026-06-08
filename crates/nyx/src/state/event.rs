@@ -269,7 +269,7 @@ impl AppState {
                     }
                 }
                 if let Some(note) = completed_note {
-                    self.push_toast(format!("Folder finished — {note}"), ToastVariant::Info, cx);
+                    self.push_toast(format!("Folder finished - {note}"), ToastVariant::Info, cx);
                 }
                 if refresh {
                     self.reload_listing(cx);
@@ -296,7 +296,7 @@ impl AppState {
                 self.host_key_prompt = None;
                 self.listing_loading = false;
                 self.push_toast(message.clone(), ToastVariant::Error, cx);
-                // A stored password that fails auth is likely stale — re-open the
+                // A stored password that fails auth is likely stale - re-open the
                 // prompt so the user can correct (and overwrite) it.
                 if message.contains("authentication failed") {
                     if let Some(id) = stale {
@@ -305,7 +305,7 @@ impl AppState {
                             self.show_password_prompt(profile, cx);
                         }
                     }
-                // An encrypted key with no/wrong passphrase — prompt for it.
+                // An encrypted key with no/wrong passphrase - prompt for it.
                 } else if message.contains("key requires a passphrase") {
                     if let Some(id) = connecting {
                         if let Some(conn) = self.connections.iter().find(|c| c.profile.id == id) {

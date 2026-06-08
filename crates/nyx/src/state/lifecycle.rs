@@ -5,7 +5,7 @@ use super::*;
 impl AppState {
     /// Build the initial state: welcome screen, connections loaded, nothing open.
     pub fn new(cx: &mut Context<Self>) -> Self {
-        // Not in the Tab ring — reachable via cmd-f, and keeping it out lets a
+        // Not in the Tab ring - reachable via cmd-f, and keeping it out lets a
         // modal trap focus among its own fields/buttons.
         let filter = cx.new(|cx| {
             TextInput::new(cx)
@@ -19,7 +19,7 @@ impl AppState {
         .detach();
         // Esc/Enter in the filter hand focus back to the file table (it's out of
         // the Tab ring, so this is the only keyboard way out). The filter text is
-        // left intact — Esc exits the field, it doesn't clear the filter.
+        // left intact - Esc exits the field, it doesn't clear the filter.
         cx.subscribe(&filter, |this, _input, _event: &TextInputEvent, cx| {
             this.arm_focus(this.browser_focus.clone());
             cx.notify();

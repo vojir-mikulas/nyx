@@ -4,7 +4,7 @@
 //! live in their own `settings.toml` next to `profiles.toml`. Like
 //! [`ProfileColor`](crate::ProfileColor), the values are stored as
 //! provider-agnostic primitives (a theme *name*, a density *index*) and mapped
-//! to concrete UI types in the app — `nyx-profile` stays UI-free.
+//! to concrete UI types in the app - `nyx-profile` stays UI-free.
 //!
 //! Unlike the profile store, a missing **or malformed** file falls back to
 //! [`Settings::default`]: preferences are convenience, not user data, so a bad

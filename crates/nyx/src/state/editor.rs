@@ -294,7 +294,7 @@ impl AppState {
             self.push_toast(err.to_string(), ToastVariant::Error, cx);
             return;
         }
-        // Persist the secret by method. Anonymous has none — clear any entry left
+        // Persist the secret by method. Anonymous has none - clear any entry left
         // from a prior password/key config so switching modes strands nothing.
         // Blank keeps whatever is already stored (the field shows "leave blank").
         if auth_is_anonymous {
@@ -345,7 +345,7 @@ impl AppState {
         .detach();
     }
 
-    /// Best-effort, idempotent removal of a profile's keychain secrets — both the
+    /// Best-effort, idempotent removal of a profile's keychain secrets - both the
     /// password and the key-passphrase entries (a profile may have written either).
     pub(super) fn keyring_clear_async(&self, id: String, cx: &mut Context<Self>) {
         let keyring = self.keyring;

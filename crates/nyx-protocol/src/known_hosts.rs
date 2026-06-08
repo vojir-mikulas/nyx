@@ -1,12 +1,12 @@
 //! App-managed `known_hosts` store for trust-on-first-use host-key verification.
 //!
-//! This is intentionally *not* OpenSSH `known_hosts` compatible — V1 only needs a
+//! This is intentionally *not* OpenSSH `known_hosts` compatible - V1 only needs a
 //! simple, human-inspectable record of "this host presented this fingerprint".
 //! Each line is `host fingerprint` (the SHA-256 fingerprint russh exposes, e.g.
 //! `SHA256:…`). The file lives under the app's data dir; the path is supplied by
 //! the caller (the service wires the per-OS location).
 //!
-//! Nothing here is a secret — a host fingerprint is public — so this lives in the
+//! Nothing here is a secret - a host fingerprint is public - so this lives in the
 //! protocol layer, never the keyring.
 
 use std::fs::{self, OpenOptions};
@@ -16,11 +16,11 @@ use std::path::PathBuf;
 /// The result of checking a presented fingerprint against the store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KnownHostStatus {
-    /// The host is recorded and the fingerprint matches — trust it.
+    /// The host is recorded and the fingerprint matches - trust it.
     Match,
-    /// The host is not recorded — prompt the user (trust-on-first-use).
+    /// The host is not recorded - prompt the user (trust-on-first-use).
     Unknown,
-    /// The host is recorded but the fingerprint differs — never auto-trust.
+    /// The host is recorded but the fingerprint differs - never auto-trust.
     Mismatch,
 }
 
@@ -93,7 +93,7 @@ impl KnownHosts {
 }
 
 /// Best-effort tighten `path` to owner-only on Unix; a no-op elsewhere. A failure
-/// is non-fatal — never block recording a trusted host on a perms quirk.
+/// is non-fatal - never block recording a trusted host on a perms quirk.
 #[cfg(unix)]
 fn restrict_to_owner(path: &std::path::Path, mode: u32) {
     use std::os::unix::fs::PermissionsExt;

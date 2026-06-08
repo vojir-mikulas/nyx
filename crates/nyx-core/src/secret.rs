@@ -1,8 +1,8 @@
 //! The one wrapper every credential travels in.
 //!
 //! Passwords, SSH key passphrases and (later) host keys are carried as [`Secret`]
-//! so the surrounding code — `Command`'s derived `Debug`, a stray `format!`, a
-//! `tracing` field — can only ever see `***`. The plaintext is reachable solely
+//! so the surrounding code - `Command`'s derived `Debug`, a stray `format!`, a
+//! `tracing` field - can only ever see `***`. The plaintext is reachable solely
 //! through [`Secret::expose`], the single audited escape hatch, called at the
 //! auth boundary and nowhere else.
 
@@ -13,7 +13,7 @@ use zeroize::ZeroizeOnDrop;
 /// A secret value that never reveals itself in `Debug`, `Display` or logs.
 ///
 /// The inner string is reachable only via [`Secret::expose`]. There is
-/// deliberately no `AsRef<str>`, `Deref` or `Into<String>` — those would make
+/// deliberately no `AsRef<str>`, `Deref` or `Into<String>` - those would make
 /// leaking the value ergonomic. The buffer is zeroed on drop as
 /// defense-in-depth (redaction is the guarantee; zeroization is the backstop).
 #[derive(Clone, ZeroizeOnDrop)]

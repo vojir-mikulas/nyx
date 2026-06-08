@@ -51,10 +51,10 @@ pub struct WalkItem {
 pub struct DirWalk {
     /// Items in parent-before-child order (directories before their contents).
     pub items: Vec<WalkItem>,
-    /// Sum of all file sizes — the transfer's `total`.
+    /// Sum of all file sizes - the transfer's `total`.
     pub total_bytes: u64,
-    /// Entries skipped during the walk — symlinks, special files and (locally)
-    /// non-UTF-8 names — each carrying *why*, so the terminal report lists the
+    /// Entries skipped during the walk - symlinks, special files and (locally)
+    /// non-UTF-8 names - each carrying *why*, so the terminal report lists the
     /// path and reason rather than a bare count. We don't follow links in v1.
     pub skips: Vec<EntryIssue>,
 }
@@ -70,7 +70,7 @@ pub trait RemoteClient: Send + Sync {
     async fn connect(&mut self) -> Result<()>;
 
     /// The connection's default landing directory (the user's home), as an
-    /// absolute path — used as the starting directory when a profile has no
+    /// absolute path - used as the starting directory when a profile has no
     /// explicit remote path, so the user lands somewhere writable rather than at
     /// the filesystem root.
     async fn default_dir(&self) -> Result<RemotePath>;
@@ -78,7 +78,7 @@ pub trait RemoteClient: Send + Sync {
     /// List the entries of a remote directory.
     ///
     /// Symlinks are reported *as* links ([`EntryKind::Symlink`], lstat-style),
-    /// never silently resolved to their target — [`target_kind`] follows a link
+    /// never silently resolved to their target - [`target_kind`] follows a link
     /// on demand.
     ///
     /// [`target_kind`]: RemoteClient::target_kind
@@ -86,13 +86,13 @@ pub trait RemoteClient: Send + Sync {
 
     /// Recursively walk the remote directory tree rooted at `root`, yielding work
     /// items relative to it in parent-before-child order (see [`DirWalk`]). The
-    /// root itself is not emitted — the caller creates the destination root. Used
+    /// root itself is not emitted - the caller creates the destination root. Used
     /// to plan a recursive download before any bytes move.
     async fn walk_dir(&self, root: &RemotePath) -> Result<DirWalk>;
 
     /// Offload a recursive search to the server, when the protocol can (SSH `exec`
     /// running `find`). Returns the matched absolute paths (capped at `limit`), or
-    /// `Ok(None)` when it can't — no exec, no `find`, or a non-SSH protocol — so
+    /// `Ok(None)` when it can't - no exec, no `find`, or a non-SSH protocol - so
     /// the caller falls back to a client-side walk. `predicates` are the
     /// find-expressible part of the query, AND-combined.
     ///
@@ -111,7 +111,7 @@ pub trait RemoteClient: Send + Sync {
     /// Follow `path` (resolving a symlink) and report the *target's* kind.
     ///
     /// Used to decide, on click, whether a directory symlink should be navigated
-    /// into or treated as a file. One extra round-trip, paid only on activation —
+    /// into or treated as a file. One extra round-trip, paid only on activation -
     /// listing stays lstat-cheap. A broken link (missing target) is an error.
     async fn target_kind(&self, path: &RemotePath) -> Result<EntryKind>;
 
@@ -121,7 +121,7 @@ pub trait RemoteClient: Send + Sync {
     async fn exists(&self, path: &RemotePath) -> Result<bool>;
 
     /// Best-effort size of a remote file, for showing a transfer's total up
-    /// front. `None` if the size can't be determined — the transfer still runs,
+    /// front. `None` if the size can't be determined - the transfer still runs,
     /// just without a `%`/total. Defaults to `None` for protocols that can't
     /// cheaply stat a file.
     async fn remote_size(&self, path: &RemotePath) -> Option<u64> {
@@ -139,7 +139,7 @@ pub trait RemoteClient: Send + Sync {
 
     /// Best-effort `(size, mtime)` fingerprint of a remote file, used as the
     /// source-unchanged guard for a resumed **download** (the source is remote).
-    /// `None` when it can't be cheaply statted — which forces a safe full restart
+    /// `None` when it can't be cheaply statted - which forces a safe full restart
     /// rather than a blind splice. Defaults to `None`.
     async fn remote_meta(&self, path: &RemotePath) -> Option<SourceMeta> {
         let _ = path;
@@ -150,7 +150,7 @@ pub trait RemoteClient: Send + Sync {
     ///
     /// `offset == 0` truncates/creates the local file and copies from the start;
     /// a non-zero `offset` (only ever passed to a [`supports_resume`] client)
-    /// seeks both ends and appends the remaining bytes — resuming an interrupted
+    /// seeks both ends and appends the remaining bytes - resuming an interrupted
     /// download. `progress` is bumped per chunk and checked between chunks: a
     /// requested cancellation short-circuits with [`nyx_core::NyxError::Cancelled`].
     ///
@@ -167,7 +167,7 @@ pub trait RemoteClient: Send + Sync {
     ///
     /// `offset == 0` truncates/creates the remote file; a non-zero `offset` (only
     /// ever passed to a [`supports_resume`] client) seeks both ends and appends
-    /// the remaining bytes — resuming an interrupted upload. `progress` is bumped
+    /// the remaining bytes - resuming an interrupted upload. `progress` is bumped
     /// per chunk and checked between chunks: a requested cancellation
     /// short-circuits with [`nyx_core::NyxError::Cancelled`].
     ///

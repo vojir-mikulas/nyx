@@ -23,8 +23,8 @@ pub enum TransferDirection {
 
 /// Whether a transfer moves a single file or a whole directory tree.
 ///
-/// A `Dir` transfer is one user intent — one dock row, one cancel, one collision
-/// decision — that the service expands into a recursive walk over the existing
+/// A `Dir` transfer is one user intent - one dock row, one cancel, one collision
+/// decision - that the service expands into a recursive walk over the existing
 /// single-file copy primitives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -95,7 +95,7 @@ pub enum EntryOutcomeKind {
 /// transfer root) and a credential-free reason.
 ///
 /// Reasons come from `io::Error`/[`NyxError`](crate::NyxError) text or the walk's
-/// skip classification — both are filesystem paths and OS error strings, so a
+/// skip classification - both are filesystem paths and OS error strings, so a
 /// secret can never appear here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntryIssue {
@@ -132,7 +132,7 @@ impl EntryIssue {
 ///
 /// `failed`/`skipped` are exact full counts; `issues` is a **capped** retained
 /// list (see [`EntryIssue`]). When `issues.len()` is short of `failed + skipped`
-/// the tail was truncated — [`truncated`](Self::truncated) reports by how many,
+/// the tail was truncated - [`truncated`](Self::truncated) reports by how many,
 /// so the cap is never a silent drop.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransferReport {
@@ -140,7 +140,7 @@ pub struct TransferReport {
     pub failed: u64,
     /// Exact count of entries skipped during enumeration.
     pub skipped: u64,
-    /// The retained per-entry detail, capped — may be shorter than the counts.
+    /// The retained per-entry detail, capped - may be shorter than the counts.
     pub issues: Vec<EntryIssue>,
 }
 
@@ -205,7 +205,7 @@ impl Transfer {
 /// A cheap fingerprint of a transfer's source file, captured when a copy first
 /// starts and re-checked before a resume. If the source changed under us during
 /// the outage (different size or mtime), splicing the remaining bytes onto the
-/// partial destination would corrupt it — so a mismatch forces a full restart
+/// partial destination would corrupt it - so a mismatch forces a full restart
 /// from zero instead. `mtime` is best-effort: a `None` on either side (a server
 /// that doesn't report it, a protocol that can't stat) is treated as "can't
 /// verify", which also forces a restart. Never resume on doubt.
