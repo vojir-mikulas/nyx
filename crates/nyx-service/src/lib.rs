@@ -298,6 +298,11 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
     // `u64` is the session generation the copy ran under (see `generation` below).
     let (xfer_done_tx, mut xfer_done_rx) =
         unbounded_channel::<(TransferId, u64, TransferOutcome)>();
+    // Internal channel: a spawned read/metadata op (ListDir/ResolveSymlink/Mkdir/
+    // Rename) routes a *failure* back to the dispatcher so it can run
+    // `report_op_error` against the session state - in particular flipping the
+    // session to "lost" on a transport death. Successes are emitted by the task.
+    let (op_err_tx, mut op_err_rx) = unbounded_channel::<NyxError>();
 
     // Owns the session credentials cached for auto-reconnect and the backoff loop.
     let mut reconnector = Reconnector::new(register_tx.clone(), done_tx.clone());
@@ -402,23 +407,30 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                     // The result is computed first so the immutable session borrow
                     // ends before a `ConnectionLost` error needs `&mut client`.
                     Command::ListDir { path } => {
-                        let result = match client.as_deref() {
-                            Some(session) => Some(session.list_dir(&path).await),
-                            None => None,
-                        };
-                        match result {
-                            Some(Ok(entries)) => {
-                                let count = entries.len();
-                                debug!(%path, count, "listed directory");
-                                if count >= LARGE_LISTING_WARN {
-                                    warn!(%path, count, "very large directory listing");
-                                }
-                                let _ = events.unbounded_send(Event::DirListing { path, entries });
+                        // Spawned off the loop: a huge listing must not freeze
+                        // progress ticks or cancel handling. The reducer already
+                        // drops a listing for a since-navigated-away directory.
+                        match client.clone() {
+                            Some(session) => {
+                                let events = events.clone();
+                                let op_err_tx = op_err_tx.clone();
+                                tokio::spawn(async move {
+                                    match session.list_dir(&path).await {
+                                        Ok(entries) => {
+                                            let count = entries.len();
+                                            debug!(%path, count, "listed directory");
+                                            if count >= LARGE_LISTING_WARN {
+                                                warn!(%path, count, "very large directory listing");
+                                            }
+                                            let _ = events
+                                                .unbounded_send(Event::DirListing { path, entries });
+                                        }
+                                        Err(err) => {
+                                            let _ = op_err_tx.send(err);
+                                        }
+                                    }
+                                });
                             }
-                            Some(Err(err)) => report_op_error(
-                                err, &mut client, &mut active_profile, &mut queue,
-                                &mut last_bytes, &mut reconnector, &events,
-                            ),
                             None => not_connected(&events),
                         }
                     }
@@ -446,41 +458,48 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                     }
                     Command::CancelSearch => abort_search(&mut current_search),
                     Command::ResolveSymlink { path } => {
-                        let result = match client.as_deref() {
-                            Some(session) => Some(session.target_kind(&path).await),
-                            None => None,
-                        };
-                        match result {
-                            Some(Ok(kind)) => {
-                                let _ = events.unbounded_send(Event::SymlinkResolved {
-                                    path,
-                                    is_dir: kind == EntryKind::Directory,
+                        match client.clone() {
+                            Some(session) => {
+                                let events = events.clone();
+                                let op_err_tx = op_err_tx.clone();
+                                tokio::spawn(async move {
+                                    match session.target_kind(&path).await {
+                                        Ok(kind) => {
+                                            let _ = events.unbounded_send(Event::SymlinkResolved {
+                                                path,
+                                                is_dir: kind == EntryKind::Directory,
+                                            });
+                                        }
+                                        Err(err) => {
+                                            let _ = op_err_tx.send(err);
+                                        }
+                                    }
                                 });
                             }
-                            Some(Err(err)) => report_op_error(
-                                err, &mut client, &mut active_profile, &mut queue,
-                                &mut last_bytes, &mut reconnector, &events,
-                            ),
                             None => not_connected(&events),
                         }
                     }
-                    // Quick metadata ops: one SFTP round-trip, awaited inline.
+                    // Metadata ops: one round-trip each, spawned off the loop so a
+                    // slow server can't stall progress ticks or cancel handling.
                     Command::Mkdir { path } => {
-                        let result = match client.as_deref() {
-                            Some(session) => Some(session.mkdir(&path).await),
-                            None => None,
-                        };
-                        match result {
-                            Some(Ok(())) => {
-                                let _ = events.unbounded_send(Event::FileOpDone {
-                                    op: FileOp::Mkdir,
-                                    message: format!("Created “{}”", base_name(&path)),
+                        match client.clone() {
+                            Some(session) => {
+                                let events = events.clone();
+                                let op_err_tx = op_err_tx.clone();
+                                tokio::spawn(async move {
+                                    match session.mkdir(&path).await {
+                                        Ok(()) => {
+                                            let _ = events.unbounded_send(Event::FileOpDone {
+                                                op: FileOp::Mkdir,
+                                                message: format!("Created “{}”", base_name(&path)),
+                                            });
+                                        }
+                                        Err(err) => {
+                                            let _ = op_err_tx.send(err);
+                                        }
+                                    }
                                 });
                             }
-                            Some(Err(err)) => report_op_error(
-                                err, &mut client, &mut active_profile, &mut queue,
-                                &mut last_bytes, &mut reconnector, &events,
-                            ),
                             None => not_connected(&events),
                         }
                     }
@@ -492,25 +511,26 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                                 message: format!("“{}” has a transfer in progress", base_name(&from)),
                             });
                         } else {
-                            tracing::info!(from = %from.as_str(), to = %to.as_str(), "rename: issuing");
-                            let result = match client.as_deref() {
-                                Some(session) => Some(session.rename(&from, &to).await),
-                                None => None,
-                            };
-                            match result {
-                                Some(Ok(())) => {
-                                    tracing::info!(to = %to.as_str(), "rename: ok");
-                                    let _ = events.unbounded_send(Event::FileOpDone {
-                                        op: FileOp::Rename,
-                                        message: format!("Renamed to “{}”", base_name(&to)),
+                            match client.clone() {
+                                Some(session) => {
+                                    let events = events.clone();
+                                    let op_err_tx = op_err_tx.clone();
+                                    tokio::spawn(async move {
+                                        tracing::info!(from = %from.as_str(), to = %to.as_str(), "rename: issuing");
+                                        match session.rename(&from, &to).await {
+                                            Ok(()) => {
+                                                tracing::info!(to = %to.as_str(), "rename: ok");
+                                                let _ = events.unbounded_send(Event::FileOpDone {
+                                                    op: FileOp::Rename,
+                                                    message: format!("Renamed to “{}”", base_name(&to)),
+                                                });
+                                            }
+                                            Err(err) => {
+                                                tracing::warn!(error = %err, "rename: failed");
+                                                let _ = op_err_tx.send(err);
+                                            }
+                                        }
                                     });
-                                }
-                                Some(Err(err)) => {
-                                    tracing::warn!(error = %err, "rename: failed");
-                                    report_op_error(
-                                        err, &mut client, &mut active_profile, &mut queue,
-                                        &mut last_bytes, &mut reconnector, &events,
-                                    )
                                 }
                                 None => not_connected(&events),
                             }
@@ -764,6 +784,14 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
                 }
                 // Backfill any freed slot (a parked item frees its slot too).
                 try_start(&mut queue, &client, &events, &xfer_done_tx, generation);
+            }
+            Some(err) = op_err_rx.recv() => {
+                // A spawned read/metadata op failed: handle it with the session
+                // state (flip to "lost" on a transport death, else just toast).
+                report_op_error(
+                    err, &mut client, &mut active_profile, &mut queue,
+                    &mut last_bytes, &mut reconnector, &events,
+                );
             }
             _ = progress_tick.tick() => {
                 // Sample every running transfer's byte counter and emit a
