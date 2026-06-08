@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! The semantic theme layer: the [`Theme`] token set as a GPUI [`Global`], plus
 //! the [`ActiveTheme`] accessor. Tokens are semantic and generic (`bg_panel`,
 //! `accent`) - never app-specific. Concrete values live in `tokens.rs`.

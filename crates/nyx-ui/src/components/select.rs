@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! A single-select dropdown. Stateless: the caller owns both the selected index
 //! and the open flag, reacting via [`on_toggle`](Select::on_toggle) and
 //! [`on_select`](Select::on_select). The list is deferred+anchored so it floats

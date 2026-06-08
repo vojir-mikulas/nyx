@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! `Toast` - a single notification pill. Stacking, positioning and auto-dismiss
 //! are the caller's concern; this is just the visual.
 

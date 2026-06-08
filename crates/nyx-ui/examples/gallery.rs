@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! The component gallery - `nyx-ui`'s "storybook".
 //!
 //! Run with `cargo run -p nyx-ui --example gallery`. It installs a theme global

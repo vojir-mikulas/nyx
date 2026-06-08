@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! `Button` - the reference component for the variant API. Stateless
 //! [`RenderOnce`]; an id is required so the click handler can be attached.
 

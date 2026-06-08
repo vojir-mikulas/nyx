@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! `nyx-ui` - an in-house GPUI component library and semantic theme layer.
 //!
 //! Hard rule: this crate **must never depend on any `nyx-*` crate** or domain

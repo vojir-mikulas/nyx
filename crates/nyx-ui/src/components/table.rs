@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! `Table` - a virtualized, fixed-row-height data table on GPUI's
 //! [`uniform_list`](gpui::uniform_list). Fully generic and stateless: the caller
 //! declares [`Column`]s + a row renderer and owns selection/sort, which the table

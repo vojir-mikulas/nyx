@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! House components, built on GPUI primitives with a consistent variant API.
 //!
 //! Each component lands in the gallery first (`examples/gallery.rs`), then gets

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! `StyledExt` - the "@apply" layer: theme-aware style recipes that compose
 //! common token combinations, so views read `div().panel(cx)`.
 

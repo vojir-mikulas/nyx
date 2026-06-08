@@ -274,6 +274,11 @@ impl RemoteClient for SftpClient {
                     got_data = true;
                     stdout.extend_from_slice(&data);
                     if stdout.len() > MAX_FIND_OUTPUT {
+                        // Drop the (possibly half-written, mid-UTF-8) trailing path
+                        // so the cap never emits a truncated entry.
+                        if let Some(nl) = stdout.iter().rposition(|&b| b == b'\n') {
+                            stdout.truncate(nl + 1);
+                        }
                         break;
                     }
                 }

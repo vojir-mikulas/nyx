@@ -116,6 +116,9 @@ impl AppState {
         };
         self.selected.clear();
         self.selected.insert(names[next].clone());
+        // Reseed the anchor so a later shift-click extends from the row we landed
+        // on, not a stale one.
+        self.select_anchor = Some(names[next].clone());
     }
 
     /// Select the first (`last == false`) or last row (Home / End).
@@ -126,7 +129,8 @@ impl AppState {
         };
         let target = target.clone();
         self.selected.clear();
-        self.selected.insert(target);
+        self.selected.insert(target.clone());
+        self.select_anchor = Some(target);
     }
 
     /// Select every visible row (`cmd-a` in the file table).

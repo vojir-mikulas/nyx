@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! `Toggle` - a binary on/off switch. Stateless: the caller owns the boolean,
 //! reacting via [`on_change`](Toggle::on_change).
 

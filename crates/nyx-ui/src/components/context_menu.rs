@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! `ContextMenu` - a floating list of actions. Renders only the menu surface;
 //! the caller anchors it (via [`gpui::anchored`] / [`gpui::deferred`]).
 

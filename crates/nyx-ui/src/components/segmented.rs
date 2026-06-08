@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! A single-select segmented control. Stateless: the caller owns the selected
 //! index and is notified of clicks via [`on_select`](Segmented::on_select).
 

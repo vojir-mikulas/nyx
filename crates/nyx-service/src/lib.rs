@@ -320,8 +320,12 @@ async fn dispatch(mut commands: TokioReceiver<Command>, events: FuturesSender<Ev
     let mut current_search: Option<(Arc<AtomicBool>, tokio::task::JoinHandle<()>)> = None;
 
     // The throttle ticker for progress sampling. The first tick fires
-    // immediately; on an idle loop it samples an empty set (cheap no-op).
+    // immediately; on an idle loop it samples an empty set (cheap no-op). Skip
+    // missed ticks (don't burst-catch-up) so a busy loop can't fire several ticks
+    // back-to-back and report spurious speed spikes (speed uses the fixed interval
+    // as its denominator).
     let mut progress_tick = tokio::time::interval(PROGRESS_TICK);
+    progress_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {

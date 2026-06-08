@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! `Badge` - a small colored label chip. Variants are semantic; the fill is the
 //! text color at low opacity, so it tracks the active theme.
 

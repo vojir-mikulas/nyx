@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! `ProgressBar` - a thin determinate (`0.0..=1.0`) / indeterminate (animated
 //! sweep) progress track.
 

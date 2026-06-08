@@ -11,7 +11,9 @@
 //! file should never block startup or get surfaced as an error.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use nyx_core::{NyxError, Result};
 use serde::{Deserialize, Serialize};
@@ -90,8 +92,20 @@ impl FileSettingsStore {
         let serialized =
             toml::to_string_pretty(settings).map_err(|err| NyxError::Other(err.to_string()))?;
 
-        let tmp = self.path.with_extension("toml.tmp");
-        fs::write(&tmp, serialized).map_err(|err| NyxError::Io(err.to_string()))?;
+        // A per-writer-unique temp (pid + process-local counter) avoids two writers
+        // sharing one `.tmp`; the `sync_all` flushes before the rename so a crash
+        // can't leave the renamed file empty/partial.
+        static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+        let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp = self
+            .path
+            .with_extension(format!("toml.tmp.{}.{seq}", std::process::id()));
+        let mut file = fs::File::create(&tmp).map_err(|err| NyxError::Io(err.to_string()))?;
+        file.write_all(serialized.as_bytes())
+            .map_err(|err| NyxError::Io(err.to_string()))?;
+        file.sync_all()
+            .map_err(|err| NyxError::Io(err.to_string()))?;
+        drop(file);
         fs::rename(&tmp, &self.path).map_err(|err| NyxError::Io(err.to_string()))?;
         Ok(())
     }

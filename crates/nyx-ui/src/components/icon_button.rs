@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! `IconButton` - a compact square icon-only button. Takes its glyph as a
 //! generic `impl IntoElement` child (never an icon enum), staying domain-free.
 

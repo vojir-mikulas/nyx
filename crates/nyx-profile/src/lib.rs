@@ -9,7 +9,9 @@
 //! single TOML file.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use nyx_core::{FtpsMode, NyxError, Protocol, Result};
 use serde::{Deserialize, Serialize};
@@ -203,8 +205,22 @@ impl FileProfileStore {
         let serialized =
             toml::to_string_pretty(&file).map_err(|err| NyxError::Other(err.to_string()))?;
 
-        let tmp = self.path.with_extension("toml.tmp");
-        fs::write(&tmp, serialized).map_err(|err| NyxError::Io(err.to_string()))?;
+        // A per-writer-unique temp name (pid + a process-local counter) so two
+        // writers - separate processes, or threads - never share one `.tmp` and
+        // clobber each other's half-written file.
+        static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+        let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp = self
+            .path
+            .with_extension(format!("toml.tmp.{}.{seq}", std::process::id()));
+        let mut file = fs::File::create(&tmp).map_err(|err| NyxError::Io(err.to_string()))?;
+        file.write_all(serialized.as_bytes())
+            .map_err(|err| NyxError::Io(err.to_string()))?;
+        // Flush to disk before the rename, so a crash can't leave the renamed file
+        // present but empty/partial.
+        file.sync_all()
+            .map_err(|err| NyxError::Io(err.to_string()))?;
+        drop(file);
         // Tighten the temp before the rename, so the final file is never momentarily
         // world-readable.
         restrict_to_owner(&tmp, 0o600);

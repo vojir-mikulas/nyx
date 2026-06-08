@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! `TextInput` - a single-line, themed text field built in-house on GPUI's
 //! text/element primitives. Owns cursor movement, selection, clipboard and
 //! IME/marked-text. Stateful: a [`Render`] view held in an `Entity`; mechanics
@@ -486,8 +488,14 @@ impl EntityInputHandler for TextInput {
         _: &mut Context<Self>,
     ) -> Option<String> {
         let range = self.range_from_utf16(&range_utf16);
-        actual_range.replace(self.range_to_utf16(&range));
-        Some(self.content[range].to_string())
+        // Clamp to the content: an out-of-range or mid-codepoint IME/a11y query
+        // must return `None`, not panic on the slice. `get` yields `None` unless
+        // both ends land on char boundaries within bounds.
+        let end = range.end.min(self.content.len());
+        let start = range.start.min(end);
+        let text = self.content.get(start..end)?;
+        actual_range.replace(self.range_to_utf16(&(start..end)));
+        Some(text.to_string())
     }
 
     fn selected_text_range(

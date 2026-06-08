@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! `Tooltip` - a small elevated label shown on hover. GPUI's `.tooltip(..)`
 //! wants a closure returning an `AnyView`, so a tooltip must be a view;
 //! [`Tooltip::text`] returns a ready-made builder closure.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! `Tabs` - a horizontal strip of selectable tabs with an optional count pill.
 //! Stateless: the caller owns the selected index, reacting via
 //! [`on_select`](Tabs::on_select).
