@@ -14,9 +14,10 @@
 //! caller wires `fetch` to its normal download pipeline; the OS-supplied
 //! destination is just the download's local path.
 //!
-//! Today the only real backend is macOS (`NSFilePromiseProvider`); other
-//! platforms return [`DragError::Unsupported`]. See
-//! `docs/plans/drag-out-to-desktop.md`.
+//! Backends: macOS (`NSFilePromiseProvider`) and Windows (a virtual-file
+//! `IDataObject` dragged via `DoDragDrop`); other platforms return
+//! [`DragError::Unsupported`]. See `docs/plans/drag-out-to-desktop.md` and
+//! `docs/plans/windows-drag-out.md`.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -25,6 +26,9 @@ use raw_window_handle::HasWindowHandle;
 
 #[cfg(target_os = "macos")]
 mod macos;
+
+#[cfg(target_os = "windows")]
+mod windows;
 
 /// One file offered to the OS in a drag-out. `size`, when known, lets the
 /// platform hint the file size to the drop target (purely advisory).
@@ -176,7 +180,11 @@ pub fn start_file_drag(
     {
         macos::start_file_drag(window, files, fetch, icon, handlers)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        windows::start_file_drag(window, files, fetch, icon, handlers)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = (window, files, fetch, icon, handlers);
         Err(DragError::Unsupported)
