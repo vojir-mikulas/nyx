@@ -27,7 +27,7 @@ use nyx_profile::{
     AuthMethod, FileProfileStore, FileSettingsStore, Profile, ProfileColor, ProfileStore, Settings,
 };
 use nyx_service::{Command, Event, FileOp, SearchHit, ServiceHandle};
-use nyx_ui::{ActiveTheme, TextInput, TextInputEvent, Theme, ToastVariant};
+use nyx_ui::{ActiveTheme, TextInput, TextInputEvent, ToastVariant};
 use time::OffsetDateTime;
 
 use models::{AccentKind, ConnectionVm, Density, DockTab, EntryRow, SortKey, TransferVm};
@@ -37,6 +37,7 @@ use models::{AccentKind, ConnectionVm, Density, DockTab, EntryRow, SortKey, Tran
 type DropRowBounds = Rc<RefCell<Vec<(SharedString, Bounds<Pixels>)>>>;
 
 use crate::drag::{DragDownloads, ServiceDragFetch};
+use crate::theme_load::ThemeRegistry;
 
 /// The keychain service name. Secrets are addressed `("nyx", account)`, where the
 /// account is derived per-profile by [`password_account`] / [`passphrase_account`].
@@ -156,6 +157,8 @@ pub struct AppState {
     store: FileProfileStore,
     /// On-disk store for UI preferences (theme, density, permissions column).
     settings_store: FileSettingsStore,
+    /// Built-in + user themes, loaded once at startup; drives the theme picker.
+    pub theme_registry: ThemeRegistry,
     /// OS keychain for connection passwords (addressed by profile id).
     keyring: OsKeyring,
     /// A startup error to surface once the backend is `Ready` (e.g. a malformed
@@ -216,16 +219,6 @@ pub struct AppState {
     pub reconnect_failed: bool,
     /// Whether a dropped session should auto-reconnect (persisted in `Settings`).
     pub auto_reconnect: bool,
-}
-
-/// Map a persisted theme name to its concrete [`Theme`], defaulting to One Dark
-/// for an unknown name (e.g. a theme that was renamed or removed).
-pub fn theme_from_name(name: &str) -> Theme {
-    match name {
-        "GitHub Dark" => Theme::github_dark(),
-        "Ayu Dark" => Theme::ayu_dark(),
-        _ => Theme::one_dark(),
-    }
 }
 
 /// The keychain account holding a profile's connection secret - the password for

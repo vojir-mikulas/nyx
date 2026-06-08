@@ -10,7 +10,8 @@ not a web stack.
 
 **Using the app?** See the [user guide](docs/user/README.md) —
 [install](docs/user/install.md), [getting started](docs/user/getting-started.md),
-and [troubleshooting](docs/user/troubleshooting.md).
+[custom themes](docs/user/custom-themes.md), and
+[troubleshooting](docs/user/troubleshooting.md).
 
 ## Architecture
 

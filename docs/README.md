@@ -79,11 +79,12 @@ the GitHub mirror.
   **recursive search of the remote tree** via a leading `/` sigil, streamed and
   cancellable, with a Path-column results view. The shared matcher lives in
   `nyx-core`; ships independently of `large-listings.md` via a result cap.
-- [`plans/user-themes.md`](plans/user-themes.md) — **proposed.** Let users drop
-  a `*.toml` file into a `themes/` config dir and have it show up in the theme
-  picker like a built-in. A serde DTO + base-overlay merge + directory scan in
-  the app layer; the only `nyx-ui` change is `Theme.name: &'static str → String`,
-  so Flint stays serde-free.
+- [`plans/user-themes.md`](plans/user-themes.md) — **done.** Users drop a
+  `*.toml` file into a `themes/` config dir and it shows up in the theme picker
+  like a built-in. A serde DTO + base-overlay merge + directory scan
+  (`crates/nyx/src/theme_load.rs`); the only `nyx-ui` change is
+  `Theme.name: &'static str → String`, so Flint stays serde-free. User guide:
+  [`user/custom-themes.md`](user/custom-themes.md).
 - [`plans/connection-accent-color.md`](plans/connection-accent-color.md) —
   **proposed.** The per-connection accent color already exists end to end but
   only tints two small icons; make it actually identify a connection (welcome

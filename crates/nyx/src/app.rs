@@ -830,12 +830,43 @@ fn tweaks_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElemen
     let density_ix = state.density.index();
     let show_perms = state.show_perms;
     let auto_reconnect = state.auto_reconnect;
-    let theme_ix = match cx.theme().name {
-        "One Dark" => 0,
-        "GitHub Dark" => 1,
-        _ => 2,
-    };
+    let theme_names = state.theme_registry.names();
+    let theme_ix = theme_names
+        .iter()
+        .position(|n| n.as_str() == cx.theme().name.as_str())
+        .unwrap_or(0);
     let view = cx.entity();
+
+    let theme_select = theme_names
+        .iter()
+        .fold(Select::new("tw-theme"), |sel, name| {
+            sel.option(name.clone())
+        })
+        .selected(theme_ix)
+        .open(state.theme_select_open)
+        .on_toggle({
+            let view = view.clone();
+            move |_window, cx| {
+                view.update(cx, |this, cx| {
+                    this.theme_select_open = !this.theme_select_open;
+                    cx.notify();
+                });
+            }
+        })
+        .on_select({
+            let view = view.clone();
+            move |ix, _window, cx| {
+                let Some(name) = theme_names.get(ix).cloned() else {
+                    return;
+                };
+                view.update(cx, |this, cx| {
+                    cx.set_global(this.theme_registry.by_name(&name));
+                    this.theme_select_open = false;
+                    this.save_settings(cx);
+                    cx.notify();
+                });
+            }
+        });
 
     Modal::new("tweaks")
         .title("Tweaks")
@@ -855,41 +886,7 @@ fn tweaks_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElemen
                 .flex()
                 .flex_col()
                 .gap_4()
-                .child(field(
-                    "Color scheme",
-                    Select::new("tw-theme")
-                        .option("One Dark")
-                        .option("GitHub Dark")
-                        .option("Ayu Dark")
-                        .selected(theme_ix)
-                        .open(state.theme_select_open)
-                        .on_toggle({
-                            let view = view.clone();
-                            move |_window, cx| {
-                                view.update(cx, |this, cx| {
-                                    this.theme_select_open = !this.theme_select_open;
-                                    cx.notify();
-                                });
-                            }
-                        })
-                        .on_select({
-                            let view = view.clone();
-                            move |ix, _window, cx| {
-                                let next = match ix {
-                                    0 => Theme::one_dark(),
-                                    1 => Theme::github_dark(),
-                                    _ => Theme::ayu_dark(),
-                                };
-                                cx.set_global(next);
-                                view.update(cx, |this, cx| {
-                                    this.theme_select_open = false;
-                                    this.save_settings(cx);
-                                    cx.notify();
-                                });
-                            }
-                        }),
-                    cx,
-                ))
+                .child(field("Color scheme", theme_select, cx))
                 .child(field(
                     "Row density",
                     Segmented::new("tw-density")

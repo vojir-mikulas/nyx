@@ -614,7 +614,7 @@ impl Gallery {
 
 impl Render for Gallery {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme_name = cx.theme().name;
+        let theme_name = cx.theme().name.clone();
         let open_modal = cx.listener(|this, _, _, cx| {
             this.modal_open = true;
             cx.notify();
@@ -636,7 +636,7 @@ impl Render for Gallery {
                     .child(format!("Theme: {theme_name}  (click to toggle)")),
             )
             .on_click(cx.listener(|_, _, _, cx| {
-                let next = match cx.theme().name {
+                let next = match cx.theme().name.as_str() {
                     "One Dark" => Theme::github_dark(),
                     "GitHub Dark" => Theme::ayu_dark(),
                     _ => Theme::one_dark(),

@@ -64,7 +64,8 @@ impl AppState {
         let settings_store = FileSettingsStore::open_default()
             .unwrap_or_else(|_| FileSettingsStore::with_path("settings.toml"));
         let settings = settings_store.load();
-        cx.set_global(theme_from_name(&settings.theme));
+        let theme_registry = ThemeRegistry::load();
+        cx.set_global(theme_registry.by_name(&settings.theme));
         let density = Density::ALL[(settings.density as usize).min(Density::ALL.len() - 1)];
         let show_perms = settings.show_perms;
         let auto_reconnect = settings.auto_reconnect;
@@ -115,6 +116,7 @@ impl AppState {
             store,
             keyring: OsKeyring::new(),
             settings_store,
+            theme_registry,
             startup_error,
             service,
             drag_downloads: DragDownloads::new(),

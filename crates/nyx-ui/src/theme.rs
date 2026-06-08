@@ -8,7 +8,7 @@ use gpui::{App, Global, Hsla, Pixels};
 /// `cx.theme()`. Ported from `design/styles.css`.
 #[derive(Clone, Debug)]
 pub struct Theme {
-    pub name: &'static str,
+    pub name: String,
 
     /// Main / editor surface.
     pub bg_app: Hsla,

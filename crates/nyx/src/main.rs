@@ -10,6 +10,7 @@ mod drag;
 mod icon;
 mod keymap;
 mod state;
+mod theme_load;
 mod views;
 
 use gpui::{prelude::*, App, Bounds, TitlebarOptions, WindowBounds, WindowOptions};

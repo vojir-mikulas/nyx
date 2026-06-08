@@ -14,7 +14,7 @@ impl Theme {
     /// Zed's **One Dark** - the primary theme.
     pub fn one_dark() -> Self {
         Theme {
-            name: "One Dark",
+            name: "One Dark".into(),
 
             bg_app: h(0x282c33),
             bg_panel: h(0x21242b),
@@ -56,7 +56,7 @@ impl Theme {
     /// **GitHub Dark** - the alternate theme.
     pub fn github_dark() -> Self {
         Theme {
-            name: "GitHub Dark",
+            name: "GitHub Dark".into(),
 
             bg_app: h(0x0d1117),
             bg_panel: h(0x010409),
@@ -98,7 +98,7 @@ impl Theme {
     /// **Ayu Dark** - warm-gold accent on near-black surfaces.
     pub fn ayu_dark() -> Self {
         Theme {
-            name: "Ayu Dark",
+            name: "Ayu Dark".into(),
 
             bg_app: h(0x0b0e14),
             bg_panel: h(0x0d1017),

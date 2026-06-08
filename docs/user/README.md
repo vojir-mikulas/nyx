@@ -15,6 +15,8 @@ folder is for people *using* the app.
    authenticate, browse and transfer files.
 3. **[Troubleshooting & FAQ](troubleshooting.md)** — connection errors, host-key
    prompts, key passphrases, where your data is stored.
+4. **[Custom themes](custom-themes.md)** — write your own color theme as a `.toml`
+   file and have it show up in the picker.
 
 ## Quick reference
 

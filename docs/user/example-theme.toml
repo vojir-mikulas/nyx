@@ -1,0 +1,58 @@
+# Example Nyx theme. Copy this file into Nyx's themes/ folder, rename it, edit
+# the values, and restart Nyx. It will appear in Settings -> Tweaks -> Color
+# scheme under the `name` below.
+#
+#   macOS    ~/Library/Application Support/dev.nyx.Nyx/themes/
+#   Linux    ~/.config/dev.nyx.Nyx/themes/
+#   Windows  %APPDATA%\dev.nyx.Nyx\themes\
+#
+# You only need to keep the tokens you want to change — anything you delete is
+# inherited from `base`. See custom-themes.md for the full guide.
+
+name = "Midnight"
+base = "One Dark"            # One Dark | GitHub Dark | Ayu Dark
+
+[colors]
+# Colors are "#rgb", "#rrggbb", or "#rrggbbaa" (the last carries alpha — use it
+# for translucent tokens like accent_ghost).
+
+# Surfaces
+bg_app        = "#1b1d23"   # main file-browser surface
+bg_panel      = "#16181d"   # sidebar + transfer dock
+bg_panel_2    = "#121317"   # deepest surface (status bar, empty states)
+bg_elevated   = "#22252d"   # modals, popovers, active tab
+bg_bar        = "#191b21"   # toolbars / tab strip
+bg_hover      = "#21242c"   # hovered row/control
+bg_active     = "#2a2e38"   # selected/active neutral
+bg_selected   = "#26344d"   # selected-row background (tinted)
+bg_input      = "#101216"   # text-field background
+
+# Borders
+border        = "#2c303a"
+border_soft   = "#22252d"   # subtle dividers
+border_strong = "#3a3f4b"
+
+# Text
+text          = "#d7dae0"
+text_muted    = "#969ca8"
+text_faint    = "#666c78"
+text_dim      = "#525863"   # labels, disabled
+
+# Accent (primary action / highlight)
+accent        = "#7aa2f7"
+accent_hover  = "#94b4ff"
+accent_ghost  = "#7aa2f729"  # translucent — focus-ring glow
+on_accent     = "#16181d"    # text/icons on top of accent
+
+# Status colors
+green         = "#9ece6a"    # success, FTPS
+red           = "#f7768e"    # error, danger
+blue          = "#7dcfff"    # info, running, FTP, folders
+purple        = "#bb9af7"    # SFTP
+yellow        = "#e0af68"    # warning
+orange        = "#ff9e64"    # archives, secondary warning
+
+[layout]
+row_height = 26.0   # file-row height (logical pixels)
+radius     = 5.0    # default corner radius
+radius_sm  = 3.0    # small radius (chips, icon buttons, menu items)
