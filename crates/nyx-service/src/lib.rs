@@ -32,6 +32,7 @@ use futures::channel::mpsc::{
     unbounded as futures_unbounded, UnboundedReceiver as FuturesReceiver,
     UnboundedSender as FuturesSender,
 };
+use futures::stream::{FuturesUnordered, StreamExt};
 use nyx_core::{
     is_safe_local_segment, CollisionChoice, EntryIssue, EntryKind, Filter, NyxError, Protocol,
     RemoteEntry, RemotePath, Secret, ServerTrustKind, TransferDirection, TransferId, TransferKind,
@@ -82,6 +83,12 @@ const SEARCH_MAX_RESULTS: usize = 5_000;
 /// Hits buffered before a streaming [`Event::SearchResult`] batch is flushed, so
 /// results appear as the tree is walked rather than all at the end.
 const SEARCH_BATCH: usize = 128;
+
+/// How many directory listings a tree search keeps in flight at once. A deep
+/// search is round-trip bound, and SFTP pipelines requests over its single
+/// connection, so concurrency cuts wall-clock time sharply. FTP serializes
+/// internally, so it simply ignores the extra parallelism — no benefit, no harm.
+const SEARCH_CONCURRENCY: usize = 16;
 
 /// How many automatic reconnect attempts to make on a transport loss before
 /// giving up and falling back to a manual reconnect.
@@ -1915,11 +1922,15 @@ fn abort_search(current: &mut Option<Arc<AtomicBool>>) {
 
 /// Breadth-first walk of `root`, streaming matched entries back in batches.
 ///
+/// Up to [`SEARCH_CONCURRENCY`] directory listings run **in flight at once** —
+/// the dominant cost of a deep search is sequential round-trips, and SFTP
+/// multiplexes requests over its one connection, so concurrency is the big win.
 /// Bounded by [`SEARCH_MAX_DEPTH`] (also the symlink-loop backstop) and
 /// [`SEARCH_MAX_RESULTS`]. A directory that fails to list (permission denied, a
-/// vanished path) is skipped, not fatal. The walk checks `cancel` between
-/// directories and bails immediately when a newer search supersedes it — the UI
-/// ignores that token anyway, so no terminal batch is owed.
+/// vanished path) is skipped, not fatal. A completed directory's matches are
+/// flushed right away so results appear as they're found, not only at the end.
+/// The walk checks `cancel` each turn and bails when a newer search supersedes
+/// it — the UI ignores that token anyway, so no terminal batch is owed.
 async fn run_search(
     client: &(impl DirLister + ?Sized),
     root: RemotePath,
@@ -1931,17 +1942,31 @@ async fn run_search(
     let now = SystemTime::now();
     let mut frontier: VecDeque<(RemotePath, u32)> = VecDeque::new();
     frontier.push_back((root, 0));
+    let mut inflight = FuturesUnordered::new();
     let mut batch: Vec<SearchHit> = Vec::new();
     let mut found = 0usize;
     let mut truncated = false;
 
-    'walk: while let Some((dir, depth)) = frontier.pop_front() {
+    'walk: loop {
         if cancel.load(Ordering::Relaxed) {
             return;
         }
-        let entries = match client.list(&dir).await {
-            Ok(entries) => entries,
-            Err(_) => continue,
+        // Keep the connection busy: top in-flight listings up to the cap.
+        while inflight.len() < SEARCH_CONCURRENCY {
+            let Some((dir, depth)) = frontier.pop_front() else {
+                break;
+            };
+            inflight.push(async move {
+                let entries = client.list(&dir).await;
+                (dir, depth, entries)
+            });
+        }
+        // Frontier drained and nothing in flight → the walk is done.
+        let Some((dir, depth, result)) = inflight.next().await else {
+            break;
+        };
+        let Ok(entries) = result else {
+            continue; // unreadable directory: skip, keep searching
         };
         for entry in entries {
             let name_lower = entry.name.to_lowercase();
@@ -1960,6 +1985,10 @@ async fn run_search(
                     break 'walk;
                 }
             }
+        }
+        // Stream this directory's matches now, rather than waiting for the cap.
+        if !batch.is_empty() {
+            flush_hits(&events, token, &mut batch, false, false);
         }
     }
     flush_hits(&events, token, &mut batch, true, truncated);
@@ -2719,7 +2748,6 @@ mod tests {
         );
     }
 
-    use futures::StreamExt;
     use nyx_core::Permissions;
 
     /// In-memory directory tree for [`run_search`] tests. A path absent from the

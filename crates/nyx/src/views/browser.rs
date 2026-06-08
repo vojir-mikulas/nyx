@@ -8,7 +8,7 @@ use nyx_ui::{ActiveTheme, Button, ButtonSize, ButtonVariant, Column, IconButton,
 
 use crate::icon::icon;
 use crate::state::models::EntryRow;
-use crate::state::AppState;
+use crate::state::{AppState, SearchState};
 use crate::views::titlebar_drag;
 
 actions!(
@@ -47,8 +47,15 @@ pub struct InAppDrag {
     pub names: Vec<SharedString>,
 }
 
-/// Render the browser column (tab strip + toolbar + table).
+/// Render the browser column (tab strip + toolbar + table or search results).
 pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    // A `/`-scoped filter swaps the directory table for streamed tree-search
+    // results; otherwise the normal file table.
+    let body: gpui::AnyElement = if state.search().is_some() {
+        search_view(state, cx).into_any_element()
+    } else {
+        file_table(state, cx).into_any_element()
+    };
     div()
         .flex()
         .flex_col()
@@ -59,7 +66,7 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
             this.child(connection_lost_banner(state, reason, cx))
         })
         .child(toolbar(state, cx))
-        .child(file_table(state, cx))
+        .child(body)
 }
 
 /// The non-modal connection banner: stays put under the tab strip, leaving the
@@ -820,6 +827,203 @@ fn drag_chip(row: &EntryRow, count: usize, theme: &Theme) -> gpui::AnyElement {
         );
     }
     chip.into_any_element()
+}
+
+/// The tree-search results view: a status header over a table of hits, shown in
+/// place of the file table while a `/`-scoped filter is active. Deliberately
+/// simpler than the file table — no drag/drop or rename, just open-on-activate
+/// (which navigates to the hit's folder).
+fn search_view(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    let theme = cx.theme().clone();
+    let search = state
+        .search()
+        .expect("search_view requires an active search");
+    let rows = search.hits.clone();
+    let row_count = rows.len();
+    let row_height = state.density.row_height();
+    let mono = crate::assets::FONT_MONO;
+    let muted = theme.text_muted;
+    let faint = theme.text_faint;
+    let view = cx.entity();
+
+    let columns = vec![
+        Column::new("Name").flex(),
+        Column::new("Path").flex(),
+        Column::new("Size").width(px(96.)).align_end(),
+        Column::new("Modified").width(px(150.)),
+        Column::new("Type").width(px(120.)),
+    ];
+
+    let body: gpui::AnyElement = if row_count == 0 {
+        search_empty_state(search, cx).into_any_element()
+    } else {
+        Table::<InAppDrag>::new("search-results", columns)
+            .row_count(row_count)
+            .row_height(px(row_height))
+            .on_activate({
+                let view = view.clone();
+                let rows = rows.clone();
+                move |ix, _window, cx| {
+                    if let Some(hit) = rows.get(ix) {
+                        let path = hit.path.clone();
+                        view.update(cx, |this, cx| {
+                            this.activate_search_hit(&path, cx);
+                            cx.notify();
+                        });
+                    }
+                }
+            })
+            .render_row({
+                let theme = theme.clone();
+                let rows = rows.clone();
+                move |ix, _window, _cx| {
+                    let Some(hit) = rows.get(ix) else {
+                        return Vec::new();
+                    };
+                    let (icon_name, icon_color) = hit.row.icon(&theme);
+                    let name_color = if hit.row.entry.is_dir() {
+                        theme.blue
+                    } else {
+                        theme.text
+                    };
+                    vec![
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .text_color(icon_color)
+                                    .child(icon(icon_name, 15., icon_color)),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_color(name_color)
+                                    .child(SharedString::from(hit.row.entry.name.clone())),
+                            )
+                            .into_any_element(),
+                        div()
+                            .truncate()
+                            .font_family(mono)
+                            .text_color(faint)
+                            .child(hit.parent.clone())
+                            .into_any_element(),
+                        div()
+                            .font_family(mono)
+                            .text_color(muted)
+                            .child(hit.row.display_size())
+                            .into_any_element(),
+                        div()
+                            .font_family(mono)
+                            .text_color(faint)
+                            .child(hit.row.display_modified())
+                            .into_any_element(),
+                        div()
+                            .text_color(faint)
+                            .child(hit.row.type_label.clone())
+                            .into_any_element(),
+                    ]
+                }
+            })
+            .into_any_element()
+    };
+
+    div()
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_h_0()
+        .bg(theme.bg_app)
+        .text_sm()
+        .track_focus(&state.browser_focus)
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _, window, cx| {
+                window.focus(&this.browser_focus, cx);
+            }),
+        )
+        .child(search_header(search, &theme))
+        .child(div().flex_1().min_h_0().child(body))
+}
+
+/// The thin status bar above the search results: a spinner while the walk runs,
+/// the query, and a match count (with a "capped" hint when truncated).
+fn search_header(search: &SearchState, theme: &Theme) -> impl IntoElement {
+    let count = search.hits.len();
+    let status = if !search.done {
+        format!("Searching… {count} found")
+    } else if count == 0 {
+        "No matches".to_string()
+    } else if search.truncated {
+        format!("{count} matches (capped — narrow your search)")
+    } else if count == 1 {
+        "1 match".to_string()
+    } else {
+        format!("{count} matches")
+    };
+    let indicator: gpui::AnyElement = if search.done {
+        icon("search", 13., theme.text_muted).into_any_element()
+    } else {
+        crate::icon::spinner("search-spinner", 13., theme.text_muted).into_any_element()
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .h(px(30.))
+        .flex_shrink_0()
+        .px_3()
+        .bg(theme.bg_app)
+        .border_b_1()
+        .border_color(theme.border_soft)
+        .text_xs()
+        .text_color(theme.text_muted)
+        .child(indicator)
+        .child(
+            div()
+                .max_w(px(280.))
+                .truncate()
+                .font_family(crate::assets::FONT_MONO)
+                .child(search.query.clone()),
+        )
+        .child(div().flex_1())
+        .child(div().text_color(theme.text_faint).child(status))
+}
+
+/// The empty body while a search is running (spinner) or finished with no hits.
+fn search_empty_state(search: &SearchState, cx: &Context<AppState>) -> impl IntoElement {
+    let theme = cx.theme().clone();
+    let (indicator, label): (gpui::AnyElement, String) = if search.done {
+        (
+            div()
+                .opacity(0.5)
+                .child(icon("search", 26., theme.text_dim))
+                .into_any_element(),
+            format!("No matches for “{}”", search.query.trim()),
+        )
+    } else {
+        (
+            crate::icon::spinner("search-empty", 24., theme.text_dim).into_any_element(),
+            "Searching…".to_string(),
+        )
+    };
+    div()
+        .flex_1()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap_1p5()
+        .text_color(theme.text_dim)
+        .child(indicator)
+        .child(
+            div()
+                .font_family(crate::assets::FONT_MONO)
+                .text_xs()
+                .child(label),
+        )
 }
 
 fn empty_state(

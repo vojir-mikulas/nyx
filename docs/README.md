@@ -69,11 +69,12 @@ the GitHub mirror.
   starts as an in-app **move into folders** and auto-hands-off to the native
   drag-out only when the pointer leaves the window. Extends
   `drag-out-to-desktop.md`.
-- [`plans/advanced-filtering.md`](plans/advanced-filtering.md) — **proposed.**
-  Grow the browser filter into a small query language (glob + `type:`/`size:`/
+- [`plans/advanced-filtering.md`](plans/advanced-filtering.md) — **done.**
+  Grew the browser filter into a small query language (glob + `type:`/`size:`/
   `ext:`/`modified:` predicates) with two scopes: current dir (default) and a
   **recursive search of the remote tree** via a leading `/` sigil, streamed and
-  cancellable. Ships independently of `large-listings.md` via a result cap.
+  cancellable, with a Path-column results view. The shared matcher lives in
+  `nyx-core`; ships independently of `large-listings.md` via a result cap.
 - [`plans/connection-accent-color.md`](plans/connection-accent-color.md) —
   **proposed.** The per-connection accent color already exists end to end but
   only tints two small icons; make it actually identify a connection (welcome

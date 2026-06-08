@@ -28,7 +28,7 @@ pub enum Scope {
 
 /// A parsed filter query: a [`Scope`] plus AND-combined terms. The default (no
 /// terms) matches everything, i.e. an empty filter box.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Filter {
     scope: Scope,
     terms: Vec<Term>,
@@ -74,7 +74,7 @@ impl Filter {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 enum Term {
     /// Case-insensitive substring on the name (compared against `name_lower`).
     Substr(String),

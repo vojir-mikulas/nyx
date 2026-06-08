@@ -20,15 +20,15 @@ use gpui::{
     PathPromptOptions, Pixels, Point, SharedString, Window,
 };
 use nyx_core::{
-    CollisionChoice, EntryKind, EntryOutcomeKind, Filter, FtpsMode, Protocol, RemotePath, Secret,
-    ServerTrustKind, Transfer, TransferDirection, TransferId, TransferKind, TransferStatus,
+    CollisionChoice, EntryKind, EntryOutcomeKind, Filter, FtpsMode, Protocol, RemotePath, Scope,
+    Secret, ServerTrustKind, Transfer, TransferDirection, TransferId, TransferKind, TransferStatus,
 };
 use nyx_drag::DragFile;
 use nyx_keyring::{passphrase_account, password_account, CredentialStore, OsKeyring};
 use nyx_profile::{
     AuthMethod, FileProfileStore, FileSettingsStore, Profile, ProfileColor, ProfileStore, Settings,
 };
-use nyx_service::{Command, Event, FileOp, ServiceHandle};
+use nyx_service::{Command, Event, FileOp, SearchHit, ServiceHandle};
 use nyx_ui::{ActiveTheme, TextInput, TextInputEvent, Theme, ToastVariant};
 use time::OffsetDateTime;
 
@@ -222,6 +222,50 @@ pub struct FileDeleteConfirm {
     pub entries: Vec<(SharedString, bool)>,
 }
 
+/// An active recursive tree search (the filter box in `/`-scope). Holds the
+/// streamed-in hits and the walk's progress, and swaps the file table for a
+/// results view while present.
+pub struct SearchState {
+    /// Correlates streamed [`Event::SearchResult`] batches; stale tokens dropped.
+    token: u64,
+    /// The raw filter text (e.g. `/*.rs`), shown in the results header.
+    pub query: SharedString,
+    /// Display-ready hits accumulated so far, behind an `Rc` so the browser's
+    /// `'static` row closures share them without cloning per frame.
+    pub hits: Rc<Vec<SearchRow>>,
+    /// Whether the backend signaled the walk finished (or was capped).
+    pub done: bool,
+    /// Whether the result cap stopped the walk before the tree was exhausted.
+    pub truncated: bool,
+}
+
+/// A tree-search hit, display-ready: the entry (for icon/size/type) plus its
+/// parent path (the Path column) and full path (navigation on activation).
+#[derive(Clone)]
+pub struct SearchRow {
+    /// The matched entry, wrapped for its display helpers.
+    pub row: EntryRow,
+    /// The hit's parent directory, shown in the Path column.
+    pub parent: SharedString,
+    /// The hit's absolute path — `go_to_path`'d when the row is opened.
+    pub path: RemotePath,
+}
+
+impl SearchRow {
+    fn from_hit(hit: SearchHit) -> Self {
+        let parent = hit
+            .path
+            .parent()
+            .map(|p| p.as_str().to_string())
+            .unwrap_or_default();
+        Self {
+            row: EntryRow::new(hit.entry),
+            parent: parent.into(),
+            path: hit.path,
+        }
+    }
+}
+
 /// The whole application's mutable state.
 pub struct AppState {
     /// Current top-level screen.
@@ -251,6 +295,16 @@ pub struct AppState {
     /// The parsed filter query, kept in sync with [`filter`](Self::filter) so
     /// [`rebuild_view_order`](Self::rebuild_view_order) needs no `cx`.
     filter_query: Filter,
+    /// Active recursive tree search, when the filter is in `/`-scope. `None` while
+    /// browsing — the file table renders the current directory; `Some` swaps it
+    /// for streamed search results.
+    search: Option<SearchState>,
+    /// Monotonic token; each new tree search bumps it so stale streamed batches
+    /// (from a superseded search) are dropped.
+    search_seq: u64,
+    /// An entry to select once its directory listing arrives — set when a search
+    /// hit is activated, so landing in its folder lands on the file too.
+    pending_select: Option<SharedString>,
     /// Active sort: `(key, ascending)`.
     pub sort: (SortKey, bool),
     /// Selected entry names.
@@ -387,7 +441,7 @@ impl AppState {
         // modal trap focus among its own fields/buttons.
         let filter = cx.new(|cx| {
             TextInput::new(cx)
-                .with_placeholder("Filter this folder…")
+                .with_placeholder("Filter — “/” searches the tree")
                 .tab_stop(false)
         });
         cx.observe(&filter, |this, _, cx| {
@@ -467,6 +521,9 @@ impl AppState {
             view_order: Rc::new(Vec::new()),
             filter,
             filter_query: Filter::default(),
+            search: None,
+            search_seq: 0,
+            pending_select: None,
             sort: (SortKey::Name, true),
             selected: HashSet::new(),
             select_anchor: None,
@@ -2200,6 +2257,33 @@ impl AppState {
                 if path == self.cwd {
                     self.set_listing(entries.into_iter().map(EntryRow::new).collect());
                     self.listing_loading = false;
+                    // Land on the entry a search hit opened, now that it's listed.
+                    if let Some(name) = self.pending_select.take() {
+                        if self.listing.iter().any(|r| r.entry.name == name.as_ref()) {
+                            self.selected.insert(name);
+                        }
+                    }
+                }
+            }
+            // A streamed batch of tree-search matches. Append it under the matching
+            // token; a stale token (superseded search) is ignored.
+            Event::SearchResult {
+                token,
+                hits,
+                done,
+                truncated,
+            } => {
+                if let Some(search) = self.search.as_mut() {
+                    if search.token == token {
+                        if !hits.is_empty() {
+                            // Between frames the render closures are dropped, so the
+                            // `Rc` is uniquely held and this extends in place.
+                            Rc::make_mut(&mut search.hits)
+                                .extend(hits.into_iter().map(SearchRow::from_hit));
+                        }
+                        search.done = done;
+                        search.truncated = truncated;
+                    }
                 }
             }
             // A clicked symlink was followed: navigate into a directory target,
@@ -2535,6 +2619,7 @@ impl AppState {
     fn go_to_path(&mut self, path: RemotePath, push_history: bool, cx: &mut Context<Self>) {
         self.cwd = path.clone();
         self.selected.clear();
+        self.pending_select = None;
         self.filter
             .update(cx, |input, cx| input.set_content("", cx));
         if push_history {
@@ -2619,11 +2704,65 @@ impl AppState {
         self.filter.read(cx).content().to_string()
     }
 
-    /// Pull the filter box text into [`filter_lower`](Self::filter_lower) and
-    /// recompute the visible order. Called whenever the filter content changes.
+    /// React to a filter-box change: a `/`-scoped, non-empty query (on a live
+    /// connection) starts/refreshes a recursive tree search; anything else cancels
+    /// any search and filters the current directory in place.
     fn refilter(&mut self, cx: &App) {
-        self.filter_query = Filter::parse(self.filter.read(cx).content().as_ref());
-        self.rebuild_view_order();
+        let text = self.filter.read(cx).content();
+        self.filter_query = Filter::parse(text.as_ref());
+        if self.filter_query.scope() == Scope::Tree
+            && !self.filter_query.is_empty()
+            && self.online_id.is_some()
+        {
+            self.start_tree_search(text);
+        } else {
+            self.end_tree_search();
+            self.rebuild_view_order();
+        }
+    }
+
+    /// The active tree search, if any (the browser renders its results in place
+    /// of the file table).
+    pub fn search(&self) -> Option<&SearchState> {
+        self.search.as_ref()
+    }
+
+    /// Begin (or supersede) a recursive search of the current subtree. Each call
+    /// mints a fresh token; the backend aborts the prior walk when the new
+    /// `SearchTree` arrives, and stale-token batches are ignored on arrival.
+    fn start_tree_search(&mut self, query_text: SharedString) {
+        self.search_seq += 1;
+        let token = self.search_seq;
+        let root = self.cwd.clone();
+        self.search = Some(SearchState {
+            token,
+            query: query_text,
+            hits: Rc::new(Vec::new()),
+            done: false,
+            truncated: false,
+        });
+        self.service.send(Command::SearchTree {
+            root,
+            query: self.filter_query.clone(),
+            token,
+        });
+    }
+
+    /// Leave search mode, telling the backend to drop any in-flight walk.
+    fn end_tree_search(&mut self) {
+        if self.search.take().is_some() {
+            self.service.send(Command::CancelSearch);
+        }
+    }
+
+    /// Open a search hit: navigate to its parent directory and select it there.
+    pub fn activate_search_hit(&mut self, path: &RemotePath, cx: &mut Context<Self>) {
+        let Some(parent) = path.parent() else { return };
+        let name = path.file_name().map(SharedString::from);
+        // `go_to_path` clears the filter (→ leaves search) and reloads; arm the
+        // selection so it lands once the new listing arrives.
+        self.go_to_path(parent, true, cx);
+        self.pending_select = name;
     }
 
     /// Recompute [`view_order`](Self::view_order) from the current listing, filter

@@ -92,6 +92,7 @@ pub struct TransferVm {
 }
 
 /// A directory entry plus its derived display strings.
+#[derive(Clone)]
 pub struct EntryRow {
     /// The real domain entry.
     pub entry: RemoteEntry,

@@ -37,10 +37,21 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
             let (_, proto_label) = protocol_badge(conn.profile.protocol);
             let (active_count, speed) = state.active_speed();
             // A heads-up that this folder is very large; the listing is still
-            // shown in full (rendering is virtualized).
-            let large_listing =
-                state.selected_count() == 0 && state.item_count() >= LARGE_LISTING_WARN;
-            let counts = if state.selected_count() > 0 {
+            // shown in full (rendering is virtualized). Suppressed while loading
+            // or searching, when the item count isn't what's on screen.
+            let large_listing = state.search().is_none()
+                && !state.listing_loading
+                && state.selected_count() == 0
+                && state.item_count() >= LARGE_LISTING_WARN;
+            let counts = if let Some(search) = state.search() {
+                if search.done {
+                    format!("{} matches", search.hits.len())
+                } else {
+                    format!("Searching… {} found", search.hits.len())
+                }
+            } else if state.listing_loading {
+                "Loading…".to_string()
+            } else if state.selected_count() > 0 {
                 format!("{} selected", state.selected_count())
             } else {
                 format!("{} items", state.item_count())
