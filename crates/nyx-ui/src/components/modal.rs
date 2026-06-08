@@ -113,6 +113,10 @@ impl RenderOnce for Modal {
                 .border_t_1()
                 .border_color(theme.border_soft)
                 .bg(theme.bg_bar)
+                // Match the panel's rounding so the bar's own fill doesn't paint
+                // sharp corners into the rounded bottom (overflow_hidden clips
+                // content, not a child's background corners).
+                .rounded_b(gpui::px(9.))
                 .child(footer)
         });
 
