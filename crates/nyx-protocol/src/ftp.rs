@@ -25,6 +25,7 @@ use suppaftp::types::FileType;
 use suppaftp::{FtpError, Mode};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::util::{copy_counting, map_io_err, push_walk_entry, reject_offset, RemoveOp};
 use crate::{DirWalk, RemoteClient};
@@ -37,8 +38,8 @@ pub struct FtpClient {
     port: u16,
     username: String,
     /// The login password. Held only until [`RemoteClient::connect`] consumes it,
-    /// then cleared. Never logged.
-    password: String,
+    /// then wiped. `Zeroizing` zeroes the heap on drop; never logged.
+    password: Zeroizing<String>,
     /// The live control connection, behind a mutex so the trait's `&self` methods
     /// can serialize over the one connection.
     stream: Mutex<Option<AsyncFtpStream>>,
@@ -50,13 +51,13 @@ impl FtpClient {
         host: impl Into<String>,
         port: u16,
         username: impl Into<String>,
-        password: impl Into<String>,
+        password: Zeroizing<String>,
     ) -> Self {
         Self {
             host: host.into(),
             port,
             username: username.into(),
-            password: password.into(),
+            password,
             stream: Mutex::new(None),
         }
     }
@@ -73,8 +74,8 @@ impl RemoteClient for FtpClient {
             .login(self.username.as_str(), self.password.as_str())
             .await
             .map_err(map_ftp_err)?;
-        // The secret is no longer needed; drop our copy.
-        self.password.clear();
+        // The secret is no longer needed; wipe our copy now (drop would too).
+        self.password.zeroize();
         op_setup(&mut stream).await?;
         *self.stream.lock().await = Some(stream);
         Ok(())

@@ -4,7 +4,7 @@ use gpui::{
     actions, canvas, div, prelude::*, px, quad, radians, BorderStyle, Context, DragMoveEvent,
     ExternalPaths, MouseButton, MouseDownEvent, SharedString, Transformation,
 };
-use nyx_core::Protocol;
+use nyx_core::{sanitize_display_name, Protocol};
 use nyx_ui::{
     ActiveTheme, Button, ButtonSize, ButtonVariant, Column, IconButton, Table, Theme, Tooltip,
 };
@@ -645,39 +645,37 @@ fn file_table(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                     } else {
                         theme.text
                     };
-                    let mut cells = vec![
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .text_color(icon_color)
-                                    .child(icon(icon_name, 15., icon_color)),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_color(name_color)
-                                    .child(SharedString::from(row.entry.name.clone())),
-                            )
-                            .into_any_element(),
-                        div()
-                            .font_family(mono)
-                            .text_color(muted)
-                            .child(row.display_size())
-                            .into_any_element(),
-                        div()
-                            .font_family(mono)
-                            .text_color(faint)
-                            .child(row.display_modified())
-                            .into_any_element(),
-                        div()
-                            .text_color(faint)
-                            .child(row.type_label.clone())
-                            .into_any_element(),
-                    ];
+                    let mut cells =
+                        vec![
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .min_w_0()
+                                .child(
+                                    div()
+                                        .text_color(icon_color)
+                                        .child(icon(icon_name, 15., icon_color)),
+                                )
+                                .child(div().truncate().text_color(name_color).child(
+                                    SharedString::from(sanitize_display_name(&row.entry.name)),
+                                ))
+                                .into_any_element(),
+                            div()
+                                .font_family(mono)
+                                .text_color(muted)
+                                .child(row.display_size())
+                                .into_any_element(),
+                            div()
+                                .font_family(mono)
+                                .text_color(faint)
+                                .child(row.display_modified())
+                                .into_any_element(),
+                            div()
+                                .text_color(faint)
+                                .child(row.type_label.clone())
+                                .into_any_element(),
+                        ];
                     if show_perms {
                         cells.push(
                             div()
@@ -845,7 +843,7 @@ fn drag_chip(row: &EntryRow, count: usize, theme: &Theme) -> gpui::AnyElement {
     let label = if count > 1 {
         SharedString::from(format!("{count} files"))
     } else {
-        SharedString::from(row.entry.name.clone())
+        SharedString::from(sanitize_display_name(&row.entry.name))
     };
     div()
         .flex()
@@ -942,12 +940,9 @@ fn search_view(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement
                                     .text_color(icon_color)
                                     .child(icon(icon_name, 15., icon_color)),
                             )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_color(name_color)
-                                    .child(SharedString::from(hit.row.entry.name.clone())),
-                            )
+                            .child(div().truncate().text_color(name_color).child(
+                                SharedString::from(sanitize_display_name(&hit.row.entry.name)),
+                            ))
                             .into_any_element(),
                         div()
                             .truncate()

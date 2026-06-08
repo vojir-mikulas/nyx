@@ -47,6 +47,7 @@ use suppaftp::tokio_rustls::rustls::{
 use suppaftp::tokio_rustls::TlsConnector;
 use suppaftp::Status;
 use tokio::sync::Mutex;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::ftp::{
     map_connect_err, map_ftp_err, op_default_dir, op_download, op_exists, op_list_dir,
@@ -65,8 +66,8 @@ pub struct FtpsClient {
     port: u16,
     username: String,
     /// The login password. Held only until [`RemoteClient::connect`] consumes it,
-    /// then cleared. Never logged.
-    password: String,
+    /// then wiped. `Zeroizing` zeroes the heap on drop; never logged.
+    password: Zeroizing<String>,
     mode: FtpsMode,
     /// The TOFU store of accepted (self-signed / pinned) certificate fingerprints,
     /// keyed by host - the certificate parallel to `known_hosts`.
@@ -82,7 +83,7 @@ impl FtpsClient {
         host: impl Into<String>,
         port: u16,
         username: impl Into<String>,
-        password: impl Into<String>,
+        password: Zeroizing<String>,
         mode: FtpsMode,
         known_certs: KnownHosts,
         prompt: Arc<dyn ServerTrustPrompt>,
@@ -91,7 +92,7 @@ impl FtpsClient {
             host: host.into(),
             port,
             username: username.into(),
-            password: password.into(),
+            password,
             mode,
             known_certs,
             prompt,
@@ -178,7 +179,7 @@ impl RemoteClient for FtpsClient {
             let connector = self.connector(captured.clone())?;
             match self.handshake(connector).await {
                 Ok(stream) => {
-                    self.password.clear();
+                    self.password.zeroize();
                     *self.stream.lock().await = Some(stream);
                     return Ok(());
                 }

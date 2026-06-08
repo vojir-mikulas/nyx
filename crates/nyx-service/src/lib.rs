@@ -964,7 +964,7 @@ mod tests {
         let profile = profile_with(Protocol::Ftp, AuthMethod::Anonymous);
         let (user, pass) = ftp_credentials(&profile, &Secret::new("ignored"));
         assert_eq!(user, "anonymous");
-        assert_eq!(pass, ANON_PASSWORD);
+        assert_eq!(pass.as_str(), ANON_PASSWORD);
     }
 
     #[test]
@@ -972,7 +972,7 @@ mod tests {
         let profile = profile_with(Protocol::Ftp, AuthMethod::Password);
         let (user, pass) = ftp_credentials(&profile, &Secret::new("hunter2"));
         assert_eq!(user, "user");
-        assert_eq!(pass, "hunter2");
+        assert_eq!(pass.as_str(), "hunter2");
     }
 
     #[test]

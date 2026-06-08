@@ -18,8 +18,9 @@ use gpui::{
     PathPromptOptions, Pixels, Point, SharedString, UniformListScrollHandle, Window,
 };
 use nyx_core::{
-    CollisionChoice, EntryKind, EntryOutcomeKind, Filter, FtpsMode, Protocol, RemotePath, Scope,
-    Secret, ServerTrustKind, Transfer, TransferDirection, TransferId, TransferKind, TransferStatus,
+    is_safe_local_segment, CollisionChoice, EntryKind, EntryOutcomeKind, Filter, FtpsMode,
+    Protocol, RemotePath, Scope, Secret, ServerTrustKind, Transfer, TransferDirection, TransferId,
+    TransferKind, TransferStatus,
 };
 use nyx_drag::DragFile;
 use nyx_keyring::{passphrase_account, password_account, CredentialStore, OsKeyring};

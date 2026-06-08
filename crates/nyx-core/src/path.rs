@@ -133,6 +133,28 @@ pub fn is_safe_local_segment(name: &str) -> bool {
     )
 }
 
+/// Sanitize a server-supplied name for **display only** (row labels, drag chips):
+/// replace control characters and Unicode bidirectional-formatting codepoints
+/// with U+FFFD. A hostile server can otherwise return `report<U+202E>fdp.exe`,
+/// which *renders* as `reportexe.pdf` and spoofs the file type before a
+/// download/drag. This changes only how a name looks - the raw name is still used
+/// for all transfer and selection logic, so identity is unaffected.
+pub fn sanitize_display_name(name: &str) -> String {
+    name.chars()
+        .map(|c| if is_display_unsafe(c) { '\u{FFFD}' } else { c })
+        .collect()
+}
+
+/// Control chars (C0/C1, DEL) plus the bidi format controls that can reorder the
+/// visible glyphs of a label: marks, embeddings/overrides, and isolates.
+fn is_display_unsafe(c: char) -> bool {
+    c.is_control()
+        || matches!(c,
+            '\u{200E}' | '\u{200F}'        // LRM, RLM
+            | '\u{202A}'..='\u{202E}'      // LRE, RLE, PDF, LRO, RLO
+            | '\u{2066}'..='\u{2069}') // LRI, RLI, FSI, PDI
+}
+
 /// Normalize a path's structure: collapse repeated slashes, drop `.`, resolve
 /// `..` (clamping at root), strip the trailing slash, and root a relative input.
 /// This is the single source of truth the tests pin.
@@ -299,6 +321,27 @@ mod tests {
         #[cfg(windows)]
         for bad in ["a\\b", "C:\\x", "\\\\server\\share"] {
             assert!(!is_safe_local_segment(bad), "{bad:?} should be rejected");
+        }
+    }
+
+    #[test]
+    fn sanitize_display_neutralizes_bidi_and_controls() {
+        // The classic RTL-override spoof loses its reordering codepoint.
+        let spoof = "report\u{202E}fdp.exe";
+        let clean = sanitize_display_name(spoof);
+        assert!(!clean.contains('\u{202E}'));
+        assert_eq!(clean.chars().count(), spoof.chars().count()); // replaced, not dropped
+                                                                  // Marks, isolates, and C0/C1 controls are all replaced.
+        for bad in ["\u{200E}x", "a\u{2066}b", "x\u{0007}y", "\u{009C}z"] {
+            let out = sanitize_display_name(bad);
+            assert!(
+                out.chars().all(|c| c == '\u{FFFD}' || c.is_alphanumeric()),
+                "{bad:?} -> {out:?} still holds an unsafe char"
+            );
+        }
+        // Ordinary names (incl. legit non-ASCII) pass through untouched.
+        for ok in ["file.txt", "résumé.pdf", "日本語.txt", "a b.c"] {
+            assert_eq!(sanitize_display_name(ok), ok);
         }
     }
 

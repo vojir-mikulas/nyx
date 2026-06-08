@@ -27,6 +27,7 @@ use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::{FileType, OpenFlags, StatusCode};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tracing::warn;
+use zeroize::Zeroizing;
 
 use crate::host_key::ServerTrustPrompt;
 use crate::known_hosts::{KnownHostStatus, KnownHosts};
@@ -41,15 +42,16 @@ use crate::{DirWalk, RemoteClient};
 /// [`RemoteClient::connect`] consumes it and is never logged. The key *path* is
 /// not a secret.
 pub enum Auth {
-    /// Password authentication.
-    Password(String),
+    /// Password authentication. The plaintext is held in a [`Zeroizing`] buffer so
+    /// it is wiped on drop rather than left in freed heap.
+    Password(Zeroizing<String>),
     /// Public-key authentication with an OpenSSH private key file.
     Key {
         /// Path to the private key file.
         path: PathBuf,
         /// Passphrase for an encrypted key; `None` (or empty) for an
-        /// unencrypted key.
-        passphrase: Option<String>,
+        /// unencrypted key. Wiped on drop via [`Zeroizing`].
+        passphrase: Option<Zeroizing<String>>,
     },
 }
 
@@ -134,11 +136,11 @@ impl RemoteClient for SftpClient {
         // secret into an error.
         let result = match &self.auth {
             Auth::Password(password) => handle
-                .authenticate_password(&self.username, password)
+                .authenticate_password(&self.username, password.as_str())
                 .await
                 .map_err(map_russh_err)?,
             Auth::Key { path, passphrase } => {
-                let key = load_private_key(path, passphrase.as_deref()).await?;
+                let key = load_private_key(path, passphrase.as_ref().map(|p| p.as_str())).await?;
                 handle
                     .authenticate_publickey(&self.username, key)
                     .await
@@ -148,8 +150,9 @@ impl RemoteClient for SftpClient {
         if !result.success() {
             return Err(NyxError::Auth);
         }
-        // The secret is no longer needed; drop our copy.
-        self.auth = Auth::Password(String::new());
+        // The secret is no longer needed; replace it with an empty buffer (the old
+        // `Zeroizing` value is wiped as it drops).
+        self.auth = Auth::Password(Zeroizing::new(String::new()));
 
         // Open the SFTP subsystem over a session channel.
         let channel = handle.channel_open_session().await.map_err(map_russh_err)?;

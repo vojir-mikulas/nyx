@@ -4182,6 +4182,7 @@ dependencies = [
  "tokio",
  "tracing",
  "webpki-roots 0.26.11",
+ "zeroize",
 ]
 
 [[package]]
@@ -4197,6 +4198,7 @@ dependencies = [
  "nyx-transfer",
  "tokio",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]

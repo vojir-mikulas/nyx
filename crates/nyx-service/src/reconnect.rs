@@ -4,6 +4,7 @@
 //! Pure mechanical move out of `lib.rs` (code review 2026-06-08, plan 05).
 
 use super::*;
+use zeroize::Zeroizing;
 
 /// Run a single connect-like attempt and report the outcome to the dispatcher.
 ///
@@ -316,12 +317,13 @@ pub(crate) fn build_client(
         Protocol::Sftp => {
             // For key auth an empty secret means "unencrypted key" (no passphrase).
             let auth = match &profile.auth {
-                AuthMethod::Password => Auth::Password(secret.expose().to_string()),
+                AuthMethod::Password => Auth::Password(Zeroizing::new(secret.expose().to_string())),
                 AuthMethod::Key { path } => {
                     let passphrase = secret.expose();
                     Auth::Key {
                         path: path.clone(),
-                        passphrase: (!passphrase.is_empty()).then(|| passphrase.to_string()),
+                        passphrase: (!passphrase.is_empty())
+                            .then(|| Zeroizing::new(passphrase.to_string())),
                     }
                 }
                 AuthMethod::Anonymous => {
@@ -372,10 +374,16 @@ pub(crate) const ANON_PASSWORD: &str = "anonymous@";
 /// Resolve the `(username, password)` an FTP/FTPS login should send. Anonymous
 /// ignores the stored username and any secret; otherwise the profile username and
 /// the exposed secret are used.
-pub(crate) fn ftp_credentials(profile: &Profile, secret: &Secret) -> (String, String) {
+pub(crate) fn ftp_credentials(profile: &Profile, secret: &Secret) -> (String, Zeroizing<String>) {
     match profile.auth {
-        AuthMethod::Anonymous => ("anonymous".to_string(), ANON_PASSWORD.to_string()),
-        _ => (profile.username.clone(), secret.expose().to_string()),
+        AuthMethod::Anonymous => (
+            "anonymous".to_string(),
+            Zeroizing::new(ANON_PASSWORD.to_string()),
+        ),
+        _ => (
+            profile.username.clone(),
+            Zeroizing::new(secret.expose().to_string()),
+        ),
     }
 }
 

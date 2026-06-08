@@ -10,6 +10,7 @@ impl AppState {
         self.close_file_menu();
         // (remote path, display name, is_dir) for each selected entry.
         let mut entries: Vec<(RemotePath, String, bool)> = Vec::new();
+        let mut skipped_unsafe = false;
         for name in &self.selected {
             let Some(row) = self
                 .listing
@@ -18,7 +19,20 @@ impl AppState {
             else {
                 continue;
             };
+            // The name becomes a local path segment (`folder.join(name)`); a hostile
+            // server listing a `..`/separator name must not escape the chosen folder.
+            if !is_safe_local_segment(name) {
+                skipped_unsafe = true;
+                continue;
+            }
             entries.push((self.cwd.join(name), name.to_string(), row.entry.is_dir()));
+        }
+        if skipped_unsafe {
+            self.push_toast(
+                "Skipped entries with unsafe names from the server",
+                ToastVariant::Error,
+                cx,
+            );
         }
         if entries.is_empty() {
             return;
@@ -162,6 +176,11 @@ impl AppState {
             };
             // Symlinks aren't promised out (their target kind is unresolved here).
             if matches!(row.entry.kind, EntryKind::Symlink) {
+                continue;
+            }
+            // The name becomes the dropped file's local name; a `..`/separator name
+            // from the server must not escape the OS-chosen drop directory.
+            if !is_safe_local_segment(n) {
                 continue;
             }
             let is_dir = row.entry.is_dir();

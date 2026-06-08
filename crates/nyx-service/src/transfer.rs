@@ -68,6 +68,19 @@ pub(crate) fn submit_transfer(
         not_connected(events);
         return;
     }
+    // Defense in depth at the trust boundary: a download destination is built from
+    // a server-supplied name; a `..` component means it tried to escape the chosen
+    // folder. Legit picker/save-as/drop destinations never contain one.
+    if direction == TransferDirection::Download
+        && local
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        let _ = events.unbounded_send(Event::Error {
+            message: "refusing download to a path containing '..'".into(),
+        });
+        return;
+    }
     let spec = TransferSpec {
         direction,
         kind,

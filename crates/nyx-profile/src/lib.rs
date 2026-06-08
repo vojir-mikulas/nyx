@@ -82,6 +82,10 @@ pub enum AuthMethod {
     #[default]
     Password,
     /// Public-key authentication with an OpenSSH private key file.
+    ///
+    /// Prefer Ed25519 (or ECDSA) keys over RSA: the RSA implementation in our SSH
+    /// stack carries an unfixed Marvin timing advisory (RUSTSEC-2023-0071), so
+    /// elliptic-curve keys are the recommended default. See `deny.toml`.
     Key {
         /// Path to the private key file (non-secret, persisted).
         path: PathBuf,
