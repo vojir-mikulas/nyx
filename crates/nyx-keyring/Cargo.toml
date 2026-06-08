@@ -22,3 +22,9 @@ keyring = { workspace = true, features = ["apple-native"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { workspace = true, features = ["windows-native"] }
+
+# Linux → freedesktop Secret Service over D-Bus (GNOME Keyring / KWallet). The
+# sync backend needs a crypto provider for the encrypted session; `crypto-rust`
+# is pure-Rust, so no OpenSSL native dep leaks into a portable Linux build.
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { workspace = true, features = ["sync-secret-service", "crypto-rust"] }

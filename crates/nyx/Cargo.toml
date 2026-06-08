@@ -41,6 +41,13 @@ tracing-appender.workspace = true
 gpui = { workspace = true, features = ["font-kit"] }
 gpui_platform = { workspace = true, features = ["font-kit"] }
 
+# Linux renders through GPUI's wgpu/Vulkan backend with its own CosmicText font
+# system (no font-kit, like Windows); the windowing backends are opt-in, so both
+# X11 and Wayland are enabled here.
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui = { workspace = true, features = ["x11", "wayland"] }
+gpui_platform = { workspace = true, features = ["x11", "wayland"] }
+
 # Windows: embed the exe icon + version metadata at build time (see build.rs).
 # Host-gated, not target-gated: the build script runs on the host, and the
 # release exe is produced by a native Windows runner (host == target).

@@ -54,3 +54,35 @@ jobs:
 
       - name: Build
         run: cargo build --workspace
+
+  # Linux: verify the GPUI X11/Wayland + wgpu backend and the Secret Service
+  # keyring backend compile. Headless, so no run/test of the GUI — clippy
+  # --all-targets compiles the app, the gallery example, and tests, which is the
+  # real "does it build on Linux" gate. Independent of the macOS job above.
+  build-linux:
+    name: build · linux (x11 + wayland)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: rustc --version && cargo --version
+
+      # GPUI on Linux needs: build tooling (cmake/clang/pkg-config), the X11 +
+      # Wayland windowing libs, libxkbcommon, fontconfig (CosmicText), and the
+      # Vulkan loader (wgpu backend).
+      - name: Install native deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake pkg-config clang \
+            libfontconfig-dev \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libx11-dev libvulkan-dev
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Clippy (all targets)
+        run: cargo clippy --workspace --all-targets -- -D warnings
