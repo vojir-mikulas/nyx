@@ -136,49 +136,70 @@ where
     let mut stack: Vec<(String, Vec<String>)> = vec![(root.to_string(), Vec::new())];
     while let Some((dir, rel)) = stack.pop() {
         for (name, kind, size) in list_dir(dir.clone()).await? {
-            // A server-supplied name that isn't a single ordinary component (`..`,
-            // an absolute path, a separator) could escape the local destination
-            // when joined - reject it before it becomes a path, and never recurse
-            // into it remotely. Surface it as a skip rather than failing the walk.
-            if !is_safe_local_segment(&name) {
-                let shown = format!("{}/{name}", rel.join("/"));
-                walk.skips
-                    .push(EntryIssue::skipped(shown, "unsafe entry name skipped"));
-                continue;
-            }
-            let mut child_rel = rel.clone();
-            child_rel.push(name.clone());
-            let child_abs = format!("{dir}/{name}");
-            match kind {
-                EntryKind::Directory => {
-                    walk.items.push(WalkItem {
-                        rel: child_rel.clone(),
-                        is_dir: true,
-                        size: 0,
-                    });
-                    stack.push((child_abs, child_rel));
-                }
-                EntryKind::File => {
-                    walk.total_bytes += size;
-                    walk.items.push(WalkItem {
-                        rel: child_rel,
-                        is_dir: false,
-                        size,
-                    });
-                }
-                // Links and special files (sockets, devices, …) aren't copyable
-                // byte streams - skip and record why, never follow.
-                EntryKind::Symlink => walk
-                    .skips
-                    .push(EntryIssue::skipped(child_rel.join("/"), "symlink skipped")),
-                EntryKind::Other => walk.skips.push(EntryIssue::skipped(
-                    child_rel.join("/"),
-                    "special file skipped",
-                )),
+            if let Some(child) = push_walk_entry(&mut walk, &dir, &rel, name, kind, size) {
+                stack.push(child);
             }
         }
     }
     Ok(walk)
+}
+
+/// Guard and classify one server-supplied entry into `walk`, returning the
+/// `(absolute path, relative components)` of a directory to recurse into (`None`
+/// for a file, a skip, or a rejected name).
+///
+/// This is the security-relevant seam shared by every protocol's walk: a name
+/// that isn't a single ordinary component (`..`, an absolute path, a separator)
+/// could escape the local destination when joined, so it is rejected here -
+/// before it becomes a path and before we'd recurse into it remotely - and
+/// surfaced as a skip rather than failing the whole walk. Routing both the SFTP
+/// [`plan_walk`] and the hand-rolled FTP walk through this one function keeps the
+/// guard from drifting between them.
+pub(crate) fn push_walk_entry(
+    walk: &mut DirWalk,
+    dir: &str,
+    rel: &[String],
+    name: String,
+    kind: EntryKind,
+    size: u64,
+) -> Option<(String, Vec<String>)> {
+    if !is_safe_local_segment(&name) {
+        let shown = format!("{}/{name}", rel.join("/"));
+        walk.skips
+            .push(EntryIssue::skipped(shown, "unsafe entry name skipped"));
+        return None;
+    }
+    let mut child_rel = rel.to_vec();
+    child_rel.push(name.clone());
+    let child_abs = format!("{dir}/{name}");
+    match kind {
+        EntryKind::Directory => {
+            walk.items.push(WalkItem {
+                rel: child_rel.clone(),
+                is_dir: true,
+                size: 0,
+            });
+            return Some((child_abs, child_rel));
+        }
+        EntryKind::File => {
+            walk.total_bytes += size;
+            walk.items.push(WalkItem {
+                rel: child_rel,
+                is_dir: false,
+                size,
+            });
+        }
+        // Links and special files (sockets, devices, …) aren't copyable byte
+        // streams - skip and record why, never follow.
+        EntryKind::Symlink => walk
+            .skips
+            .push(EntryIssue::skipped(child_rel.join("/"), "symlink skipped")),
+        EntryKind::Other => walk.skips.push(EntryIssue::skipped(
+            child_rel.join("/"),
+            "special file skipped",
+        )),
+    }
+    None
 }
 
 #[cfg(test)]
@@ -266,15 +287,16 @@ mod tests {
     fn walk_rejects_unsafe_server_names() {
         use std::collections::HashMap;
 
-        // A hostile server returns `..` and an absolute path as "filenames", plus
-        // a normal file. Only the safe one becomes a copy item; the rest are
-        // skipped and never recursed into.
+        // A hostile server returns a traversal name, an absolute path, and a
+        // multi-component name as "filenames", plus a normal file. Only the safe
+        // one becomes a copy item; the rest are skipped and never recursed into.
         let tree: HashMap<&str, Vec<(&str, EntryKind, u64)>> = HashMap::from([(
             "/root",
             vec![
                 ("ok.txt", EntryKind::File, 5),
                 ("..", EntryKind::Directory, 0),
                 ("/etc/passwd", EntryKind::File, 9),
+                ("sub/../../x", EntryKind::File, 11),
             ],
         )]);
 
@@ -294,13 +316,64 @@ mod tests {
 
         assert_eq!(walk.items.len(), 1);
         assert_eq!(walk.items[0].rel, ["ok.txt"]);
-        assert_eq!(walk.skips.len(), 2);
+        assert_eq!(walk.skips.len(), 3);
         assert!(walk
             .skips
             .iter()
             .all(|s| s.reason == "unsafe entry name skipped"));
         // The traversal name was never followed (no escape, no extra bytes).
         assert_eq!(walk.total_bytes, 5);
+    }
+
+    #[test]
+    fn push_walk_entry_guards_classifies_and_signals_recursion() {
+        let mut walk = DirWalk::default();
+        let rel = vec!["sub".to_string()];
+
+        // An unsafe name is recorded as a skip and never recursed into.
+        let recurse = push_walk_entry(
+            &mut walk,
+            "/root/sub",
+            &rel,
+            "..".into(),
+            EntryKind::Directory,
+            0,
+        );
+        assert_eq!(recurse, None);
+        assert_eq!(walk.skips.len(), 1);
+        assert_eq!(walk.skips[0].reason, "unsafe entry name skipped");
+        assert!(walk.items.is_empty());
+
+        // A file is tallied and emitted, with no recursion.
+        let recurse = push_walk_entry(
+            &mut walk,
+            "/root/sub",
+            &rel,
+            "a.txt".into(),
+            EntryKind::File,
+            12,
+        );
+        assert_eq!(recurse, None);
+        assert_eq!(walk.total_bytes, 12);
+        assert_eq!(walk.items.last().unwrap().rel, ["sub", "a.txt"]);
+
+        // A directory is emitted and signals the (abs, rel) to recurse into.
+        let recurse = push_walk_entry(
+            &mut walk,
+            "/root/sub",
+            &rel,
+            "deep".into(),
+            EntryKind::Directory,
+            0,
+        );
+        assert_eq!(
+            recurse,
+            Some((
+                "/root/sub/deep".to_string(),
+                vec!["sub".into(), "deep".into()]
+            ))
+        );
+        assert!(walk.items.last().unwrap().is_dir);
     }
 
     #[test]

@@ -17,7 +17,7 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use nyx_core::{
-    EntryIssue, EntryKind, NyxError, Permissions, RemoteEntry, RemotePath, Result, TransferProgress,
+    EntryKind, NyxError, Permissions, RemoteEntry, RemotePath, Result, TransferProgress,
 };
 use suppaftp::list::{File, PosixPexQuery};
 use suppaftp::tokio::{AsyncFtpStream, ImplAsyncFtpStream, TokioTlsStream};
@@ -26,8 +26,8 @@ use suppaftp::{FtpError, Mode};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
-use crate::util::{copy_counting, map_io_err, reject_offset, RemoveOp};
-use crate::{DirWalk, RemoteClient, WalkItem};
+use crate::util::{copy_counting, map_io_err, push_walk_entry, reject_offset, RemoveOp};
+use crate::{DirWalk, RemoteClient};
 
 /// A plain-FTP client.
 ///
@@ -249,7 +249,9 @@ where
 
 /// Recursively walk `root` pre-order (parent before children), reusing
 /// [`op_list_dir`]. FTP has no native recursive list, so this drives an explicit
-/// stack - no async recursion. Symlinks/specials are skipped and tallied.
+/// stack - no async recursion. Each entry is classified through the shared
+/// [`push_walk_entry`], which applies the same `is_safe_local_segment` guard the
+/// SFTP walk uses, so a hostile server name can't escape the local destination.
 pub(crate) async fn op_walk_dir<T>(
     stream: &mut ImplAsyncFtpStream<T>,
     root: &RemotePath,
@@ -260,35 +262,11 @@ where
     let mut walk = DirWalk::default();
     let mut stack: Vec<(String, Vec<String>)> = vec![(root.as_str().to_string(), Vec::new())];
     while let Some((dir, rel)) = stack.pop() {
-        let entries = op_list_dir(stream, &RemotePath::new(&dir)).await?;
-        for entry in entries {
-            let mut child_rel = rel.clone();
-            child_rel.push(entry.name.clone());
-            let child_abs = format!("{dir}/{}", entry.name);
-            match entry.kind {
-                EntryKind::Directory => {
-                    walk.items.push(WalkItem {
-                        rel: child_rel.clone(),
-                        is_dir: true,
-                        size: 0,
-                    });
-                    stack.push((child_abs, child_rel));
-                }
-                EntryKind::File => {
-                    walk.total_bytes += entry.size;
-                    walk.items.push(WalkItem {
-                        rel: child_rel,
-                        is_dir: false,
-                        size: entry.size,
-                    });
-                }
-                EntryKind::Symlink => walk
-                    .skips
-                    .push(EntryIssue::skipped(child_rel.join("/"), "symlink skipped")),
-                EntryKind::Other => walk.skips.push(EntryIssue::skipped(
-                    child_rel.join("/"),
-                    "special file skipped",
-                )),
+        for entry in op_list_dir(stream, &RemotePath::new(&dir)).await? {
+            if let Some(child) =
+                push_walk_entry(&mut walk, &dir, &rel, entry.name, entry.kind, entry.size)
+            {
+                stack.push(child);
             }
         }
     }

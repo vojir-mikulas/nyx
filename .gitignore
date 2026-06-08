@@ -11,6 +11,8 @@
 
 /design/
 /docs/plans/
+/docs/codereview/
+/docs/security/
 .claude
 
 # Local Claude/agent settings overrides
