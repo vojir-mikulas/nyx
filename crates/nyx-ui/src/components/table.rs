@@ -524,16 +524,26 @@ impl<D: 'static> RenderOnce for Table<D> {
                             match on_row_drag.as_ref().and_then(|f| f(ix)) {
                                 Some(value) => {
                                     let drag_preview = drag_preview.clone();
-                                    this.on_drag(value, move |_value, _offset, _window, cx| {
+                                    this.on_drag(value, move |_value, offset, _window, cx| {
                                         let drag_preview = drag_preview.clone();
                                         cx.new(move |_| DragPreview {
                                             build: Box::new(move |window, cx| {
-                                                drag_preview
+                                                let chip = drag_preview
                                                     .as_ref()
                                                     .map(|f| f(ix, window, cx))
                                                     .unwrap_or_else(|| {
                                                         div().size_0().into_any_element()
-                                                    })
+                                                    });
+                                                // GPUI anchors the preview at the
+                                                // row's origin (mouse - grab offset);
+                                                // shift it back under the cursor so it
+                                                // tracks the pointer wherever the drag
+                                                // began in the row.
+                                                div()
+                                                    .pl(offset.x)
+                                                    .pt(offset.y)
+                                                    .child(chip)
+                                                    .into_any_element()
                                             }),
                                         })
                                     })
