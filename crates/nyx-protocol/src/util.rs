@@ -6,9 +6,11 @@
 //! the same async-recursion-free walk/removal planning.
 
 use std::future::Future;
+use std::io::SeekFrom;
+use std::path::Path;
 
 use nyx_core::{is_safe_local_segment, EntryIssue, EntryKind, NyxError, Result, TransferProgress};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use crate::{DirWalk, WalkItem};
 
@@ -51,6 +53,28 @@ where
 /// (an OS error string, never a credential).
 pub(crate) fn map_io_err(err: std::io::Error) -> NyxError {
     NyxError::Io(err.to_string())
+}
+
+/// Open an existing local file as the destination for a **resumed** download:
+/// truncate any bytes past the `offset` watermark, then position the write cursor
+/// there so the resumed copy appends from it.
+///
+/// The `set_len` is the load-bearing part: seeking alone would leave a stale tail
+/// in place if the local partial is longer than the resumed content will be (e.g.
+/// the remote source shrank since the partial was written), silently corrupting
+/// the file. Truncating first makes the final size exactly `offset + copied`.
+pub(crate) async fn open_local_for_resume(local: &Path, offset: u64) -> Result<tokio::fs::File> {
+    let mut writer = tokio::fs::OpenOptions::new()
+        .write(true)
+        .open(local)
+        .await
+        .map_err(map_io_err)?;
+    writer.set_len(offset).await.map_err(map_io_err)?;
+    writer
+        .seek(SeekFrom::Start(offset))
+        .await
+        .map_err(map_io_err)?;
+    Ok(writer)
 }
 
 /// Reject a non-zero resume offset for a protocol that can't resume (its
@@ -374,6 +398,28 @@ mod tests {
             ))
         );
         assert!(walk.items.last().unwrap().is_dir);
+    }
+
+    #[test]
+    fn open_local_for_resume_truncates_stale_tail() {
+        use tokio::io::AsyncWriteExt;
+
+        block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("partial.bin");
+            // A local partial longer than where the resume will pick up (the source
+            // shrank): 10 stale bytes, resuming at offset 4.
+            tokio::fs::write(&path, b"AAAABBBBBB").await.unwrap();
+
+            let mut writer = open_local_for_resume(&path, 4).await.unwrap();
+            writer.write_all(b"cc").await.unwrap();
+            writer.flush().await.unwrap();
+            drop(writer);
+
+            // The tail past the watermark is gone: exactly offset + written bytes.
+            let out = tokio::fs::read(&path).await.unwrap();
+            assert_eq!(out, b"AAAAcc");
+        });
     }
 
     #[test]

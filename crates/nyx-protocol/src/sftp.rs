@@ -30,7 +30,9 @@ use tracing::warn;
 
 use crate::host_key::ServerTrustPrompt;
 use crate::known_hosts::{KnownHostStatus, KnownHosts};
-use crate::util::{copy_counting, map_io_err, plan_removal, plan_walk, RemoveOp};
+use crate::util::{
+    copy_counting, map_io_err, open_local_for_resume, plan_removal, plan_walk, RemoveOp,
+};
 use crate::{DirWalk, RemoteClient};
 
 /// How a client proves its identity to the server.
@@ -316,20 +318,13 @@ impl RemoteClient for SftpClient {
         // loop itself goes through the `AsyncRead`/`AsyncWrite` interface, which
         // yields `std::io::Error` on either side (mapped via `map_io_err`).
         let mut reader = sftp.open(remote.as_str()).await.map_err(map_sftp_err)?;
-        // offset 0 truncates/creates; a resume opens the existing partial for
-        // writing and seeks both ends to the watermark so the tail is appended.
+        // offset 0 truncates/creates; a resume opens the existing partial,
+        // truncates any stale tail past the watermark (so a shrunk source can't
+        // leave corrupt trailing bytes) and seeks both ends to it to append.
         let mut writer = if offset == 0 {
             tokio::fs::File::create(local).await.map_err(map_io_err)?
         } else {
-            let mut writer = tokio::fs::OpenOptions::new()
-                .write(true)
-                .open(local)
-                .await
-                .map_err(map_io_err)?;
-            writer
-                .seek(SeekFrom::Start(offset))
-                .await
-                .map_err(map_io_err)?;
+            let writer = open_local_for_resume(local, offset).await?;
             reader
                 .seek(SeekFrom::Start(offset))
                 .await
