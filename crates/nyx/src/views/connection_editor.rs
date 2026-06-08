@@ -14,7 +14,9 @@ use crate::state::AppState;
 pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
     let view = cx.entity();
-    let editor = state.editor.as_ref().expect("editor open");
+    let Some(editor) = state.editor.as_ref() else {
+        return div().into_any_element();
+    };
 
     let protocol_ix = match editor.protocol {
         Protocol::Sftp => 0,
@@ -246,6 +248,7 @@ pub fn render(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement 
                         })),
                 ),
         )
+        .into_any_element()
 }
 
 /// A labelled form field (label above the control).

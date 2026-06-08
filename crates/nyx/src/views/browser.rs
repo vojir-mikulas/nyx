@@ -874,9 +874,9 @@ fn drag_chip(row: &EntryRow, count: usize, theme: &Theme) -> gpui::AnyElement {
 /// (which navigates to the hit's folder).
 fn search_view(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
-    let search = state
-        .search()
-        .expect("search_view requires an active search");
+    let Some(search) = state.search() else {
+        return div().into_any_element();
+    };
     // FTP/FTPS have no `find`: the service crawls the tree client-side, which is
     // markedly slower on deep trees. SFTP runs server-side `find` where it can.
     let client_side_walk = matches!(
@@ -991,6 +991,7 @@ fn search_view(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement
         )
         .child(search_header(search, client_side_walk, &theme))
         .child(div().flex_1().min_h_0().child(body))
+        .into_any_element()
 }
 
 /// The thin status bar above the search results: a spinner while the walk runs,

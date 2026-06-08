@@ -190,7 +190,9 @@ impl Render for AppState {
 fn password_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
     let view = cx.entity();
-    let prompt = state.password_prompt.as_ref().expect("password prompt set");
+    let Some(prompt) = state.password_prompt.as_ref() else {
+        return div().into_any_element();
+    };
     let title = if prompt.is_passphrase {
         format!("Unlock key for {}", prompt.profile_name)
     } else {
@@ -269,6 +271,7 @@ fn password_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElem
                         })),
                 ),
         )
+        .into_any_element()
 }
 
 /// The host-key trust-on-first-use prompt (an unknown key was presented). A
@@ -276,7 +279,9 @@ fn password_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElem
 fn host_key_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
     let view = cx.entity();
-    let prompt = state.host_key_prompt.as_ref().expect("host-key prompt set");
+    let Some(prompt) = state.host_key_prompt.as_ref() else {
+        return div().into_any_element();
+    };
     let (title, saved_to) = if matches!(prompt.kind, nyx_core::ServerTrustKind::Certificate) {
         (
             "Verify certificate",
@@ -349,6 +354,7 @@ fn host_key_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElem
                         })),
                 ),
         )
+        .into_any_element()
 }
 
 /// The file-collision prompt: the destination already exists. Overwrite / Skip /
@@ -359,10 +365,9 @@ fn collision_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoEle
     use nyx_core::TransferDirection;
 
     let theme = cx.theme().clone();
-    let info = state
-        .pending_collisions
-        .first()
-        .expect("collision prompt set");
+    let Some(info) = state.pending_collisions.first() else {
+        return div().into_any_element();
+    };
     let pending = state.pending_collisions.len();
     let apply_all = state.collision_apply_all;
 
@@ -488,13 +493,16 @@ fn collision_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoEle
                     })),
                 ),
         )
+        .into_any_element()
 }
 
 /// The "remove connection?" confirmation (deletes the profile + its keychain entry).
 fn delete_confirm_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
     let view = cx.entity();
-    let confirm = state.delete_confirm.as_ref().expect("delete confirm set");
+    let Some(confirm) = state.delete_confirm.as_ref() else {
+        return div().into_any_element();
+    };
 
     Modal::new("delete-confirm")
         .title("Remove connection")
@@ -536,6 +544,7 @@ fn delete_confirm_modal(state: &AppState, cx: &mut Context<AppState>) -> impl In
                         })),
                 ),
         )
+        .into_any_element()
 }
 
 /// The sidebar row right-click menu (Edit / Remove), anchored at the cursor.
@@ -543,7 +552,9 @@ fn delete_confirm_modal(state: &AppState, cx: &mut Context<AppState>) -> impl In
 /// A full-screen backdrop dismisses the menu on an outside click; the menu
 /// surface `occlude()`s its own region so a click on an item lands on the item.
 fn row_context_menu(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
-    let menu = state.row_menu.as_ref().expect("row menu set");
+    let Some(menu) = state.row_menu.as_ref() else {
+        return div().into_any_element();
+    };
     let position = menu.position;
     let edit_id = menu.profile_id.clone();
     let remove_id = menu.profile_id.clone();
@@ -590,12 +601,15 @@ fn row_context_menu(state: &AppState, cx: &mut Context<AppState>) -> impl IntoEl
                 .position(position)
                 .child(div().occlude().child(surface)),
         ))
+        .into_any_element()
 }
 
 /// The browser file-row right-click menu. Download and Delete act on the whole
 /// selection; Rename and Copy path on the clicked row.
 fn file_context_menu(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
-    let menu = state.file_menu.as_ref().expect("file menu set");
+    let Some(menu) = state.file_menu.as_ref() else {
+        return div().into_any_element();
+    };
     let position = menu.position;
 
     let surface = ContextMenu::new("file-ctx")
@@ -655,13 +669,16 @@ fn file_context_menu(state: &AppState, cx: &mut Context<AppState>) -> impl IntoE
                 .position(position)
                 .child(div().occlude().child(surface)),
         ))
+        .into_any_element()
 }
 
 /// The reusable single-field input modal (New folder / Rename).
 fn input_prompt_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
     let view = cx.entity();
-    let prompt = state.input_prompt.as_ref().expect("input prompt set");
+    let Some(prompt) = state.input_prompt.as_ref() else {
+        return div().into_any_element();
+    };
     let title = prompt.title.clone();
     let label = prompt.label.clone();
     let submit_label = prompt.submit_label.clone();
@@ -715,13 +732,16 @@ fn input_prompt_modal(state: &AppState, cx: &mut Context<AppState>) -> impl Into
                         })),
                 ),
         )
+        .into_any_element()
 }
 
 /// The file-delete confirmation (one or many entries).
 fn file_delete_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let theme = cx.theme().clone();
     let view = cx.entity();
-    let confirm = state.file_delete.as_ref().expect("file delete set");
+    let Some(confirm) = state.file_delete.as_ref() else {
+        return div().into_any_element();
+    };
     let count = confirm.entries.len();
     let has_dir = confirm.entries.iter().any(|(_, is_dir)| *is_dir);
 
@@ -780,6 +800,7 @@ fn file_delete_modal(state: &AppState, cx: &mut Context<AppState>) -> impl IntoE
                         })),
                 ),
         )
+        .into_any_element()
 }
 
 /// A lightweight "connecting…" overlay.
