@@ -11,6 +11,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use flint::{ActiveTheme, TextInput, TextInputEvent, ToastVariant};
 use futures::channel::oneshot;
 use futures::StreamExt;
 use gpui::{
@@ -28,7 +29,6 @@ use nyx_profile::{
     AuthMethod, FileProfileStore, FileSettingsStore, Profile, ProfileColor, ProfileStore, Settings,
 };
 use nyx_service::{Command, ConnectErrorKind, Event, FileOp, SearchHit, ServiceHandle};
-use nyx_ui::{ActiveTheme, TextInput, TextInputEvent, ToastVariant};
 use time::OffsetDateTime;
 
 use models::{AccentKind, ConnectionVm, Density, DockTab, EntryRow, SortKey, TransferVm};

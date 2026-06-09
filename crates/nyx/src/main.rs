@@ -17,9 +17,9 @@ mod state;
 mod theme_load;
 mod views;
 
+use flint::prelude::*;
 use gpui::{prelude::*, App, Bounds, TitlebarOptions, WindowBounds, WindowOptions};
 use gpui_platform::application;
-use nyx_ui::prelude::*;
 
 use crate::assets::Assets;
 use crate::state::AppState;

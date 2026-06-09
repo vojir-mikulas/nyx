@@ -1,8 +1,8 @@
 //! The bottom status bar: connection state, host, transfer speed, counts.
 
+use flint::ActiveTheme;
 use gpui::{div, prelude::*, px, Context};
 use nyx_core::LARGE_LISTING_WARN;
-use nyx_ui::ActiveTheme;
 
 use crate::icon::icon;
 use crate::state::models::{fmt_size, protocol_badge};

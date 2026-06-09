@@ -1,10 +1,10 @@
 //! The left sidebar: header, saved connections, footer.
 
+use flint::{ActiveTheme, Badge, Button, ButtonSize, ButtonVariant, IconButton};
 use gpui::{
     div, prelude::*, px, radians, Context, FontWeight, MouseButton, SharedString, Transformation,
 };
 use nyx_core::Protocol;
-use nyx_ui::{ActiveTheme, Badge, Button, ButtonSize, ButtonVariant, IconButton};
 
 use crate::icon::icon;
 use crate::state::models::{protocol_badge, ConnectionVm};

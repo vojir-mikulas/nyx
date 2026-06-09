@@ -2,7 +2,7 @@
 //!
 //! [`bind_all`] is the one registration entry point (called from `main`). It
 //! orchestrates: it invokes [`TextInput::bind_keys`] for the in-house editing set
-//! (which must stay in `nyx-ui`), then registers every app/browser binding from
+//! (which must stay in `flint`), then registers every app/browser binding from
 //! the [`SHORTCUTS`] table. That same table drives the shortcuts cheat-sheet
 //! ([`cheat_sheet`]), so the overlay can never drift from the real bindings.
 //!
@@ -21,8 +21,8 @@
 //! button and run a separate confirm action. Only `escape` (→ [`Dismiss`]) is a
 //! modal-level binding.
 
+use flint::TextInput;
 use gpui::{App, KeyBinding};
-use nyx_ui::TextInput;
 
 use crate::views::browser::{
     CopyPath, Delete, GoUp, Open, Rename, SelectAllRows, SelectDown, SelectFirst, SelectLast,
@@ -137,7 +137,7 @@ const ALIASES: &[(&str, Option<&str>, MakeFn)] = &[
 
 /// Register every keyboard binding. Call once at startup.
 pub fn bind_all(cx: &mut App) {
-    // The in-house editing set stays in nyx-ui (it must not depend on nyx-*).
+    // The in-house editing set stays in flint (it must not depend on nyx-*).
     TextInput::bind_keys(cx);
 
     let mut bindings: Vec<KeyBinding> = SHORTCUTS

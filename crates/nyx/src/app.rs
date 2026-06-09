@@ -2,15 +2,15 @@
 //! (tweaks modal + toasts). [`AppState`] is the single root entity; this file
 //! is its `Render` impl.
 
+use flint::{
+    ActiveTheme, Button, ButtonVariant, ContextMenu, ContextMenuItem, Modal, Segmented, Theme,
+    Toast, Toggle,
+};
 use gpui::{
     anchored, deferred, div, prelude::*, px, Context, Focusable, FontWeight, MouseButton,
     SharedString, Window,
 };
 use nyx_core::CollisionChoice;
-use nyx_ui::{
-    ActiveTheme, Button, ButtonVariant, ContextMenu, ContextMenuItem, Modal, Segmented, Theme,
-    Toast, Toggle,
-};
 
 use crate::assets::{FONT_MONO, FONT_UI};
 use crate::icon::icon;

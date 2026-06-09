@@ -87,3 +87,15 @@ Nyx builds on [GPUI](https://github.com/zed-industries/zed) (Apache-2.0), whose
 dependency tree includes GPL-3.0-or-later utility crates from the Zed repo
 (`zlog`, `ztracing`). The distributed Nyx binary is therefore licensed under the
 GPL-3.0-or-later; see [`NOTICE`](NOTICE) for the third-party attributions.
+
+## Inspiration
+
+Nyx is heavily inspired by Zed — from its focus on performance and native user
+experience to its use of GPUI as the rendering framework.
+
+While Nyx targets a completely different problem domain (file transfer rather
+than code editing), many architectural and design decisions were influenced by
+the way Zed is built.
+
+Special thanks to the Zed team for open-sourcing GPUI and the surrounding
+infrastructure that made this project possible.

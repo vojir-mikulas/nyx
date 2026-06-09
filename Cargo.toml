@@ -96,7 +96,7 @@ nyx-protocol = { path = "crates/nyx-protocol" }
 nyx-transfer = { path = "crates/nyx-transfer" }
 nyx-profile = { path = "crates/nyx-profile" }
 nyx-keyring = { path = "crates/nyx-keyring" }
-nyx-ui = { path = "crates/nyx-ui" }
+flint = { path = "../flint" }
 
 [profile.dev]
 # GPUI's dep tree is large; a touch of opt on deps keeps debug builds usable

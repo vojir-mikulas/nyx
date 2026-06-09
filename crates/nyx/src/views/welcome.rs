@@ -1,8 +1,8 @@
 //! The welcome / connection-manager screen (shown when nothing is open).
 
+use flint::{ActiveTheme, Badge, IconButton, IconButtonSize};
 use gpui::{actions, div, prelude::*, px, svg, Context, FontWeight};
 use nyx_core::Protocol;
-use nyx_ui::{ActiveTheme, Badge, IconButton, IconButtonSize};
 
 use crate::icon::icon;
 use crate::state::models::{protocol_badge, ConnectionVm};

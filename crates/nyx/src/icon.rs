@@ -1,6 +1,6 @@
 //! App-side icon helper.
 //!
-//! `nyx-ui` stays icon-agnostic so the Flint extraction carries no asset
+//! `flint` stays icon-agnostic so it carries no asset
 //! opinions, so the concrete icon set lives in the app. Icons are embedded SVGs
 //! (see [`crate::assets`]) rendered via GPUI's `svg()`.
 

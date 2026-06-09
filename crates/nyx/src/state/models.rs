@@ -6,10 +6,10 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use flint::{BadgeVariant, Theme};
 use gpui::{Hsla, SharedString};
 use nyx_core::{EntryKind, Protocol, RemoteEntry, Transfer, TransferReport, TransferStatus};
 use nyx_profile::{Profile, ProfileColor};
-use nyx_ui::{BadgeVariant, Theme};
 use time::OffsetDateTime;
 
 /// A profile counts as "recent" if it was last connected within this many days.

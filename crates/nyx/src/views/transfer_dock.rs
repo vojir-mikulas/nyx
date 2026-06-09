@@ -1,10 +1,10 @@
 //! The bottom transfer dock: collapsible header (tabs + clear) and rows.
 
-use gpui::{div, prelude::*, px, AnyElement, Context, Hsla, SharedString};
-use nyx_core::{EntryOutcomeKind, TransferDirection, TransferStatus};
-use nyx_ui::{
+use flint::{
     ActiveTheme, Button, ButtonSize, ButtonVariant, IconButton, IconButtonSize, ProgressBar, Tabs,
 };
+use gpui::{div, prelude::*, px, AnyElement, Context, Hsla, SharedString};
+use nyx_core::{EntryOutcomeKind, TransferDirection, TransferStatus};
 
 use crate::icon::icon;
 use crate::state::models::{fmt_bytes_pair, fmt_size, DockTab, TransferVm};

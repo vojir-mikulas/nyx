@@ -2,7 +2,7 @@
 //! merge them onto a built-in base.
 //!
 //! The on-disk format and its `gpui`/[`Theme`] conversion live here, in the app,
-//! *not* in `nyx-profile` (which stays UI-free) or `nyx-ui` (which stays
+//! *not* in `nyx-profile` (which stays UI-free) or `flint` (which stays
 //! serde-free for the Flint extraction). A theme is base + overrides: a file only
 //! names the tokens it changes, so a forgotten key inherits from `base` rather
 //! than rendering black. A malformed file is skipped with a `warn!`, never an
@@ -11,8 +11,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use flint::Theme;
 use gpui::{px, rgb, rgba, Hsla};
-use nyx_ui::Theme;
 use serde::Deserialize;
 
 /// The built-in themes, in picker order. The first is the fallback default.

@@ -1,13 +1,13 @@
 //! The file browser: tab strip, breadcrumb toolbar, and the remote file table.
 
+use flint::{
+    ActiveTheme, Button, ButtonSize, ButtonVariant, Column, IconButton, Table, Theme, Tooltip,
+};
 use gpui::{
     actions, canvas, div, prelude::*, px, quad, radians, BorderStyle, Context, DragMoveEvent,
     ExternalPaths, MouseButton, MouseDownEvent, SharedString, Transformation,
 };
 use nyx_core::{sanitize_display_name, Protocol};
-use nyx_ui::{
-    ActiveTheme, Button, ButtonSize, ButtonVariant, Column, IconButton, Table, Theme, Tooltip,
-};
 
 use crate::icon::icon;
 use crate::state::models::EntryRow;
@@ -43,7 +43,7 @@ actions!(
 /// In-app drag payload: the rows being dragged within the browser (the whole
 /// selection when the grabbed row is part of it, otherwise just that row).
 /// Dropped on a folder row it's a server-side move; dragged out of the window it
-/// is promoted to a native OS drag-out. Kept in the app crate so `nyx-ui` stays
+/// is promoted to a native OS drag-out. Kept in the app crate so `flint` stays
 /// domain-agnostic (the table is generic over this payload).
 #[derive(Clone)]
 pub struct InAppDrag {
@@ -182,7 +182,7 @@ fn tab_strip(state: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
                     .child(div().truncate().child(name))
                     .child(
                         IconButton::new("tab-close", icon("x", 12., theme.text_faint))
-                            .size(nyx_ui::IconButtonSize::Xs)
+                            .size(flint::IconButtonSize::Xs)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.disconnect();
                                 cx.notify();

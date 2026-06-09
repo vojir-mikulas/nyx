@@ -1,11 +1,11 @@
 //! The connection editor modal - create or edit a profile.
 //!
-//! A [`Modal`] wrapping the `nyx-ui` form kit. All mutation goes back through
+//! A [`Modal`] wrapping the `flint` form kit. All mutation goes back through
 //! [`AppState`] methods; this file only reads `state.editor` and emits elements.
 
+use flint::{ActiveTheme, Button, ButtonSize, ButtonVariant, Modal, Segmented, Theme};
 use gpui::{div, prelude::*, px, Context, Entity, FontWeight};
 use nyx_core::{FtpsMode, Protocol};
-use nyx_ui::{ActiveTheme, Button, ButtonSize, ButtonVariant, Modal, Segmented, Theme};
 
 use crate::state::models::AccentKind;
 use crate::state::AppState;
